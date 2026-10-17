@@ -203,7 +203,7 @@ function main() {
     "Node.js, Python, FFmpeg/FFprobe/FFplay và Chromium đã được đóng gói; Windows x64 không cần cài riêng các runtime này.",
     "",
     "Cập nhật trong launcher: chọn Tải cập nhật để mở GitHub Releases, tải ZIP, rồi chọn Cài từ ZIP.",
-    "Bộ cài mở thư mục phiên bản mới và giữ .env.local, data, database cùng profile của máy hiện tại.",
+    "Bộ cập nhật thay chương trình trong thư mục hiện tại; .env.local, data, database và profile trên máy được giữ nguyên.",
     "Repository GitHub là riêng tư; người tải cần đăng nhập GitHub và có quyền đọc repository.",
     "Không ghi đè hoặc chia sẻ .env.local, account_credentials.*, database hay profile Chromium giữa các máy.",
     "Phiên bản được xác định bởi trường version trong package.json và tên ZIP.",

@@ -27,7 +27,7 @@ Launcher mở trình duyệt ở cổng 3021 và giữ các dịch vụ local ch
 
 ### Cập nhật máy đã cài
 
-Launcher có hai nút cập nhật. Chọn **Tải cập nhật** để mở trang GitHub Releases, đăng nhập GitHub nếu cần và tải ZIP mới nhất. Quay lại launcher, chọn **Cài từ ZIP** rồi chọn file ZIP vừa tải. StoryDola dừng dịch vụ, cài bản mới vào thư mục phiên bản bên cạnh và mở lại ứng dụng. `.env*`, `data/`, log, database, profile trong `dola-studio/dola-render-gateway/accounts/` và nội dung tải về được giữ trên cùng máy; thư mục phiên bản cũ vẫn còn để quay lại nếu cần.
+Launcher có hai nút cập nhật. Chọn **Tải cập nhật** để mở trang GitHub Releases, đăng nhập GitHub nếu cần và tải ZIP mới nhất. Quay lại launcher, chọn **Cài từ ZIP** rồi chọn file ZIP vừa tải. StoryDola dừng dịch vụ, cập nhật chương trình ngay trong thư mục hiện tại rồi mở lại. `.env*`, `data/`, log, database, profile trong `dola-studio/dola-render-gateway/accounts/` và nội dung tải về được giữ nguyên trên máy.
 
 Repository GitHub của StoryDola là riêng tư. Máy nhận cập nhật cần đăng nhập GitHub trong trình duyệt và tài khoản đó cần được cấp quyền đọc repository. Không lưu GitHub token trong `.exe` hoặc trong source. Khi phát hành phiên bản mới, tạo GitHub Release với tag trùng version trong `package.json` (ví dụ `v0.1.4`) và đính kèm `StoryDola-Windows-v<version>.zip`.
 

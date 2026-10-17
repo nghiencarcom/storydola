@@ -6,11 +6,29 @@ param(
 
 $ErrorActionPreference = "Stop"
 $stageDir = $null
-$newRoot = $null
 $failureMessage = $null
 
-function Copy-MissingTree {
-  param([string]$Source, [string]$Destination)
+function Should-SkipUpdatePath {
+  param([string]$RelativePath, [bool]$IsDirectory)
+
+  $normalized = $RelativePath.Replace("\", "/")
+  $segments = @($normalized.Split("/"))
+  $leaf = $segments[$segments.Length - 1].ToLowerInvariant()
+  if ($segments[0].ToLowerInvariant() -eq "data") { return $true }
+  if ($segments | Where-Object { $_.ToLowerInvariant() -in @("accounts", "profiles", "downloads", "logs") }) { return $true }
+  if ($leaf -like ".env*" -and $leaf -ne ".env.example") { return $true }
+
+  if (-not $IsDirectory) {
+    if ($leaf -like "account_credentials.*") { return $true }
+    if ($leaf -match "(?i)\.(db|sqlite|sqlite3)(-(shm|wal))?$") { return $true }
+    if ($leaf -in @("cookies.txt", "storage_state.json", "storage-state.json", "dola-gateway.log")) { return $true }
+  }
+
+  return $false
+}
+
+function Copy-UpdateTree {
+  param([string]$Source, [string]$Destination, [string]$RelativePath = "")
 
   if (-not (Test-Path -LiteralPath $Destination)) {
     New-Item -ItemType Directory -Force -Path $Destination | Out-Null
@@ -18,11 +36,14 @@ function Copy-MissingTree {
 
   foreach ($item in Get-ChildItem -LiteralPath $Source -Force) {
     if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+    $childRelativePath = if ($RelativePath) { Join-Path $RelativePath $item.Name } else { $item.Name }
+    if (Should-SkipUpdatePath -RelativePath $childRelativePath -IsDirectory $item.PSIsContainer) { continue }
+
     $target = Join-Path $Destination $item.Name
     if ($item.PSIsContainer) {
-      Copy-MissingTree -Source $item.FullName -Destination $target
-    } elseif (-not (Test-Path -LiteralPath $target)) {
-      Copy-Item -LiteralPath $item.FullName -Destination $target
+      Copy-UpdateTree -Source $item.FullName -Destination $target -RelativePath $childRelativePath
+    } else {
+      Copy-Item -LiteralPath $item.FullName -Destination $target -Force
     }
   }
 }
@@ -70,13 +91,6 @@ try {
   }
 
   $parentDir = Split-Path -Parent $currentFullPath
-  $newRoot = Join-Path $parentDir $topFolder
-  if ($newRoot.TrimEnd("\", "/") -ieq $currentFullPath) {
-    $newRoot = Join-Path $parentDir ($topFolder + "-update-" + [Guid]::NewGuid().ToString("N").Substring(0, 6))
-  } elseif (Test-Path -LiteralPath $newRoot) {
-    $newRoot = Join-Path $parentDir ($topFolder + "-update-" + [Guid]::NewGuid().ToString("N").Substring(0, 6))
-  }
-
   $stageDir = Join-Path $parentDir (".storydola-update-" + [Guid]::NewGuid().ToString("N"))
   New-Item -ItemType Directory -Path $stageDir | Out-Null
   Expand-Archive -LiteralPath $archiveFullPath -DestinationPath $stageDir -Force
@@ -86,41 +100,10 @@ try {
       -not (Test-Path -LiteralPath (Join-Path $stagedBundle "APP_INFO.txt") -PathType Leaf)) {
     throw "Không tìm thấy StoryDola.exe hoặc APP_INFO.txt sau khi giải nén ZIP."
   }
-  Move-Item -LiteralPath $stagedBundle -Destination $newRoot
 
-  $localStatePaths = @(
-    "data",
-    "logs",
-    "dola-studio\logs",
-    "dola-studio\dola-render-gateway\accounts",
-    "dola-studio\dola-render-gateway\downloads"
-  )
-  foreach ($relativePath in $localStatePaths) {
-    $source = Join-Path $currentFullPath $relativePath
-    if (Test-Path -LiteralPath $source -PathType Container) {
-      Copy-MissingTree -Source $source -Destination (Join-Path $newRoot $relativePath)
-    }
-  }
-
-  foreach ($item in Get-ChildItem -LiteralPath $currentFullPath -Force -File) {
-    if ($item.Name -like ".env*") {
-      $target = Join-Path $newRoot $item.Name
-      if (-not (Test-Path -LiteralPath $target)) { Copy-Item -LiteralPath $item.FullName -Destination $target }
-    }
-  }
-
-  $gatewayRoot = Join-Path $currentFullPath "dola-studio\dola-render-gateway"
-  if (Test-Path -LiteralPath $gatewayRoot -PathType Container) {
-    foreach ($item in Get-ChildItem -LiteralPath $gatewayRoot -Force -File) {
-      if ($item.Name -like "account_credentials.*" -or $item.Name -match "(?i)\.(db|sqlite3?)(-(shm|wal))?$") {
-        $target = Join-Path (Join-Path $newRoot "dola-studio\dola-render-gateway") $item.Name
-        if (-not (Test-Path -LiteralPath $target)) { Copy-Item -LiteralPath $item.FullName -Destination $target }
-      }
-    }
-  }
-
-  if (-not (Test-Path -LiteralPath (Join-Path $newRoot "StoryDola.exe") -PathType Leaf)) {
-    throw "Không tìm thấy launcher trong thư mục cài đặt mới."
+  Copy-UpdateTree -Source $stagedBundle -Destination $currentFullPath
+  if (-not (Test-Path -LiteralPath (Join-Path $currentFullPath "StoryDola.exe") -PathType Leaf)) {
+    throw "Không tìm thấy launcher sau khi cập nhật."
   }
 } catch {
   $failureMessage = $_.Exception.Message
@@ -142,11 +125,11 @@ if ($failureMessage) {
 }
 
 try {
-  Start-Process -FilePath (Join-Path $newRoot "StoryDola.exe")
+  Start-Process -FilePath (Join-Path $currentFullPath "StoryDola.exe")
 } catch {
   Add-Type -AssemblyName System.Windows.Forms
   [System.Windows.Forms.MessageBox]::Show(
-    "Đã cài bản cập nhật tại:`r`n$newRoot`r`n`r`nKhông mở tự động được. Hãy chạy StoryDola.exe trong thư mục này.",
+    "Đã cập nhật chương trình trong:`r`n$currentFullPath`r`n`r`nKhông mở tự động được. Hãy chạy StoryDola.exe trong thư mục này.",
     "Cập nhật StoryDola đã cài xong",
     [System.Windows.Forms.MessageBoxButtons]::OK,
     [System.Windows.Forms.MessageBoxIcon]::Information
