@@ -1,6 +1,6 @@
 {
   "name": "storyai-dola-local",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "scripts": {
     "dev": "node scripts/dev-local.cjs",

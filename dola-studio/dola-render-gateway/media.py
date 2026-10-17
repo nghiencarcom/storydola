@@ -23,6 +23,7 @@ _MEDIA_PROXY_PATH = "/api/media/files"
 _MEDIA_SOURCES = {"uploads", "downloads", "exports"}
 _SESSION_ID_PATTERN = r"^(?:user|public|sess)_[A-Za-z0-9_-]{1,96}$"
 _LOCAL_HOSTNAMES = {"localhost", "127.0.0.1", "::1"}
+_BATCH_REFERENCE_PATH = re.compile(r"^/api/batches/references/[a-f0-9]{32}$")
 _STORYAI_REFERENCE_PATH = re.compile(
     r"^/api/seedance/references/[A-Za-z0-9_-]{1,160}/[A-Za-z0-9_-]{1,160}$"
 )
@@ -98,10 +99,10 @@ def _normalize_media_path(value: str) -> str:
 
 
 def _is_trusted_local_media_url(url: str) -> bool:
-    """Allow only Dola's loopback media proxy, never arbitrary private URLs."""
+    """Allow configured loopback media routes, never arbitrary private URLs."""
     if not isinstance(url, str) or len(url) > 4096:
         return False
-    if _is_trusted_storyai_reference_url(url):
+    if _is_trusted_storyai_reference_url(url) or _is_trusted_batch_reference_url(url):
         return True
     try:
         parsed = urlparse(url)
@@ -143,6 +144,31 @@ def _is_trusted_local_media_url(url: str) -> bool:
         if not re.fullmatch(_SESSION_ID_PATTERN, session_id):
             return False
     return True
+
+
+def _is_trusted_batch_reference_url(url: str) -> bool:
+    """Allow local batch images only from the configured StoryDola origin."""
+    if not isinstance(url, str) or len(url) > 4096:
+        return False
+    try:
+        parsed = urlparse(url)
+        configured = urlparse(config.STUDIO_URL)
+        parsed_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        configured_port = configured.port or (443 if configured.scheme == "https" else 80)
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme == "http"
+        and configured.scheme == "http"
+        and parsed.hostname in _LOCAL_HOSTNAMES
+        and configured.hostname in _LOCAL_HOSTNAMES
+        and parsed_port == configured_port
+        and _BATCH_REFERENCE_PATH.fullmatch(parsed.path)
+        and not parsed.username
+        and not parsed.password
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 def _is_trusted_storyai_reference_url(url: str) -> bool:

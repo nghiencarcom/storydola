@@ -90,6 +90,17 @@ function isLocalStudioHostname(hostname) {
     || /^127(?:\.\d{1,3}){3}$/.test(normalized);
 }
 
+function isLocalBatchReferenceUrl(value) {
+  if (typeof window === "undefined") return false;
+  try {
+    const parsed = new URL(String(value || ""), window.location.origin);
+    return isLocalStudioHostname(parsed.hostname)
+      && /^\/api\/batches\/references\/[a-f0-9]{32}$/i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
 const LOCAL_STUDIO_USER = {
   id: "dola-local-operator",
   email: "local@localhost",
@@ -154,7 +165,7 @@ const QUEUE_FETCH_PAGE_SIZE = 500;
 const QUEUE_SYNC_TIMEOUT_MS = 20000;
 const JOBS_STORAGE_MAX_ITEMS = 100;
 const JOBS_STORAGE_MAX_CHARS = 750_000;
-const MEDIA_LIBRARY_LIST_TIMEOUT_MS = 30000;
+const LOCAL_MEDIA_LIST_TIMEOUT_MS = 30000;
 const MEDIA_UPLOAD_TIMEOUT_MS = 120000;
 const MAX_REFERENCE_IMAGE_BYTES = 25 * 1024 * 1024;
 
@@ -210,24 +221,6 @@ function canPollAcceptedConversation(job) {
 function isSketchReferenceJob(job) {
   const mode = String(job?.referenceImageMode || job?.reference_image_mode || "").trim().toLowerCase();
   return mode === "sketch" || /\[color restoration\]/i.test(String(job?.prompt || ""));
-}
-
-function isMaiVideoLibraryReference(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return false;
-  try {
-    const parsed = new URL(raw, "http://dola-media.local");
-    const pathname = String(parsed.pathname || "").replaceAll("\\", "/");
-    if (/^\/static\/uploads\/library\//i.test(pathname)) return true;
-    if (pathname !== "/api/media/files") return false;
-    const source = String(parsed.searchParams.get("source") || "").trim().toLowerCase();
-    const relativePath = String(
-      parsed.searchParams.get("path") || parsed.searchParams.get("relative_path") || ""
-    ).replaceAll("\\", "/").replace(/^\/+/, "");
-    return source === "uploads" && /^library(?:\/|$)/i.test(relativePath);
-  } catch {
-    return false;
-  }
 }
 
 function providerRejectionGuidance(job) {
@@ -1051,10 +1044,12 @@ async function readResponsePayload(response) {
   }
 }
 
-const IMAGE_FILE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp", ".tif", ".tiff"]);
+const IMAGE_FILE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+const IMAGE_FILE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 function isImageReferenceFile(file) {
-  if (file?.type?.toLowerCase().startsWith("image/")) return true;
+  const mimeType = String(file?.type || "").toLowerCase();
+  if (mimeType) return IMAGE_FILE_MIME_TYPES.has(mimeType);
   const name = String(file?.name || "").toLowerCase();
   return IMAGE_FILE_EXTENSIONS.has(name.slice(name.lastIndexOf(".")));
 }
@@ -1979,10 +1974,10 @@ export default function StudioShell({ embedded = false, initialView = "overview"
     setMediaLoading(true);
     setMediaError("");
     try {
-      const response = await fetch("/api/media/images", {
+      const response = await fetch("/api/batches/references", {
         cache: "no-store",
-        headers: mediaHeaders(),
-        signal: AbortSignal.timeout(MEDIA_LIBRARY_LIST_TIMEOUT_MS)
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(LOCAL_MEDIA_LIST_TIMEOUT_MS)
       });
       const raw = await response.text();
       let payload = {};
@@ -1991,7 +1986,7 @@ export default function StudioShell({ embedded = false, initialView = "overview"
       } catch {
         payload = { error: raw.slice(0, 300) };
       }
-      if (!response.ok) throw new Error(payload.error || payload.detail || "Không đọc được thư viện ảnh MaiVideo");
+      if (!response.ok) throw new Error(payload.error || payload.detail || "Không đọc được thư viện ảnh local");
       const items = (Array.isArray(payload.items) ? payload.items : []).map((item) => {
         const title = getMediaItemTitle(item);
         const normalizedItem = title ? { ...item, title } : item;
@@ -2028,14 +2023,14 @@ export default function StudioShell({ embedded = false, initialView = "overview"
       return items;
     } catch (loadError) {
       setMediaError(isTimeoutError(loadError)
-        ? "MaiVideo phản hồi thư viện ảnh quá lâu (đã chờ 30 giây). Hãy thử tải lại."
-        : loadError?.message || "Không đọc được thư viện ảnh MaiVideo.");
+        ? "Đọc thư viện ảnh local quá lâu (đã chờ 30 giây). Hãy thử tải lại."
+        : loadError?.message || "Không đọc được thư viện ảnh local.");
       if (throwOnError) throw loadError;
       return [];
     } finally {
       setMediaLoading(false);
     }
-  }, [mediaHeaders]);
+  }, []);
 
   const uploadMediaFiles = useCallback(async (incomingFiles) => {
     const files = Array.from(incomingFiles || []).filter(Boolean);
@@ -2055,10 +2050,10 @@ export default function StudioShell({ embedded = false, initialView = "overview"
     try {
       const formData = new FormData();
       imageFiles.forEach((file) => formData.append("files", file, file.name || "reference-image.png"));
-      const response = await fetch("/api/media/upload", {
+      const response = await fetch("/api/batches/references", {
         method: "POST",
         cache: "no-store",
-        headers: mediaHeaders(),
+        headers: { Accept: "application/json" },
         body: formData,
         signal: AbortSignal.timeout(MEDIA_UPLOAD_TIMEOUT_MS)
       });
@@ -2069,7 +2064,7 @@ export default function StudioShell({ embedded = false, initialView = "overview"
       } catch {
         payload = { error: raw.slice(0, 300) };
       }
-      if (!response.ok) throw new Error(payload.error || payload.detail || "Không thể thêm ảnh vào thư viện MaiVideo");
+      if (!response.ok) throw new Error(payload.error || payload.detail || "Không thể lưu ảnh vào máy");
 
       const uploadedItems = Array.isArray(payload.items)
         ? payload.items
@@ -2084,17 +2079,44 @@ export default function StudioShell({ embedded = false, initialView = "overview"
       setSelectedMediaIds((current) => Array.from(new Set([...current, ...selectableIds])).slice(0, 30));
       const uploadedCount = Number(payload.uploaded_count || uploadedItems.length || imageFiles.length);
       setMediaNotice(
-        "Đã thêm " + uploadedCount + " ảnh vào thư viện và chọn làm ảnh tham chiếu." +
+        "Đã lưu " + uploadedCount + " ảnh trên máy và chọn làm ảnh tham chiếu." +
         (selectableIds.length < uploadedIds.length ? " Một số ảnh chưa hiện trong phiên hiện tại." : "")
       );
     } catch (uploadError) {
       setMediaError(isTimeoutError(uploadError)
-        ? "Tải ảnh lên MaiVideo quá lâu (đã chờ 120 giây). Hãy thử ảnh nhỏ hơn hoặc upload ít ảnh hơn mỗi lần."
-        : uploadError?.message || "Không thể thêm ảnh vào thư viện MaiVideo.");
+        ? "Lưu ảnh local quá lâu (đã chờ 120 giây). Hãy thử ảnh nhỏ hơn hoặc upload ít ảnh hơn mỗi lần."
+        : uploadError?.message || "Không thể lưu ảnh vào máy.");
     } finally {
       setMediaUploading(false);
     }
-  }, [loadMediaImages, mediaHeaders, rememberUploadedMediaNames]);
+  }, [loadMediaImages, rememberUploadedMediaNames]);
+
+  async function resolveLocalReferenceManifest(manifest, actionLabel) {
+    const references = Array.isArray(manifest) ? manifest : [];
+    if (!references.length) return { urls: [], names: [] };
+
+    const localItems = await loadMediaImages({ throwOnError: true, applyPendingReferences: false });
+    const resolved = references.map((reference) => {
+      const item = localItems.find((candidate) => mediaItemMatchesReference(candidate, reference));
+      const url = item ? toAbsoluteUrl(getMediaItemReferenceUrl(item)) : "";
+      return { reference, item, url };
+    });
+    const missing = resolved.filter(({ item, url }) => !item || !isLocalBatchReferenceUrl(url));
+    if (missing.length) {
+      const names = missing
+        .map(({ reference }, index) => reference.name || referenceFilenameFromUrl(reference.url, index))
+        .filter(Boolean);
+      throw new Error(
+        actionLabel + " không thể tiếp tục vì thiếu bản ảnh local cho " + missing.length + " ảnh"
+        + (names.length ? " (" + names.join(", ") + ")" : "")
+        + ". Hãy upload các ảnh này vào thư viện local rồi thử lại."
+      );
+    }
+    return {
+      urls: resolved.map(({ url }) => url),
+      names: resolved.map(({ item, reference }) => getMediaItemName(item, mediaOriginalNames) || reference.name)
+    };
+  }
 
   function handleMediaFileInput(event) {
     uploadMediaFiles(event.target.files);
@@ -3477,15 +3499,12 @@ export default function StudioShell({ embedded = false, initialView = "overview"
     });
   }
 
-  async function deleteMediaImageRequest(item) {
-    const response = await fetch("/api/media/delete", {
+  async function deleteMediaImagesRequest(ids) {
+    const response = await fetch("/api/batches/references", {
       method: "DELETE",
       cache: "no-store",
-      headers: mediaHeaders(true),
-      body: JSON.stringify({
-        source: item.source,
-        relativePath: item.relative_path || item.file_name
-      })
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ ids })
     });
     const raw = await response.text();
     let payload = {};
@@ -3494,12 +3513,19 @@ export default function StudioShell({ embedded = false, initialView = "overview"
     } catch {
       payload = { error: raw.slice(0, 300) };
     }
-    if (!response.ok) throw new Error(payload.error || payload.detail || "Không thể xoá ảnh khỏi thư viện");
+    if (!response.ok) throw new Error(payload.error || payload.detail || "Không thể xoá ảnh local");
+    return payload;
+  }
+
+  async function deleteMediaImageRequest(item) {
+    const id = getMediaItemId(item);
+    if (!id) throw new Error("Ảnh local không có mã hợp lệ");
+    await deleteMediaImagesRequest([id]);
   }
 
   async function deleteMediaImage(item) {
     const label = getMediaItemName(item, mediaOriginalNames);
-    if (!window.confirm("Xoá \"" + label + "\" khỏi thư viện media MaiVideo?")) return;
+    if (!window.confirm("Xoá \"" + label + "\" khỏi thư viện ảnh trên máy?")) return;
     setMediaDeletingId(getMediaItemId(item));
     setMediaError("");
     try {
@@ -3508,9 +3534,9 @@ export default function StudioShell({ embedded = false, initialView = "overview"
       setMediaImages((current) => current.filter((entry) => getMediaItemId(entry) !== id));
       setSelectedMediaIds((current) => current.filter((value) => value !== id));
       setMediaBulkSelectedIds((current) => current.filter((value) => value !== id));
-      setMediaNotice("Đã xoá " + label + " khỏi thư viện MaiVideo.");
+      setMediaNotice("Đã xoá " + label + " khỏi thư viện ảnh trên máy.");
     } catch (deleteError) {
-      setMediaError(deleteError?.message || "Không thể xoá ảnh khỏi thư viện MaiVideo.");
+      setMediaError(deleteError?.message || "Không thể xoá ảnh local.");
     } finally {
       setMediaDeletingId("");
     }
@@ -3520,40 +3546,25 @@ export default function StudioShell({ embedded = false, initialView = "overview"
     const selectedIds = new Set(mediaBulkSelectedIds);
     const items = mediaImages.filter((item) => selectedIds.has(getMediaItemId(item)));
     if (!items.length || mediaBulkDeleting) return;
-    if (!window.confirm("Xoá " + items.length + " file đã chọn khỏi thư viện media MaiVideo?")) return;
+    if (!window.confirm("Xoá " + items.length + " file đã chọn khỏi thư viện ảnh trên máy?")) return;
 
     setMediaBulkDeleting(true);
     setMediaError("");
     setMediaNotice("Đang xoá " + items.length + " file đã chọn...");
-    const results = [];
-    for (let index = 0; index < items.length; index += 4) {
-      const chunk = items.slice(index, index + 4);
-      const chunkResults = await Promise.all(chunk.map(async (item) => {
-        try {
-          await deleteMediaImageRequest(item);
-          return { item, ok: true };
-        } catch (deleteError) {
-          return { item, ok: false, error: deleteError };
-        }
-      }));
-      results.push(...chunkResults);
-    }
-
-    const deletedIds = new Set(results.filter((result) => result.ok).map((result) => getMediaItemId(result.item)));
-    const failedResults = results.filter((result) => !result.ok);
-    if (deletedIds.size) {
+    try {
+      const ids = items.map(getMediaItemId).filter(Boolean);
+      const payload = await deleteMediaImagesRequest(ids);
+      const deletedIds = new Set(Array.isArray(payload.deleted_ids) ? payload.deleted_ids : ids);
       setMediaImages((current) => current.filter((item) => !deletedIds.has(getMediaItemId(item))));
       setSelectedMediaIds((current) => current.filter((id) => !deletedIds.has(id)));
       setMediaBulkSelectedIds((current) => current.filter((id) => !deletedIds.has(id)));
-    }
-    if (failedResults.length) {
-      const firstError = failedResults[0].error?.message || "Không thể xoá một số file khỏi thư viện MaiVideo.";
-      setMediaError("Đã xoá " + deletedIds.size + "/" + items.length + " file. " + firstError);
+      setMediaNotice("Đã xoá " + deletedIds.size + " ảnh khỏi thư viện trên máy.");
+    } catch (deleteError) {
+      setMediaError(deleteError?.message || "Không thể xoá ảnh local.");
       setMediaNotice("");
-    } else {
-      setMediaNotice("Đã xoá " + deletedIds.size + " file khỏi thư viện MaiVideo.");
+    } finally {
+      setMediaBulkDeleting(false);
     }
-    setMediaBulkDeleting(false);
   }
 
   function handlePromptFile(event) {
@@ -3771,43 +3782,9 @@ export default function StudioShell({ embedded = false, initialView = "overview"
       const nextRatio = SUPPORTED_RATIOS.includes(requestedRatio) ? requestedRatio : "9:16";
       const requestedModel = String(job?.model || ENABLED_MODEL).trim();
       const referenceManifest = getJobReferenceManifest(job);
-      let resolvedManifest = referenceManifest;
-      if (referenceManifest.some(({ url }) => isMaiVideoLibraryReference(url))) {
-        setNotice("Đang xác thực và làm mới ảnh tham chiếu từ thư viện MaiVideo...");
-        let mediaItems;
-        try {
-          mediaItems = await loadMediaImages({ throwOnError: true, applyPendingReferences: false });
-        } catch (refreshError) {
-          throw new Error(
-            "Không thể xác minh ảnh tham chiếu cũ trong thư viện MaiVideo: "
-            + (refreshError?.message || "không tải được danh sách ảnh")
-            + ". Job chưa được nạp để tránh tạo video thiếu ảnh; hãy thử lại hoặc kiểm tra kết nối thư viện."
-          );
-        }
-        const refreshedManifest = referenceManifest.map((reference) => {
-          if (!isMaiVideoLibraryReference(reference.url)) return reference;
-          const item = mediaItems.find((candidate) => mediaItemMatchesReference(candidate, reference));
-          const url = item ? toAbsoluteUrl(getMediaItemReferenceUrl(item)) : "";
-          return {
-            ...reference,
-            url: url || reference.url,
-            name: item ? getMediaItemName(item, mediaOriginalNames) || reference.name : reference.name,
-            unresolved: !item || !url
-          };
-        });
-        const unresolved = refreshedManifest.filter((reference) => reference.unresolved);
-        if (unresolved.length) {
-          const missingNames = unresolved.map(({ name }) => name).filter(Boolean).join(", ");
-          throw new Error(
-            "Không tìm thấy " + unresolved.length + " ảnh tham chiếu cũ còn truy cập được trong thư viện MaiVideo"
-            + (missingNames ? " (" + missingNames + ")" : "")
-            + ". Không tạo video để tránh làm mất ảnh; khôi phục ảnh trong thư viện hoặc chọn lại ảnh thủ công."
-          );
-        }
-        resolvedManifest = refreshedManifest.map(({ unresolved: _unresolved, ...reference }) => reference);
-      }
-      const references = resolvedManifest.map(({ url }) => url);
-      const referenceNames = resolvedManifest.map(({ name }) => name);
+      const localReferences = await resolveLocalReferenceManifest(referenceManifest, "Tạo tương tự");
+      const references = localReferences.urls;
+      const referenceNames = localReferences.names;
       const hasExistingSketchReferences = isSketchReferenceJob(job) && references.length > 0;
       const notes = [];
 
@@ -3938,69 +3915,22 @@ export default function StudioShell({ embedded = false, initialView = "overview"
     let retryReferences = retryManifest.map((item) => item.url).slice(0, 30);
     let retryReferenceNames = retryManifest.map((item) => item.name).slice(0, 30);
     const sketchReferenceJob = isSketchReferenceJob(job);
-    const refreshableLibraryReferences = retryManifest.some(({ url }) => isMaiVideoLibraryReference(url));
     // A running legacy Gateway cannot clean the historical field order. Use
     // the already-normalized batch path for that one case; canonical prompts
     // still use native retry so their logical task id is preserved.
     const requiresPromptRebuild = hasNonCanonicalGeneratedVideoEnvelope(rawRetryPrompt);
-    let retryReferenceOverride = null;
-
     setRetryingJobIds((current) => current.includes(sourceId) ? current : [...current, sourceId]);
     setError("");
     setNotice("Đang tạo lại video lỗi...");
     try {
-      if (refreshableLibraryReferences && retryManifest.length) {
-        const mediaItems = await loadMediaImages({ throwOnError: true, applyPendingReferences: false });
-        const resolvedReferences = retryManifest.map((reference) => {
-          const item = mediaItems.find((candidate) => mediaItemMatchesReference(candidate, reference));
-          const url = item ? toAbsoluteUrl(getMediaItemReferenceUrl(item)) : "";
-          return { reference, item, url, isLibraryReference: isMaiVideoLibraryReference(reference.url) };
-        });
-        const unresolvedReferences = resolvedReferences.filter(({ item, url, isLibraryReference }) => (
-          (!item || !url) && isLibraryReference
-        ));
-        if (unresolvedReferences.length) {
-          const missingNames = resolvedReferences
-            .filter(({ item, url, isLibraryReference }) => (!item || !url) && isLibraryReference)
-            .map(({ reference }) => reference.name)
-            .filter(Boolean)
-            .join(", ");
-          throw new Error(
-            "Không tìm thấy ảnh tham chiếu" +
-            " theo title hiện còn truy cập được trong thư viện MaiVideo" +
-            (missingNames ? ": " + missingNames : ".") +
-            " Retry đã dừng để tránh tạo job thiếu ảnh. Khôi phục ảnh trong thư viện hoặc mở Tương tự và chọn lại ảnh theo title."
-          );
-        }
-        retryReferences = resolvedReferences.map(({ reference, item, url }) => item && url ? url : reference.url).slice(0, 30);
-        retryReferenceNames = resolvedReferences
-          .map(({ item, reference }) => getMediaItemName(item, mediaOriginalNames) || reference.name)
-          .slice(0, 30);
-        retryReferenceOverride = {
-          reference_images: retryReferences,
-          reference_image_names: retryReferenceNames
-        };
-        const matchedIds = resolvedReferences
-          .filter(({ item, url }) => item && url)
-          .map(({ item }) => getMediaItemId(item))
-          .filter(Boolean);
-        setSelectedMediaIds(matchedIds);
-        if (!resolvedReferences.some(({ item, url }) => !item || !url)) {
-          setInheritedReferenceUrls([]);
-          setInheritedReferenceNames([]);
-          setReferenceOrder(matchedIds.map((id) => "media:" + id));
-        }
-        if (matchedIds.length) {
-          setMediaNotice(
-            "Đã cập nhật " + matchedIds.length +
-            (sketchReferenceJob ? " ảnh nguồn của ảnh chì theo title để retry." : " ảnh tham chiếu theo title để retry.")
-          );
-          setNotice(
-            "Đang tạo lại video lỗi bằng " + matchedIds.length +
-            (sketchReferenceJob ? " ảnh nguồn đã đối chiếu theo title..." : " ảnh tham chiếu theo title...")
-          );
-        }
+      if (retryManifest.length) {
+        const localReferences = await resolveLocalReferenceManifest(retryManifest, "Retry");
+        retryReferences = localReferences.urls;
+        retryReferenceNames = localReferences.names;
       }
+      const retryReferenceOverride = retryManifest.length
+        ? { reference_images: retryReferences, reference_image_names: retryReferenceNames }
+        : null;
       const fallbackBody = {
         prompts: [normalizedRetryPrompt],
         references: retryReferences,
@@ -4620,11 +4550,11 @@ export default function StudioShell({ embedded = false, initialView = "overview"
               tabIndex={0}
               aria-label="Kéo thả hoặc dán ảnh tham chiếu"
             >
-              <input ref={mediaInlineFileInputRef} className="media-file-input" type="file" accept="image/*" multiple onChange={handleMediaFileInput} />
+              <input ref={mediaInlineFileInputRef} className="media-file-input" type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" multiple onChange={handleMediaFileInput} />
               <div className="media-dropzone-icon"><Upload size={15} /></div>
               <div className="media-dropzone-copy">
                 <strong>Kéo thả ảnh hoặc dán từ clipboard</strong>
-                <span>Ảnh sẽ tự thêm vào thư viện và được chọn làm tham chiếu.</span>
+                <span>Ảnh được lưu trên máy này và chọn làm ảnh tham chiếu.</span>
               </div>
               <div className="media-dropzone-actions">
                 <button type="button" className="button button-secondary" onClick={() => mediaInlineFileInputRef.current?.click()} disabled={mediaUploading}>
@@ -4639,7 +4569,7 @@ export default function StudioShell({ embedded = false, initialView = "overview"
                   className="button button-secondary reference-library-button"
                   onClick={() => { setMediaPanelOpen((current) => !current); setMediaError(""); }}
                 >
-                  <FolderOpen size={14} /> {mediaPanelOpen ? "Đóng thư viện" : "Chọn từ thư viện"}
+                  <FolderOpen size={14} /> {mediaPanelOpen ? "Đóng thư viện" : "Chọn ảnh local"}
                 </button>
               </div>
             </div>
@@ -4704,8 +4634,8 @@ export default function StudioShell({ embedded = false, initialView = "overview"
                 >
                   <div className="media-modal-header">
                     <div>
-                      <div className="panel-kicker">MAIVIDEO MEDIA</div>
-                      <h3 id="media-modal-title">Thư viện ảnh tham chiếu</h3>
+                      <div className="panel-kicker">ẢNH LOCAL · STORYDOLA</div>
+                      <h3 id="media-modal-title">Thư viện ảnh trên máy</h3>
                       <span>Bấm thumbnail để chọn hoặc bỏ chọn ảnh làm tham chiếu.</span>
                     </div>
                     <div className="media-modal-header-actions">
@@ -4746,7 +4676,7 @@ export default function StudioShell({ embedded = false, initialView = "overview"
                       onPaste={handleMediaPaste}
                       tabIndex={0}
                     >
-                      <input ref={mediaFileInputRef} className="media-file-input" type="file" accept="image/*" multiple onChange={handleMediaFileInput} />
+                      <input ref={mediaFileInputRef} className="media-file-input" type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" multiple onChange={handleMediaFileInput} />
                       <div className="media-dropzone-icon"><Upload size={17} /></div>
                       <div className="media-dropzone-copy">
                         <strong>Kéo thả hoặc dán ảnh</strong>
@@ -4782,7 +4712,7 @@ export default function StudioShell({ embedded = false, initialView = "overview"
                     {mediaError ? <div className="media-picker-message media-picker-error"><CircleAlert size={14} /> <span>{mediaError}</span></div> : null}
                     {mediaNotice ? <div className="media-picker-message media-picker-success"><CheckCircle2 size={14} /> <span>{mediaNotice}</span></div> : null}
                     {mediaLoading ? (
-                      <div className="media-empty"><LoaderCircle size={20} className="spin" /><span>Đang đọc thư viện ảnh MaiVideo...</span></div>
+                      <div className="media-empty"><LoaderCircle size={20} className="spin" /><span>Đang đọc thư viện ảnh local...</span></div>
                     ) : filteredMediaImages.length ? (
                       <div className="media-picker-grid">
                         {filteredMediaImages.map((item) => {
@@ -4829,7 +4759,7 @@ export default function StudioShell({ embedded = false, initialView = "overview"
                         })}
                       </div>
                     ) : (
-                      <div className="media-empty"><ImagePlus size={21} /><strong>{mediaImages.length ? "Không tìm thấy ảnh phù hợp" : "Thư viện chưa có ảnh"}</strong><span>{mediaImages.length ? "Thử từ khoá khác hoặc xoá bộ lọc." : "Kéo thả hoặc dán ảnh ở phía trên để thêm vào thư viện."}</span></div>
+                      <div className="media-empty"><ImagePlus size={21} /><strong>{mediaImages.length ? "Không tìm thấy ảnh phù hợp" : "Thư viện local chưa có ảnh"}</strong><span>{mediaImages.length ? "Thử từ khoá khác hoặc xoá bộ lọc." : "Kéo thả hoặc dán ảnh ở phía trên để lưu ảnh trên máy."}</span></div>
                     )}
                   </div>
                 </section>

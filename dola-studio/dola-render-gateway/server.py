@@ -1157,8 +1157,8 @@ class TaskRetryRequest(BaseModel):
     account: str | None = Field(default=None, min_length=1, max_length=128)
     # Admin retries can exclude profiles already used by the same logical job.
     excluded_accounts: list[str] | None = Field(default=None, max_length=50)
-    # The Studio may repair a legacy sketch task by sending the same images
-    # with fresh MaiVideo session-bearing URLs from its media library.
+    # The Studio may repair a legacy task by sending the same images from its
+    # local reference store with URLs that the Gateway can fetch.
     reference_images: list[str] | None = Field(default=None, max_length=30)
     reference_image_names: list[str] | None = Field(default=None, max_length=30)
     reference_image_mode: str | None = None
