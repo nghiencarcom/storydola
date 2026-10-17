@@ -28,7 +28,7 @@ internal sealed class LauncherForm : Form
     private readonly Button stopButton;
     private readonly Timer pollTimer;
     private readonly object logLock = new object();
-    private const string ReleasesUrl = "https://github.com/nghiencarcom/StoryDola/releases/latest";
+    private const string UpdateDownloadUrl = "https://github.com/nghiencarcom/StoryDola/releases/latest/download/StoryDola-Windows-latest.zip";
     private Process appProcess;
     private bool browserOpened;
     private bool stopping;
@@ -67,7 +67,7 @@ internal sealed class LauncherForm : Form
         downloadUpdateButton.Text = "Tải cập nhật";
         downloadUpdateButton.Size = new Size(118, 36);
         downloadUpdateButton.Location = new Point(154, 148);
-        downloadUpdateButton.Click += delegate { OpenUpdatePage(); };
+        downloadUpdateButton.Click += delegate { DownloadUpdate(); };
 
         installUpdateButton = new Button();
         installUpdateButton.Text = "Cài từ ZIP";
@@ -220,16 +220,16 @@ internal sealed class LauncherForm : Form
         }
     }
 
-    private void OpenUpdatePage()
+    private void DownloadUpdate()
     {
         try
         {
-            Process.Start(new ProcessStartInfo(ReleasesUrl) { UseShellExecute = true });
-            statusLabel.Text = "Trang Releases đã mở. Đăng nhập GitHub, tải ZIP mới nhất rồi chọn Cài từ ZIP.";
+            Process.Start(new ProcessStartInfo(UpdateDownloadUrl) { UseShellExecute = true });
+            statusLabel.Text = "Đã mở tải ZIP Release mới nhất trong trình duyệt. Nếu được yêu cầu, hãy đăng nhập GitHub; tải xong chọn Cài từ ZIP.";
         }
         catch (Exception error)
         {
-            MessageBox.Show(this, error.Message, "Không mở được trang cập nhật", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, error.Message, "Không mở được tải cập nhật", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
