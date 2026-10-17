@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <script src="popup-config.js"></script>
+    <script src="security-shield.js"></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Seedance Creator Studio v1.8.53 · 15s</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <div class="studio-app-wrapper">
+        
+        <!-- ================================================================= -->
+        <!-- TOP COMMAND BAR / HEADER -->
+        <!-- ================================================================= -->
+        <header class="studio-header">
+            <div class="header-brand">
+                <div class="brand-logo-hex">
+                    <span class="logo-bolt">⚡</span>
+                </div>
+                <div class="brand-titles">
+                    <div class="brand-main-title">
+                        <span class="brand-name" id="sr-brand-title">SEEDANCE</span>
+                        <span class="brand-badge-pro">PRO STUDIO</span>
+                    </div>
+                    <div class="brand-sub-badge" id="sr-version-badge">
+                        <span class="quality-dot"></span> Bản 1.8.53 · Mặc định 15s
+                    </div>
+                </div>
+            </div>
+
+            <div class="header-status-capsule" id="header-active-account" title="Trạng thái tài khoản Dola trên tab hiện tại">
+                <span class="status-pulse-dot"></span>
+                <span class="status-account-name">🟢 Mặc định</span>
+            </div>
+        </header>
+
+        <!-- BRAND / COMMUNITY STRIP -->
+        <section class="creator-brand-bar" aria-label="Thông tin hỗ trợ chính chủ">
+            <div class="creator-brand-kicker">Chính chủ · Sonicvoice</div>
+            <div class="creator-brand-links">
+                <a class="creator-brand-chip chip-zalo" href="https://zalo.me/g/jvwa05y9id3apkgfocw0" target="_blank" rel="noopener noreferrer" title="Nhóm Zalo cộng đồng">
+                    <span class="chip-ico" aria-hidden="true">💬</span>
+                    <span class="chip-copy">
+                        <strong>Nhóm Zalo</strong>
+                        <small>Cộng đồng Creator</small>
+                    </span>
+                </a>
+                <a class="creator-brand-chip chip-phone" href="tel:0908449168" title="Zalo hỗ trợ 0908449168">
+                    <span class="chip-ico" aria-hidden="true">📞</span>
+                    <span class="chip-copy">
+                        <strong>0908 449 168</strong>
+                        <small>Zalo hỗ trợ</small>
+                    </span>
+                </a>
+                <a class="creator-brand-chip chip-web" href="https://sonicvoice.pro" target="_blank" rel="noopener noreferrer" title="Website Voice clone Sonicvoice.pro">
+                    <span class="chip-ico" aria-hidden="true">🌐</span>
+                    <span class="chip-copy">
+                        <strong>Sonicvoice.pro</strong>
+                        <small>Voice clone</small>
+                    </span>
+                </a>
+            </div>
+        </section>
+
+        <!-- 🔒 LOCK SCREEN VIEW (Ẩn vĩnh viễn) -->
+        <div class="tab-content" id="view-license-lock" style="display: none !important;">
+            <div class="lock-card">
+                <div class="lock-mark">⚡</div>
+                <p class="eyebrow">BẢN QUYỀN SEEDANCE PRO STUDIO</p>
+                <h2 class="lock-title">Kích Hoạt Thiết Bị</h2>
+                <p class="lock-sub">Bản quyền đã được tích hợp sẵn miễn phí cho cộng đồng Creator Việt Nam.</p>
+                
+                <div class="machine-id-container">
+                    <span class="machine-id-label">MÃ THIẾT BỊ CỦA BẠN:</span>
+                    <div class="machine-id-box" id="display-machine-id">ĐANG TẠO...</div>
+                    <button class="btn-copy-id" id="btn-copy-machine-id">📋 Sao Chép Mã</button>
+                </div>
+
+                <div class="key-input-container">
+                    <span class="machine-id-label">NHẬP MÃ BẢN QUYỀN:</span>
+                    <input type="text" id="input-license-key" class="input-text" placeholder="CTB-VIP-PRO-VIETNAM">
+                    <button class="btn-primary" id="btn-activate-license">⚡ Kích Hoạt Miễn Phí</button>
+                    <div id="activation-error" class="activation-error"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================================================================= -->
+        <!-- MAIN STUDIO WORKSPACE -->
+        <!-- ================================================================= -->
+        <div id="main-unlocked-ui" class="studio-main-ui" style="display: flex !important;">
+            
+            <!-- STUDIO SEGMENTED NAVIGATION DOCK -->
+            <nav class="studio-nav-dock nav-tabs" role="tablist">
+                <button class="nav-dock-btn nav-btn active" id="tab-prompts" role="tab" aria-selected="true">
+                    <span class="nav-dock-icon tab-icon">🎬</span>
+                    <span class="nav-dock-label">Xưởng Phim</span>
+                </button>
+                <button class="nav-dock-btn nav-btn" id="tab-images" role="tab" aria-selected="false" aria-controls="view-images">
+                    <span class="nav-dock-icon tab-icon">🖼️</span>
+                    <span class="nav-dock-label">Studio Ảnh</span>
+                </button>
+                <button class="nav-dock-btn nav-btn" id="tab-accounts" role="tab" aria-selected="false">
+                    <span class="nav-dock-icon tab-icon">👤</span>
+                    <span class="nav-dock-label">Nick</span>
+                </button>
+                <button class="nav-dock-btn nav-btn" id="tab-settings" role="tab" aria-selected="false">
+                    <span class="nav-dock-icon tab-icon">⚙️</span>
+                    <span class="nav-dock-label">Cài Đặt</span>
+                </button>
+                <button class="nav-dock-btn nav-btn" id="tab-logs" role="tab" aria-selected="false">
+                    <span class="nav-dock-icon tab-icon">📋</span>
+                    <span class="nav-dock-label">Nhật Ký</span>
+                </button>
+            </nav>
+
+            <!-- ============================================================= -->
+            <!-- WORKSPACE 1: XƯỞNG PHIM (PROMPT & SCENE DIRECTOR) -->
+            <!-- ============================================================= -->
+            <div class="tab-content studio-tab-panel" id="view-prompts" role="tabpanel">
+                
+                <!-- DIRECTOR CONTROL & COMPOSER DECK -->
+                <div class="studio-card director-deck">
+                    
+                    <!-- Quick Preset Style Tags -->
+                    <div class="director-presets-wrap">
+                        <div class="preset-label-tag">
+                            <span>✨ PHONG CÁCH:</span>
+                        </div>
+                        <div class="preset-chips-scroll">
+                            <button type="button" class="preset-chip" data-style="cinematic 4k 60fps, dynamic camera angle, hyperdetailed movie scene, blockbuster lighting">🎬 Hollywood 4K</button>
+                            <button type="button" class="preset-chip" data-style="ultra photorealistic 8k portrait, natural skin textures, 85mm lens, cinematic studio lighting">✨ Chân Dung 8K</button>
+                            <button type="button" class="preset-chip" data-style="high octane action scene, fast motion, intense camera angle, dramatic speed ramp, 4k">🏎️ Hành Động</button>
+                            <button type="button" class="preset-chip" data-style="makoto shinkai anime style, vibrant beautiful colors, 4k 60fps, emotional cinematic lighting">🌸 Anime 60FPS</button>
+                            <button type="button" class="preset-chip" data-style="futuristic cyberpunk city, glowing neon reflections, rain puddles, volumetric mist, 8k">🌌 Cyberpunk</button>
+                            <button type="button" class="preset-chip" data-style="mystical fantasy realm, magical glowing particles, ethereal atmosphere, unreal engine 5">🔮 Fantasy 3D</button>
+                        </div>
+                    </div>
+
+                    <!-- Scene Script Input Area -->
+                    <div class="composer-textarea-wrap">
+                        <textarea id="textarea-quick-prompts" class="studio-textarea input-textarea" rows="3" placeholder="✍️ Dán kịch bản tại đây (Mỗi dòng hoặc mỗi đoạn là 1 cảnh riêng biệt, hoặc nạp file .txt, .csv)..."></textarea>
+                    </div>
+
+                    <!-- PROMPT FORMAT & GENERATION CONTROLS (GPM / 2-PROMPT LOOP) -->
+                    <div class="generator-config-panel">
+                        <!-- Mode Selector (Pro only) -->
+                        <div class="generator-mode-row">
+                            <label class="mode-radio-card" title="Chạy tuần tự trên 1 tài khoản/tab, tự động New Chat sau mỗi 2 prompt (khoảng vài chục video Pro/ngày tùy nick)">
+                                <input type="radio" name="generation-mode" id="radio-mode-single" value="single" checked>
+                                <div class="mode-radio-body">
+                                    <span class="mode-title">🔄 Chế Độ Pro (1 Acc · vài chục video/ngày)</span>
+                                    <small class="mode-sub">Mặc định 15s · cứ 2 prompt tự tạo Chat mới → Khoảng vài chục video Pro/ngày (tùy nick)</small>
+                                </div>
+                            </label>
+                        </div>
+
+                        <!-- DAILY LIMIT EXCEEDED WARNING BANNER -->
+                        <div id="daily-limit-warning-banner" style="display: none; margin-top: 8px; margin-bottom: 8px; padding: 10px 14px; background: rgba(239, 68, 68, 0.2); border: 1px solid #ef4444; border-radius: 8px; color: #fecaca; font-size: 12px; line-height: 1.4;">
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <span style="font-size: 18px;">🚫</span>
+                                <div>
+                                    <strong style="color: #fff;">Đã Đạt Giới Hạn Tạo Video Hằng Ngày:</strong>
+                                    <div>Tài khoản này đã hết hạn mức Pro hôm nay. Đổi sang Chrome Profile / GPM khác (1 profile = 1 acc) rồi thử lại.</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Parameter Row: Prefix, Model, Aspect Ratio, Duration -->
+                        <div class="generator-params-grid">
+                            <div class="param-col param-prefix-col">
+                                <label class="param-label" for="input-prompt-prefix">🏷️ Tiền Tố (Prefix)</label>
+                                <input type="text" id="input-prompt-prefix" class="studio-input param-input" value="tạo video: " placeholder="tạo video: ">
+                            </div>
+                            <div class="param-col">
+                                <label class="param-label" for="sel-model-version">🤖 Mô Hình AI</label>
+                                <select id="sel-model-version" class="studio-select param-select">
+                                    <option value="2.5" selected>Seedance 2.5 (Pro · Đề Xuất)</option>
+                                    <option value="2.0">Seedance 2.0 (Nhanh)</option>
+                                </select>
+                            </div>
+                            <div class="param-col">
+                                <label class="param-label" for="sel-aspect-ratio">📐 Tỉ Lệ Khung Hình</label>
+                                <select id="sel-aspect-ratio" class="studio-select param-select">
+                                    <option value="16:9" selected>16:9 (Ngang · YouTube / Phim)</option>
+                                    <option value="9:16">9:16 (Dọc · TikTok / Shorts / Reels)</option>
+                                    <option value="1:1">1:1 (Vuông · Instagram)</option>
+                                    <option value="4:3">4:3 (Chuẩn Cũ)</option>
+                                    <option value="21:9">21:9 (Ultrawide Cinema)</option>
+                                    <option value="none">Không chèn tỉ lệ</option>
+                                </select>
+                            </div>
+                            <div class="param-col">
+                                <label class="param-label" for="sel-prompt-duration">⏱️ Thời Lượng</label>
+                                <select id="sel-prompt-duration" class="studio-select param-select">
+                                    <option value="15s" selected>15s (Chuẩn Pro / Nhanh)</option>
+                                    <option value="10s">10s (Nhanh / Pro)</option>
+                                    <option value="5s">5s (Cực Nhanh)</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <!-- Direct Create & Status Strip -->
+                        <div class="generator-options-row">
+                            <label class="option-checkbox-wrap" title="Tự động thêm chỉ thị: tạo video luôn không hỏi lại, gửi dưới dạng human artifact">
+                                <input type="checkbox" id="chk-direct-create" checked>
+                                <span class="checkbox-custom"></span>
+                                <span class="checkbox-text">⚡ <strong>Tạo luôn không hỏi lại, gửi human artifact</strong></span>
+                            </label>
+                            <div class="gpm-tab-indicator" id="gpm-active-tabs-badge" title="Số lượng Tab Dola / Profile GPM đang sẵn sàng">
+                                <span class="indicator-dot"></span>
+                                <span class="indicator-label" id="gpm-tabs-text">Đang quét tab Dola…</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- F5 WARNING BANNER KHI TAB DOLA CHƯA NẠP EXTENSION -->
+                    <div id="dola-f5-warning-container" style="display: none; margin-bottom: 12px; padding: 10px 14px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.45); border-radius: 8px; color: #fca5a5; font-size: 12px; line-height: 1.4;">
+                        <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px;">
+                            <span>⚠️ <strong>Cần F5 Tab Dola:</strong> Tab Dola chưa nhận extension mới (bấm sẽ không chạy).</span>
+                            <button id="btn-f5-dola-tabs" type="button" style="padding: 6px 12px; font-size: 11px; font-weight: 700; white-space: nowrap; background: #ef4444; color: #fff; border: 0; border-radius: 6px; cursor: pointer;">🔄 F5 Tab Dola Ngay</button>
+                        </div>
+                    </div>
+
+                    <!-- HERO ACTION BAR -->
+                    <div class="director-actions-bar">
+                        <button id="btn-stop-automation" class="btn-studio-danger flex-1" type="button" title="Dừng toàn bộ quá trình tự động tạo video trên các Tab Dola">
+                            🛑 DỪNG TỰ ĐỘNG
+                        </button>
+                        <button id="btn-hit-create-video" class="btn-studio-hero btn-accent flex-1 action-button" type="button" title="Bắn sang Dola & kích hoạt tạo video trên toàn bộ các Tab đang mở!">
+                            <span class="hero-btn-inner">
+                                <span class="hero-btn-icon">⚡</span>
+                                <span class="hero-btn-text">
+                                    <strong>BẮN SANG DOLA (CHẠY TỰ ĐỘNG)</strong>
+                                    <small id="hero-btn-subtitle">Tối đa 2 video / nick · Tự động chia đều các Nick</small>
+                                </span>
+                            </span>
+                        </button>
+                    </div>
+
+                    <!-- QUICK UTILITY STRIP (ZIP & AUTO SCROLL) -->
+                    <div class="utility-controls-box feature-strip">
+                        <div class="utility-toggle-item feature-strip-left">
+                            <div class="utility-toggle-copy">
+                                <span class="utility-title feature-title">📦 Chế Độ Nén ZIP Trọn Gói</span>
+                                <span class="utility-desc feature-sub">Tạm dừng tải lẻ, tự gộp toàn bộ video chat vào 1 file ZIP</span>
+                            </div>
+                            <label class="studio-switch switch" title="Bật/Tắt chế độ tải ZIP trọn gói">
+                                <input type="checkbox" id="toggle-bulk-mode">
+                                <span class="studio-slider slider round"></span>
+                            </label>
+                        </div>
+
+                        <button id="btn-scroll-chat-videos" class="btn-studio-outline btn-secondary-strip action-button" type="button" title="Tự động cuộn lên đầu đoạn chat Dola để quét sạch các video đã tạo trước đó">
+                            <span class="outline-btn-icon">📜</span>
+                            <span class="outline-btn-copy button-copy">
+                                <strong>Quét Toàn Bộ Video Cũ (Auto-Scroll Chat)</strong>
+                                <small>Bóc tách toàn bộ video lịch sử để đóng gói ZIP</small>
+                            </span>
+                        </button>
+
+                        <button id="btn-download-zip-popup" class="btn-studio-outline btn-accent-strip action-button" type="button" style="margin-top: 6px; border-color: rgba(16, 185, 129, 0.45); background: rgba(16, 185, 129, 0.12);" title="Tải toàn bộ các video đã quét trong chat thành 1 file ZIP duy nhất">
+                            <span class="outline-btn-icon">📦</span>
+                            <span class="outline-btn-copy button-copy">
+                                <strong id="popup-zip-btn-text" style="color: #34d399;">Tải Toàn Bộ Video Chat (File ZIP)</strong>
+                                <small>Tự động nén toàn bộ video trên tab Dola vào 1 file ZIP</small>
+                            </span>
+                        </button>
+                    </div>
+
+                </div>
+
+                <!-- SCENE TIMELINE DECK (HÀNG ĐỢI PHÂN CẢNH) -->
+                <div class="studio-card timeline-deck">
+                    <div class="timeline-header-row section-header-row">
+                        <div class="timeline-title-wrap section-title-wrap">
+                            <span class="timeline-title section-title">🎬 Kịch Bản Phân Cảnh</span>
+                            <span class="counter-badge-neon counter-badge" id="prompt-counter">0</span>
+                        </div>
+                        <div class="timeline-actions header-actions-group">
+                            <input type="file" id="file-upload-prompts" accept=".csv, .txt, .text, .json" style="display: none;">
+                            <button id="btn-trigger-upload-prompts" class="btn-pill-primary btn-mini-primary" type="button" title="Nạp file kịch bản (.txt, .csv)">
+                                📁 Nạp File
+                            </button>
+                            <button id="btn-clear-prompts" class="btn-pill-danger btn-mini-delete" type="button" title="Xóa toàn bộ kịch bản">
+                                🗑️ Xóa Hết
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Status Filter Tabs -->
+                    <div class="timeline-filter-tabs search-filter-row">
+                        <button class="filter-tab-pill filter-pill active" data-filter="all">Tất Cả (<span id="count-all">0</span>)</button>
+                        <button class="filter-tab-pill filter-pill" data-filter="queued">⚪ Đang Chờ (<span id="count-queued">0</span>)</button>
+                        <button class="filter-tab-pill filter-pill" data-filter="done">✅ Đã Xong (<span id="count-done">0</span>)</button>
+                    </div>
+
+                    <!-- Dynamic Prompts Timeline List -->
+                    <div class="prompts-list studio-timeline-list" id="prompts-container">
+                        <div class="empty-state-card empty-state" id="prompts-empty-dropzone" title="Bấm vào đây để chọn file kịch bản">
+                            <div class="empty-state-icon">📁</div>
+                            <div class="empty-state-text">
+                                <strong>Chưa có phân cảnh nào trong danh sách</strong>
+                                <small>Bấm vào đây để nạp file (.txt, .csv) hoặc dán kịch bản ở trên</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- ============================================================= -->
+            <!-- WORKSPACE 2: STUDIO ẢNH MẪU (IMG2VID CANVAS) -->
+            <!-- ============================================================= -->
+            <div class="tab-content studio-tab-panel hidden" id="view-images" role="tabpanel" aria-hidden="true">
+                
+                <div class="studio-card">
+                    <div class="timeline-header-row">
+                        <div class="timeline-title-wrap">
+                            <span class="timeline-title">🖼️ Thư Viện Ảnh Img2Vid</span>
+                            <span class="counter-badge-neon" id="images-counter">0</span>
+                        </div>
+                        <div class="timeline-actions">
+                            <input type="file" id="file-upload-images" multiple accept="image/*" hidden>
+                            <button id="btn-trigger-upload-images" class="btn-pill-primary" type="button" title="Chọn nhiều ảnh từ máy tính">
+                                📁 Thêm Ảnh
+                            </button>
+                            <button id="btn-clear-images" class="btn-pill-danger" type="button" title="Xóa toàn bộ ảnh">
+                                🗑️ Xóa Hết
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="timeline-filter-tabs" id="image-filter-pills">
+                        <button class="filter-tab-pill active" type="button" data-image-filter="all">Tất Cả (<span id="image-count-all">0</span>)</button>
+                        <button class="filter-tab-pill" type="button" data-image-filter="queued">⚪ Đang Chờ (<span id="image-count-queued">0</span>)</button>
+                        <button class="filter-tab-pill" type="button" data-image-filter="done">✅ Đã Đính Kèm (<span id="image-count-done">0</span>)</button>
+                    </div>
+
+                    <!-- Glowing Dropzone -->
+                    <div class="studio-dropzone-box" id="image-picker-dropzone" role="button" tabindex="0" aria-label="Kéo thả hoặc bấm để chọn ảnh">
+                        <div class="dropzone-neon-icon">🖼️</div>
+                        <div class="dropzone-copy">
+                            <strong>Kéo thả ảnh mẫu hoặc bấm vào đây để chọn</strong>
+                            <small>Hỗ trợ JPG, PNG, WEBP, GIF, AVIF · Tối đa 25MB/ảnh</small>
+                        </div>
+                    </div>
+
+                    <div class="img2vid-flow-hint">
+                        <strong>Img2Vid tự động</strong>
+                        <span>1. Thêm ảnh theo thứ tự · 2. Dán prompt (1 dòng = 1 cảnh) · 3. Chọn tỉ lệ/thời lượng/mô hình bên dưới · 4. Bấm <b>BẮN IMG2VID</b></span>
+                        <span>Mỗi lần gửi: <b>1 ảnh + 1 prompt</b> → New Chat → cặp tiếp theo.</span>
+                    </div>
+
+                    <label class="param-label" for="textarea-img2vid-prompts" style="display:block;margin:10px 0 6px;">📝 Prompt Img2Vid (ghép theo thứ tự ảnh)</label>
+                    <textarea id="textarea-img2vid-prompts" class="studio-textarea input-textarea" rows="4" placeholder="Mỗi dòng/đoạn = 1 cảnh, khớp theo thứ tự ảnh trong thư viện…&#10;VD:&#10;con mèo chạy trên phố mưa&#10;cô gái nhìn ra cửa sổ ban mai"></textarea>
+                    <div class="img2vid-pair-meta" id="img2vid-pair-meta" style="font-size:11px;color:#94a3b8;margin:6px 0 10px;">0 ảnh · 0 prompt → 0 cặp</div>
+
+                    <!-- Img2Vid: Tỉ lệ + Thời lượng + Mô hình ngay tại đây -->
+                    <div class="generator-params-grid" style="margin: 8px 0 12px;">
+                        <div class="param-col">
+                            <label class="param-label" for="img2vid-aspect-ratio">📐 Tỉ Lệ</label>
+                            <select id="img2vid-aspect-ratio" class="studio-select param-select">
+                                <option value="16:9" selected>16:9 (Ngang)</option>
+                                <option value="9:16">9:16 (Dọc · TikTok)</option>
+                                <option value="1:1">1:1 (Vuông)</option>
+                                <option value="4:3">4:3 (Chuẩn Cũ)</option>
+                                <option value="21:9">21:9 (Ultrawide)</option>
+                                <option value="none">Không chèn</option>
+                            </select>
+                        </div>
+                        <div class="param-col">
+                            <label class="param-label" for="img2vid-duration">⏱️ Thời Lượng</label>
+                            <select id="img2vid-duration" class="studio-select param-select">
+                                <option value="15s" selected>15s</option>
+                                <option value="10s">10s</option>
+                                <option value="5s">5s</option>
+                            </select>
+                        </div>
+                        <div class="param-col">
+                            <label class="param-label" for="img2vid-model">🤖 Mô Hình</label>
+                            <select id="img2vid-model" class="studio-select param-select">
+                                <option value="2.5" selected>Seedance 2.5 (Pro)</option>
+                                <option value="2.0">Seedance 2.0 (Nhanh)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <button id="btn-fire-img2vid" class="btn-studio-hero btn-accent image-queue-upload-button" type="button" style="width: 100%; margin-top: 4px;">
+                        <span class="hero-btn-inner">
+                            <span class="hero-btn-icon">🚀</span>
+                            <span class="hero-btn-text">
+                                <strong>BẮN IMG2VID (ẢNH + PROMPT)</strong>
+                                <small id="hero-img2vid-subtitle">1 ảnh + 1 prompt / chat · Tự New Chat giữa các cặp</small>
+                            </span>
+                        </span>
+                    </button>
+
+                    <button id="btn-open-image-upload-options" class="btn-studio-outline image-queue-upload-button" type="button" style="width: 100%; margin-top: 8px;">
+                        Chỉ đính kèm ảnh (không gửi prompt)
+                    </button>
+                    <button id="btn-upload-images-all-tabs" class="btn-studio-outline image-queue-all-tabs" type="button">
+                        Gửi tuần tự ảnh sang mọi tab Dola
+                    </button>
+
+                    <div id="image-upload-status" class="image-upload-status" role="status" aria-live="polite"></div>
+
+                    <div class="image-gallery-drag-hint">
+                        💡 Thứ tự ảnh trong list = thứ tự ghép prompt. Bấm thumbnail vẫn gắn ảnh lẻ nếu cần.
+                    </div>
+
+                    <div class="images-list" id="images-container">
+                        <div class="empty-state-card" id="images-empty-dropzone">
+                            <div class="empty-state-icon">🖼️</div>
+                            <div class="empty-state-text">
+                                <strong>Chưa có ảnh mẫu nào</strong>
+                                <small>Hãy chọn hoặc kéo thả ảnh vào khung ở trên</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- ============================================================= -->
+            <!-- WORKSPACE 3: 1 PROFILE = 1 ACC (không đa nick trong 1 Chrome) -->
+            <!-- ============================================================= -->
+            <div class="tab-content studio-tab-panel hidden" id="view-accounts" role="tabpanel">
+                <div class="studio-card">
+                    <div class="timeline-header-row">
+                        <div class="timeline-title-wrap">
+                            <span class="timeline-title">👤 1 Chrome Profile = 1 Acc Dola</span>
+                        </div>
+                    </div>
+
+                    <div class="bulk-account-opener-box" style="margin-top: 10px; border-color: rgba(56, 189, 248, 0.35);">
+                        <div class="opener-copy-wrap">
+                            <span class="opener-main-title">ĐÃ TẮT ĐA NICK TRONG 1 PROFILE</span>
+                            <span class="opener-sub-title">Chrome dùng chung cookie/localStorage — mở nhiều nick trong cùng profile dễ logout chéo. Mỗi nick dùng 1 Chrome Profile (hoặc GPM) riêng, login Dola bình thường, rồi bắn prompt trên tab đó.</span>
+                        </div>
+                    </div>
+
+                    <div class="empty-state-card" style="margin-top: 14px;">
+                        <div class="empty-state-icon">✅</div>
+                        <div class="empty-state-text">
+                            <strong>Cách dùng đúng</strong>
+                            <small>1) Mở Profile/GPM cho đúng nick · 2) Vào dola.com/chat đã login · 3) Tab Xưởng Phim → dán kịch bản → Bắn sang Dola</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ============================================================= -->
+            <!-- WORKSPACE 4: CÀI ĐẶT & TÙY CHỌN NÂNG CAO -->
+            <!-- ============================================================= -->
+            <div class="tab-content studio-tab-panel hidden" id="view-settings" role="tabpanel">
+                <div class="studio-card">
+                    
+                    <div class="pro-license-banner">
+                        <div class="pro-license-icon">💎</div>
+                        <div class="pro-license-copy">
+                            <div class="pro-banner-title">SEEDANCE STUDIO PRO · SONICVOICE</div>
+                            <div id="settings-license-info" class="pro-banner-desc">Chính chủ Sonicvoice.pro · Hỗ trợ Zalo 0908 449 168</div>
+                        </div>
+                    </div>
+
+                    <div class="settings-support-card">
+                        <div class="settings-support-title">Liên hệ & cộng đồng chính chủ</div>
+                        <a href="https://zalo.me/g/jvwa05y9id3apkgfocw0" target="_blank" rel="noopener noreferrer">💬 Nhóm Zalo cộng đồng</a>
+                        <a href="tel:0908449168">📞 Zalo hỗ trợ: 0908 449 168</a>
+                        <a href="https://sonicvoice.pro" target="_blank" rel="noopener noreferrer">🌐 Website Voice clone: Sonicvoice.pro</a>
+                    </div>
+
+                    <div class="settings-group-list">
+                        <label class="setting-row">
+                            <div class="setting-text-col">
+                                <span class="setting-label">Thời Lượng Video Mặc Định</span>
+                                <span class="setting-sublabel">Tự động áp dụng thời lượng khi tạo video · 15s là lựa chọn mặc định/khuyên dùng</span>
+                            </div>
+                            <select id="sel-duration" class="studio-select">
+                                <option value="15" selected>15 Giây (Khuyên dùng)</option>
+                                <option value="10">10 Giây (Tiêu Chuẩn Nhanh)</option>
+                                <option value="5">5 Giây (Cực Nhanh)</option>
+                                <option value="30">30 Giây (Tương thích cũ)</option>
+                            </select>
+                        </label>
+
+                        <label class="setting-row">
+                            <div class="setting-text-col">
+                                <span class="setting-label">Tự động tải video về máy</span>
+                                <span class="setting-sublabel">Bật: tải file ngay khi có master 1080P. Tắt: vẫn lưu vào panel để tải ZIP / tải lẻ tay — không tự tải về máy.</span>
+                            </div>
+                            <input type="checkbox" id="chk-auto-dl" checked>
+                        </label>
+
+                        <label class="setting-row">
+                            <div class="setting-text-col">
+                                <span class="setting-label">Tự Động Chuyển Phân Cảnh Tiếp Theo</span>
+                                <span class="setting-sublabel">Sau khi gửi prompt hiện tại, tự chọn cảnh kế tiếp trong kịch bản</span>
+                            </div>
+                            <input type="checkbox" id="chk-autonext" checked>
+                        </label>
+
+                        <label class="setting-row">
+                            <div class="setting-text-col">
+                                <span class="setting-label">📦 Chế Độ Nén File ZIP Toàn Bộ Chat</span>
+                                <span class="setting-sublabel">Tạm dừng tải lẻ từng video, cho phép 1-click tải trọn gói ZIP</span>
+                            </div>
+                            <input type="checkbox" id="chk-bulk-mode">
+                        </label>
+
+                        <label class="setting-row">
+                            <div class="setting-text-col">
+                                <span class="setting-label">Tự Động Tối Ưu & Chống Lặp Từ Khóa</span>
+                                <span class="setting-sublabel">Làm sạch prompt để tránh bị Dola từ chối hoặc hỏi lại</span>
+                            </div>
+                            <input type="checkbox" id="chk-safety" checked>
+                        </label>
+                    </div>
+
+                </div>
+            </div>
+
+            <!-- ============================================================= -->
+            <!-- WORKSPACE 5: NHẬT KÝ HOẠT ĐỘNG (LOGS) -->
+            <!-- ============================================================= -->
+            <div class="tab-content studio-tab-panel hidden" id="view-logs" role="tabpanel">
+                <div class="studio-card">
+                    <div class="terminal-box" id="terminal">
+                        [Khởi tạo] 🚀 Seedance Creator Studio Pro v1.8.52 · Sonicvoice.pro<br>
+                        [Hỗ trợ] 📞 Zalo 0908 449 168 · Nhóm cộng đồng zalo.me/g/jvwa05y9id3apkgfocw0<br>
+                        [Chất lượng] ⚡ Seedance 2.0 & 2.5 không logo 1080P Master.<br>
+                        [Đa Luồng] 👥 Quản lý đa tài khoản độc lập qua Tab Session Rules.<br>
+                        [Img2Vid] 🖼️ Hỗ trợ kéo thả ảnh tham chiếu trực tiếp vào Dola.
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- FOOTER -->
+        <div id="sr-decoy-meta" class="sr-decoy-marker" style="display:none!important;" aria-hidden="true"></div>
+        <footer class="studio-footer">
+            <span class="footer-tag">⚡ Seedance Studio Pro · <a href="https://sonicvoice.pro" target="_blank" rel="noopener noreferrer">Sonicvoice.pro</a> · Zalo <a href="tel:0908449168">0908 449 168</a></span>
+            <a class="footer-community" href="https://zalo.me/g/jvwa05y9id3apkgfocw0" target="_blank" rel="noopener noreferrer">Vào nhóm Zalo cộng đồng →</a>
+        </footer>
+
+        <!-- DIALOG XÁC NHẬN HÀNH ĐỘNG TIẾNG VIỆT -->
+        <dialog class="confirm-dialog" id="confirm-dialog" aria-labelledby="confirm-dialog-title" aria-describedby="confirm-dialog-description">
+            <div class="confirm-dialog-icon" aria-hidden="true">⚠️</div>
+            <div class="confirm-dialog-body">
+                <h2 id="confirm-dialog-title">Xác Nhận Hành Động</h2>
+                <p id="confirm-dialog-description">Hành động này sẽ không thể hoàn tác.</p>
+            </div>
+            <div class="confirm-dialog-actions">
+                <button class="btn-secondary" id="confirm-dialog-cancel" type="button">Hủy Bỏ</button>
+                <button class="btn-danger" id="confirm-dialog-accept" type="button">Đồng Ý Xóa</button>
+            </div>
+        </dialog>
+
+        <!-- DIALOG CHỌN TAB ĐÍNH KÈM ẢNH TIẾNG VIỆT -->
+        <dialog class="image-upload-dialog" id="image-upload-dialog" aria-labelledby="image-upload-dialog-title" aria-describedby="image-upload-dialog-description">
+            <div class="image-upload-dialog-preview-wrap">
+                <img id="image-upload-dialog-preview" class="image-upload-dialog-preview" alt="Xem trước ảnh đã chọn">
+            </div>
+            <div class="image-upload-dialog-copy">
+                <h2 id="image-upload-dialog-title">Đính Kèm Ảnh Mẫu</h2>
+                <p id="image-upload-dialog-name"></p>
+                <p id="image-upload-dialog-description">Chọn nơi bạn muốn gửi danh sách ảnh tham chiếu này.</p>
+            </div>
+            <div class="image-upload-dialog-actions">
+                <button class="btn-secondary" id="image-upload-dialog-cancel" type="button">Hủy</button>
+                <button class="btn-secondary image-upload-one" id="image-upload-active-tab" type="button">Tab Hiện Tại</button>
+                <button class="btn-primary image-upload-all" id="image-upload-all-tabs" type="button">Tuần Tự Tất Cả Tab</button>
+            </div>
+        </dialog>
+    </div>
+
+    <!-- SCRIPTS INITIALIZATION -->
+    <script src="popup.js"></script>
+    <script src="popup-paragraph-prompts.js"></script>
+    <script src="ui-polish.js"></script>
+    <script src="popup-image-uploads.js"></script>
+    <script src="popup-chat-scroll.js"></script>
+</body>
+</html>

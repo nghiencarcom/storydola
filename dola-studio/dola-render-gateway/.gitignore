@@ -1,0 +1,38 @@
+# --- secrets / local config ---
+.env
+.env.local
+cookies.txt
+*.log
+
+# --- account state (contains real login sessions + emails) ---
+accounts/
+
+# --- databases (API keys, task history, account metadata) ---
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# --- encrypted account credentials ---
+account_credentials.json
+account_credentials.key
+
+# --- generated media ---
+downloads/
+
+# --- probe / debug artifacts (contain live session snippets) ---
+/*.html
+/*.png
+/*.jpg
+/*.json
+/*.txt
+!requirements.txt
+!README.md
+
+# --- one-off debug script (contains a signed CDN url) ---
+dl_now.py
+
+# --- python ---
+__pycache__/
+.venv/
+*.pyc

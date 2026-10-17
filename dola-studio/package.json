@@ -1,0 +1,25 @@
+{
+  "name": "dola-studio",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "node scripts/dev.js",
+    "dev:studio": "NEXT_DIST_DIR=.next-dev next dev --webpack -p 3107",
+    "build": "next build",
+    "build:production": "NEXT_DIST_DIR=.next-production next build",
+    "start": "npm run build:production && DOLA_CLEAR_OLD_PORTS=${DOLA_CLEAR_OLD_PORTS:-1} NEXT_DIST_DIR=.next-production node scripts/dev.js --production",
+    "start:isolated": "NEXT_DIST_DIR=.next-production-isolated DOLA_STUDIO_PORT=3107 DOLA_GATEWAY_PORT=8201 DOLA_GATEWAY_URL=http://127.0.0.1:8201 DOLA_PUBLIC_BASE=http://127.0.0.1:8201 DOLA_CLEAR_OLD_PORTS=0 sh -c 'npm run build && node scripts/dev.js --production'",
+    "start:studio": "NEXT_DIST_DIR=.next-production next start -p 3007",
+    "lint": "eslint"
+  },
+  "dependencies": {
+    "lucide-react": "^0.511.0",
+    "next": "16.2.12",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "eslint": "^9",
+    "eslint-config-next": "16.2.12"
+  }
+}

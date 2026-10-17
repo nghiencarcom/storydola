@@ -1,0 +1,78 @@
+{
+  "schema": "scene-series.v1",
+  "series_bible": {
+    "logline": "Hai người bạn cũ phải đối diện bí mật họ từng cùng che giấu.",
+    "canon_locks": [
+      "Mira và Linh là bạn cũ.",
+      "Cuốn sổ cũ là vật chứng duy nhất trong cảnh mở đầu."
+    ],
+    "characters": [
+      {
+        "name": "Mira Tran",
+        "description": "Phụ nữ trưởng thành, tóc đen ngang vai rẽ lệch nhẹ, dáng thanh; mặc áo khoác xanh đậm trên quần áo thường ngày màu trung tính.",
+        "image_prompt": "Create one clean character reference sheet on a pure white background showing the same adult woman in exactly three views: full-body front, full-body back, and front-facing bust portrait. Shoulder-length black hair with a slight side part, slender natural build, dark navy coat over neutral everyday clothing. Keep identity, face, proportions and colors consistent; neutral standing pose. No other people, props, text, labels or watermark."
+      },
+      {
+        "name": "Linh Dao",
+        "description": "Phụ nữ trưởng thành, tóc nâu buộc thấp, dáng vừa; mặc áo len xám đơn giản và quần áo màu trung tính.",
+        "image_prompt": "Create one clean character reference sheet on a pure white background showing the same adult woman in exactly three views: full-body front, full-body back, and front-facing bust portrait. Brown hair tied low at the nape, natural medium build, simple grey sweater and neutral clothing. Keep identity, face, proportions and colors consistent; neutral standing pose. No other people, props, text, labels or watermark."
+      }
+    ],
+    "locations": [
+      {
+        "name": "Kho lưu trữ cũ",
+        "aliases": ["Phòng lưu trữ thư viện"],
+        "description": "Phòng lưu trữ nhỏ trong thư viện, bàn gỗ dài giữa phòng, kệ hồ sơ kim loại dọc tường, cửa ở đầu phía nam và cửa sổ cao ở tường phía đông.",
+        "image_prompt": "Create a consistent 2x2 environment reference board showing NORTH, EAST, SOUTH and WEST camera directions of the same small library archive room. Keep one shared floor plan: doorway at the south end, long wooden table in the center, metal archive shelves along the walls, and a high window on the east wall. Only the camera direction changes. Empty room, soft afternoon window light, warm grey and wood palette. No people, text, labels or watermark."
+      }
+    ],
+    "visual_bible": {
+      "style": "Cinematic naturalism with restrained acting.",
+      "era": "Present day.",
+      "palette": "Warm grey, dark navy and natural wood."
+    }
+  },
+  "episodes": [
+    {
+      "schema": "scene-script.v1",
+      "chunk_id": "A01",
+      "chunk_summary": "Mira tìm thấy Linh cùng cuốn sổ cũ trong kho lưu trữ.",
+      "scenes": [
+        {
+          "id": "S001",
+          "start_sec": 0,
+          "end_sec": 10,
+          "act": "Đối chất",
+          "purpose": "Mira xác nhận Linh đã giữ cuốn sổ.",
+          "beat_summary": "Hai người đối diện qua chiếc bàn; Mira hỏi và Linh trả lời sau một nhịp ngập ngừng.",
+          "dialogue_or_voiceover": "Cậu đã giữ nó từ hôm đó đến giờ? Tớ giữ nó để cậu nghe sự thật trước đã.",
+          "voiceover_target_sec": 6,
+          "media_type": "video",
+          "image_keyword": "two friends archive room",
+          "video_keyword": "quiet archive confrontation",
+          "image_prompt": "One complete cinematic medium two-shot inside the same small library archive. Mira Tran and Linh Dao face each other across a long wooden table; a worn notebook rests between them. Mira looks restrained and questioning; Linh keeps one hand near the notebook. Clear spatial relationships, soft afternoon window light, warm grey and dark navy palette. One moment and one camera angle; no panels, collage, storyboard, text or logo.",
+          "video_prompt": "One continuous 10-second dramatic shot in the established archive layout. 0-2s: hold a quiet two-shot as Mira and Linh face each other across the table. 2-4s: Mira asks her question with a small forward lean and steady eye contact. 4-5s: pause; Linh glances at the notebook. 5-8s: Linh answers without moving it. 8-10s: Mira studies Linh, then lowers her gaze to the notebook. Use a very slow push-in, natural facial acting and quiet room tone; no scene change or extra action.",
+          "continuity_in": "Mira vừa bước vào kho; Linh đứng cạnh bàn, cuốn sổ ở trên bàn.",
+          "continuity_out": "Linh thừa nhận đã giữ cuốn sổ; Mira chưa chạm vào nó.",
+          "source_basis": "Premise và mục tiêu đối chất của A01.",
+          "risk_flags": [],
+          "characters": ["Mira Tran", "Linh Dao"],
+          "location_name": "Kho lưu trữ cũ",
+          "speaker_character": "Mira Tran",
+          "dialogue_segments": [
+            { "speaker_character": "Mira Tran", "text": "Cậu đã giữ nó từ hôm đó đến giờ?", "start_sec": 2, "end_sec": 4 },
+            { "speaker_character": "Linh Dao", "text": "Tớ giữ nó để cậu nghe sự thật trước đã.", "start_sec": 5, "end_sec": 8 }
+          ]
+        }
+      ],
+      "continuity_state": {
+        "story_so_far": "Mira tìm thấy Linh cùng cuốn sổ cũ; Linh thừa nhận đã giữ nó.",
+        "active_characters": ["Mira Tran", "Linh Dao"],
+        "active_locations": ["Kho lưu trữ cũ"],
+        "important_props": ["Cuốn sổ cũ trên bàn"],
+        "open_threads": ["Linh biết sự thật gì trong cuốn sổ?"],
+        "next_chunk_plan": "Linh hé lộ một trang; Mira nhận ra lời giải thích của mình có lỗ hổng."
+      }
+    }
+  ]
+}

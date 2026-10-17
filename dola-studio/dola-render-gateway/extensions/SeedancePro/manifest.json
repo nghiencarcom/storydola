@@ -1,0 +1,86 @@
+{
+  "manifest_version": 3,
+  "name": "Seedance Studio Pro (Dola-Pool Engine Edition)",
+  "version": "1.8.53",
+  "description": "Seedance Studio Pro by Sonicvoice.pro — tạo video Dola 1080P không watermark, ưu tiên thời lượng 15s và hỗ trợ 5s/10s.",
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "permissions": [
+    "tabs",
+    "scripting",
+    "downloads",
+    "storage",
+    "sidePanel",
+    "cookies"
+  ],
+  "host_permissions": [
+    "*://*.dola.com/*",
+    "*://*.doubao.com/*",
+    "*://*.byteintlapi.com/*",
+    "*://*.ibytedtos.com/*",
+    "https://dola.com/*",
+    "https://www.dola.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.dola.com/*",
+        "*://*.doubao.com/*",
+        "https://dola.com/*",
+        "https://www.dola.com/*"
+      ],
+      "js": [
+        "verified-image-upload-content.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "*://*.dola.com/*",
+        "*://*.doubao.com/*",
+        "https://dola.com/*",
+        "https://www.dola.com/*"
+      ],
+      "js": [
+        "page-bridge.js",
+        "image-attachment-main.js"
+      ],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    }
+  ],
+  "side_panel": {
+    "default_path": "popup.html"
+  },
+  "action": {
+    "default_title": "Seedance Studio Pro",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "brand-icon.svg",
+        "icon16.png",
+        "icon48.png",
+        "icon128.png"
+      ],
+      "matches": [
+        "*://*.dola.com/*",
+        "*://*.doubao.com/*",
+        "https://dola.com/*",
+        "https://www.dola.com/*"
+      ]
+    }
+  ]
+}
