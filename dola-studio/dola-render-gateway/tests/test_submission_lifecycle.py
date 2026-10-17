@@ -73,7 +73,7 @@ class ConversationCaptureTests(unittest.IsolatedAsyncioTestCase):
              patch.object(worker, "launch_account_context", AsyncMock(return_value=context)), \
              patch.object(worker, "_page_has_logged_out_marker", AsyncMock(return_value=False)), \
              patch.object(worker, "_preflight_balance", AsyncMock()), \
-             patch.object(worker, "_set_default_chat_mode_pro", AsyncMock()), \
+             patch.object(worker, "_set_default_chat_mode", AsyncMock()), \
              patch.object(worker, "_select_chat_pro", AsyncMock()), \
              patch.object(worker, "_select_chat_mode", AsyncMock()), \
              patch.object(worker, "_open_fresh_chat", AsyncMock()), \

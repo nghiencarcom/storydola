@@ -375,6 +375,11 @@ function sceneNeedsAiVideo(scene: ScenePreview) {
   return !(scene.media?.status === "ready" && scene.media.kind === "video" && !scene.media.stale && ["maivideo-video", "seedance", "upload"].some((provider) => String(scene.media?.provider || "").startsWith(provider)));
 }
 
+function sceneMissingVideoSceneImageReference(scene: ScenePreview, settings: Pick<MediaGenerationSettings, "videoUseSceneImageReference">) {
+  const image = sceneReferenceMedia(scene);
+  return settings.videoUseSceneImageReference && !(image?.kind === "image" && image.status === "ready");
+}
+
 function sceneHasActiveMediaJob(scene: ScenePreview) {
   return scene.mediaJob?.status === "queued" || scene.mediaJob?.status === "running";
 }
@@ -490,7 +495,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   const [viewingScriptChunkId, setViewingScriptChunkId] = useState("");
   const [sourceUrl, setSourceUrl] = useState(project?.sourceUrl || "");
   const [sourceText, setSourceText] = useState(project?.sourceText || "");
-  const [runMessage, setRunMessage] = useState<{ tone: "success" | "error"; text: string } | null>(null);
+  const [runMessage, setRunMessage] = useState<{ tone: "success" | "error" | "info"; text: string } | null>(null);
   const [publishingScope, setPublishingScope] = useState("series");
   const [publishingBusy, setPublishingBusy] = useState(false);
   const [publishingError, setPublishingError] = useState("");
@@ -570,6 +575,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   const [dialogueTranslationSceneId, setDialogueTranslationSceneId] = useState("");
   const [dialogueTranslationBatchProgress, setDialogueTranslationBatchProgress] = useState("");
   const [dialogueTtsBatchProgress, setDialogueTtsBatchProgress] = useState("");
+  const [dialogueTtsBatchIsOriginal, setDialogueTtsBatchIsOriginal] = useState(false);
   const [dialogueExtractingSceneId, setDialogueExtractingSceneId] = useState("");
   const [dialogueExtractBatchProgress, setDialogueExtractBatchProgress] = useState("");
   const [characterSyncing, setCharacterSyncing] = useState(false);
@@ -2094,7 +2100,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   }
 
   async function generateFilteredSceneImages() {
-    if (!project?.slug || batchMediaBusy || videoQueueRunning || generatingSceneId || ttsRunning || dialogueTtsBatchProgress || scriptBlocksIndependentTasks || !filteredScenes.length) return;
+    if (!project?.slug || batchMediaBusy || videoQueueRunning || generatingSceneId || ttsRunning || dialogueTtsBatchProgress || scriptBlocksIndependentTasks || sceneMediaSettingsSaving || !filteredScenes.length) return;
     const targets = filteredImageTargets;
     if (!targets.length) {
       setRunMessage({ tone: "success", text: "Không có cảnh trong phạm vi hiện tại để tạo ảnh." });
@@ -2132,7 +2138,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   }
 
   async function generateFilteredSceneVideos() {
-    if (!filteredVideoTargets.length || batchMediaBusy || videoQueueRunning || generatingSceneId || ttsRunning || dialogueTtsBatchProgress || scriptBlocksIndependentTasks) return;
+    if (!project?.slug || !filteredVideoTargets.length || batchMediaBusy || videoQueueRunning || generatingSceneId || ttsRunning || dialogueTtsBatchProgress || scriptBlocksIndependentTasks || sceneMediaSettingsSaving) return;
     setBatchMediaBusy(true);
     setGeneratingSceneMediaKind("video");
     setBatchMediaProgress(`Đang xếp ${filteredVideoTargets.length} job video vào hàng đợi nền…`);
@@ -2219,6 +2225,10 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
             imageUseCharacterReferences: batchMediaSettings.imageUseCharacterReferences,
           }
         : videoGenerationSettingsForScene(scene);
+      if (kind === "video" && sceneMissingVideoSceneImageReference(scene, nextSettings)) {
+        setRunMessage({ tone: "error", text: `${sceneNumberLabel(scene)} chưa có ảnh cảnh sẵn sàng. Hãy tạo ảnh cảnh trước hoặc tắt “Ảnh cảnh làm tham chiếu” nếu chỉ muốn gửi ảnh nhân vật/bối cảnh.` });
+        return;
+      }
       const settingsChanged = kind === "image"
         ? currentSettings.imageModel !== nextSettings.imageModel
           || currentSettings.imageQuality !== nextSettings.imageQuality
@@ -2683,7 +2693,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   }
 
   async function generateSceneTts(scene: ScenePreview, force = false, targetLanguage = "", batchMode = false): Promise<{ ok: boolean; failed: number; message: string }> {
-    if (!project?.slug || ttsRunning || renderRunning || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || generatingSceneId || dialogueTranslationSceneId || dialogueTranslationBatchProgress || (dialogueTtsBatchProgress && !batchMode)) return { ok: false, failed: 0, message: "Đang có tác vụ voice khác chạy." };
+    if (!project?.slug || ttsRunning || renderRunning || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || generatingSceneId || dialogueSavingSceneId || dialogueTranslationSceneId || dialogueTranslationBatchProgress || (dialogueTtsBatchProgress && !batchMode)) return { ok: false, failed: 0, message: dialogueSavingSceneId ? "Đang lưu timeline thoại. Hãy đợi lưu xong rồi tạo voice." : "Đang có tác vụ voice khác chạy." };
     const usesDialogueTimeline = project.presetId === "ai-drama";
     const dialogueSegments = usesDialogueTimeline ? sceneDialogueSegments(scene, project.characters || []) : [];
     const speaker = !usesDialogueTimeline
@@ -2792,8 +2802,30 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
     });
   }
 
+  function originalDialogueTtsVoiceTargetsForScenes(candidateScenes: ScenePreview[]) {
+    if (!project || project.presetId !== "ai-drama") return [] as ScenePreview[];
+    return candidateScenes.filter((scene) => {
+      const segments = sceneDialogueSegments(scene, characterProfiles);
+      if (!segments.length) return false;
+      let hasMissingVoice = false;
+      let hasMissingAudio = false;
+      for (const segment of segments) {
+        const speaker = characterProfiles.find((character) => character.id === segment.speakerCharacterId);
+        const voiceId = String(speaker?.voiceId || scene.ttsVoiceId || scene.tts_voice_id || project.voiceId || "");
+        if (!voiceId) {
+          hasMissingVoice = true;
+          continue;
+        }
+        const audio = segment.audio;
+        if (!audio?.localPath || audio.voiceId !== voiceId || audio.language !== project.language) hasMissingAudio = true;
+      }
+      return !hasMissingVoice && hasMissingAudio;
+    });
+  }
+
   async function generateFilteredDialogueTts(chunkId?: string, episodeNumber?: number) {
     if (!project?.slug || project.presetId !== "ai-drama" || dialogueTtsBatchProgress || ttsRunning || renderRunning || dialogueTranslationSceneId || dialogueTranslationBatchProgress || dialogueSavingSceneId || isRunning || runningScriptChunkId || generatingSceneId || batchMediaBusy || videoQueueRunning) return;
+    setDialogueTtsBatchIsOriginal(false);
     const candidateScenes = chunkId ? scenes.filter((scene) => scene.chunkId === chunkId) : filteredScenes;
     const targets = chunkId ? dialogueTtsVoiceTargetsForScenes(candidateScenes, dialogueTranslationLanguage) : filteredDialogueTtsVoiceTargets;
     if (!targets.length) {
@@ -2843,6 +2875,57 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
       setRunMessage({ tone: "error", text: cause instanceof Error ? cause.message : "Không thể tạo voice hàng loạt." });
     } finally {
       setDialogueTtsBatchProgress("");
+      setTtsChunkId("");
+      setTtsSceneId("");
+      setTtsRunning(false);
+    }
+  }
+
+  async function generateFilteredOriginalDialogueTts() {
+    if (!project?.slug || project.presetId !== "ai-drama" || dialogueTtsBatchProgress || ttsRunning || renderRunning || dialogueTranslationSceneId || dialogueTranslationBatchProgress || dialogueSavingSceneId || isRunning || runningScriptChunkId || generatingSceneId || batchMediaBusy || videoQueueRunning) return;
+    const targets = originalDialogueTtsVoiceTargetsForScenes(filteredScenes);
+    if (!targets.length) {
+      const hasDialogue = filteredScenes.some((scene) => sceneDialogueSegments(scene, characterProfiles).length > 0);
+      const missingVoice = filteredScenes.some((scene) => sceneDialogueSegments(scene, characterProfiles).some((segment) => {
+        const speaker = characterProfiles.find((character) => character.id === segment.speakerCharacterId);
+        return !(speaker?.voiceId || scene.ttsVoiceId || scene.tts_voice_id || project.voiceId);
+      }));
+      const message = !hasDialogue
+        ? "Phạm vi hiện tại chưa có timeline thoại để tạo voice."
+        : missingVoice
+          ? "Gán voice cho nhân vật đang thoại trước khi tạo voice ngôn ngữ gốc."
+          : `Các cảnh trong phạm vi hiện tại đã có voice gốc ${voiceLanguageLabel(project.language)}.`;
+      setRunMessage({ tone: missingVoice ? "error" : "success", text: message });
+      return;
+    }
+
+    setDialogueTtsBatchIsOriginal(true);
+    setDialogueTtsBatchProgress(`0/${targets.length}`);
+    setSceneError("");
+    setRunMessage(null);
+    const completed: string[] = [];
+    const failed: string[] = [];
+    try {
+      for (let index = 0; index < targets.length; index += 1) {
+        const scene = targets[index];
+        setDialogueTtsBatchProgress(`${index + 1}/${targets.length} · ${sceneNumberLabel(scene)}`);
+        const result = await generateSceneTts(scene, false, "", true);
+        if (result.ok) completed.push(sceneNumberLabel(scene));
+        else failed.push(`${sceneNumberLabel(scene)}: ${result.message || "không tạo được voice"}`);
+      }
+      await refresh().catch(() => undefined);
+      await loadScenes().catch(() => undefined);
+      setRunMessage({
+        tone: failed.length ? "error" : "success",
+        text: failed.length
+          ? `Đã tạo voice gốc ${voiceLanguageLabel(project.language)} cho ${completed.length}/${targets.length} cảnh. Lỗi: ${failed.slice(0, 3).join("; ")}${failed.length > 3 ? `; và ${failed.length - 3} lỗi khác` : ""}`
+          : `Đã tạo voice gốc ${voiceLanguageLabel(project.language)} cho ${completed.length} cảnh.`,
+      });
+    } catch (cause) {
+      setRunMessage({ tone: "error", text: cause instanceof Error ? cause.message : "Không thể tạo voice ngôn ngữ gốc hàng loạt." });
+    } finally {
+      setDialogueTtsBatchProgress("");
+      setDialogueTtsBatchIsOriginal(false);
       setTtsChunkId("");
       setTtsSceneId("");
       setTtsRunning(false);
@@ -2928,7 +3011,9 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   const sceneVideoOffPeakRequired = selectedSceneMediaSettings.videoProvider === "maivideo" && isVideoOffPeakRequired(selectedVideoModel?.id, selectedVideoModel?.label);
   const batchVideoOffPeakRequired = batchMediaSettings.videoProvider === "maivideo" && isVideoOffPeakRequired(selectedBatchVideoModel?.id, selectedBatchVideoModel?.label);
   const filteredImageTargets = (batchRegenerateImages ? filteredScenes : filteredScenes.filter((scene) => sceneNeedsImage(scene, project))).filter((scene) => !sceneHasActiveMediaJob(scene));
-  const filteredVideoTargets = (batchRegenerateVideos ? filteredScenes : filteredScenes.filter(sceneNeedsAiVideo)).filter((scene) => !sceneHasActiveMediaJob(scene));
+  const videoCandidates = (batchRegenerateVideos ? filteredScenes : filteredScenes.filter(sceneNeedsAiVideo)).filter((scene) => !sceneHasActiveMediaJob(scene));
+  const videoTargetsMissingSceneImage = videoCandidates.filter((scene) => sceneMissingVideoSceneImageReference(scene, batchMediaSettings));
+  const filteredVideoTargets = videoCandidates.filter((scene) => !sceneMissingVideoSceneImageReference(scene, batchMediaSettings));
   const activeSceneMediaJobCount = scenes.filter(sceneHasActiveMediaJob).length;
   const batchOverLimitCount = batchMediaSettings.videoDurationMode === "scene"
     ? filteredScenes.filter((scene) => Math.ceil(sceneDurationSeconds(scene, project.sceneDurationSec)) > batchVideoMaxDuration).length
@@ -2977,7 +3062,15 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
       return !(speaker?.voiceId || scene.ttsVoiceId || scene.tts_voice_id || project.voiceId);
     });
   }) : [];
+  const filteredDialogueScenesMissingOriginalVoice = project.presetId === "ai-drama" ? filteredScenes.filter((scene) => {
+    const segments = sceneDialogueSegments(scene, characterProfiles);
+    return segments.length > 0 && segments.some((segment) => {
+      const speaker = characterProfiles.find((character) => character.id === segment.speakerCharacterId);
+      return !(speaker?.voiceId || scene.ttsVoiceId || scene.tts_voice_id || project.voiceId);
+    });
+  }) : [];
   const filteredDialogueTtsVoiceTargets = dialogueTtsVoiceTargetsForScenes(filteredScenes, dialogueTranslationLanguage);
+  const filteredOriginalDialogueTtsVoiceTargets = originalDialogueTtsVoiceTargetsForScenes(filteredScenes);
   const selectedSceneDialogueSegments = selectedScene && project.presetId === "ai-drama" ? sceneDialogueSegments(selectedScene, characterProfiles) : [];
   const selectedSceneDialogueReadyCount = selectedSceneDialogueSegments.filter((segment) => Boolean(segment.audio?.localPath)).length;
   const selectedSceneDialogueMissingVoice = selectedSceneDialogueSegments.some((segment) => {
@@ -3161,7 +3254,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
           <button type="button" aria-pressed={dramaTab === "characters"} className={dramaTab === "characters" ? "active" : ""} onClick={() => setDramaTab("characters")}>Prompt nhân vật · {characterProfiles.length}</button>
           <button type="button" aria-pressed={dramaTab === "locations"} className={dramaTab === "locations" ? "active" : ""} onClick={() => setDramaTab("locations")}>Prompt bối cảnh · {locationProfiles.length}</button>
         </nav>
-        {runMessage && <div className={`run-message ${runMessage.tone}`}><span><Icon name={runMessage.tone === "success" ? "check" : "alert"} size={13} /></span>{runMessage.text}</div>}
+        {runMessage && <div className={`run-message ${runMessage.tone}`} role={runMessage.tone === "error" ? "alert" : "status"}><span><Icon name={runMessage.tone === "success" ? "check" : runMessage.tone === "info" ? "clock" : "alert"} size={13} /></span>{runMessage.text}</div>}
         {characterError && <div className="run-message error" role="alert">{characterError}</div>}
         {sceneError && <div className="run-message error" role="alert">{sceneError}</div>}
 
@@ -3262,7 +3355,8 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
               <button className="secondary-button compact" type="button" title="Tự gán hồ sơ nhân vật và bối cảnh theo nội dung cảnh. Hồ sơ bối cảnh được thêm vào prompt ảnh và video theo cài đặt tham chiếu." onClick={() => void autoAssignSceneReferences()} disabled={(!characterProfiles.length && !locationProfiles.length) || autoAssignCharactersBusy || batchMediaBusy || videoQueueRunning || sceneCharacterSaving}>{autoAssignCharactersBusy ? "Đang gán…" : "Tự gán hồ sơ"}</button>
               <button className="secondary-button compact" type="button" onClick={() => void generateFilteredSceneImages()} disabled={!filteredImageTargets.length || batchMediaBusy || sceneMediaSettingsSaving || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning || Boolean(dialogueTtsBatchProgress) || Boolean(generatingSceneId)}>{batchMediaBusy && generatingSceneMediaKind === "image" ? batchMediaProgress || "Đang tạo ảnh…" : `Tạo ảnh · ${filteredImageTargets.length}`}</button>
               <button className="primary-button compact" type="button" onClick={() => void generateFilteredSceneVideos()} disabled={!filteredVideoTargets.length || batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || scriptBlocksIndependentTasks || ttsRunning || Boolean(dialogueTtsBatchProgress) || Boolean(generatingSceneId)}>{batchMediaBusy && generatingSceneMediaKind === "video" ? batchMediaProgress || "Đang tạo video…" : `Tạo video · ${filteredVideoTargets.length}`}</button>
-              {project.presetId === "ai-drama" && <button className="secondary-button compact" type="button" onClick={() => void generateFilteredDialogueTts()} disabled={!filteredDialogueTtsVoiceTargets.length || Boolean(dialogueTtsBatchProgress) || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress) || ttsRunning || renderRunning || dialogueSavingSceneId !== "" || isRunning || Boolean(runningScriptChunkId) || Boolean(generatingSceneId) || batchMediaBusy || videoQueueRunning} title={filteredDialogueTtsVoiceTargets.length ? `Tạo voice ${voiceLanguageLabel(dialogueTranslationLanguage)} cho ${filteredDialogueTtsVoiceTargets.length} cảnh đã dịch` : filteredDialogueScenesNeedingTranslation.length ? `Dịch thoại sang ${voiceLanguageLabel(dialogueTranslationLanguage)} trước` : filteredDialogueScenesMissingVoice.length ? "Gán voice cho nhân vật trước" : "Các cảnh trong phạm vi hiện tại đã có voice hoặc chưa có lời thoại"}>{dialogueTtsBatchProgress ? `Đang tạo voice ${voiceLanguageLabel(dialogueTranslationLanguage)} ${dialogueTtsBatchProgress}…` : `Tạo voice ${voiceLanguageLabel(dialogueTranslationLanguage)} · ${filteredDialogueTtsVoiceTargets.length}`}</button>}
+              {project.presetId === "ai-drama" && <button className="secondary-button compact" type="button" onClick={() => void generateFilteredOriginalDialogueTts()} disabled={!filteredOriginalDialogueTtsVoiceTargets.length || Boolean(dialogueTtsBatchProgress) || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress) || ttsRunning || renderRunning || dialogueSavingSceneId !== "" || isRunning || Boolean(runningScriptChunkId) || Boolean(generatingSceneId) || batchMediaBusy || videoQueueRunning} title={filteredOriginalDialogueTtsVoiceTargets.length ? `Tạo voice từ lời thoại gốc ${voiceLanguageLabel(project.language)} cho ${filteredOriginalDialogueTtsVoiceTargets.length} cảnh` : filteredDialogueScenesMissingOriginalVoice.length ? "Gán voice cho nhân vật đang thoại trước" : filteredScenes.some((scene) => sceneDialogueSegments(scene, characterProfiles).length > 0) ? `Các cảnh trong phạm vi hiện tại đã có voice gốc ${voiceLanguageLabel(project.language)}` : "Phạm vi hiện tại chưa có timeline thoại để tạo voice gốc"}>{dialogueTtsBatchProgress && dialogueTtsBatchIsOriginal ? `Đang tạo voice gốc ${voiceLanguageLabel(project.language)} ${dialogueTtsBatchProgress}…` : `Tạo voice gốc · ${voiceLanguageLabel(project.language)} · ${filteredOriginalDialogueTtsVoiceTargets.length}`}</button>}
+              {project.presetId === "ai-drama" && <button className="secondary-button compact" type="button" onClick={() => void generateFilteredDialogueTts()} disabled={!filteredDialogueTtsVoiceTargets.length || Boolean(dialogueTtsBatchProgress) || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress) || ttsRunning || renderRunning || dialogueSavingSceneId !== "" || isRunning || Boolean(runningScriptChunkId) || Boolean(generatingSceneId) || batchMediaBusy || videoQueueRunning} title={filteredDialogueTtsVoiceTargets.length ? `Tạo voice ${voiceLanguageLabel(dialogueTranslationLanguage)} cho ${filteredDialogueTtsVoiceTargets.length} cảnh đã dịch` : filteredDialogueScenesNeedingTranslation.length ? `Dịch thoại sang ${voiceLanguageLabel(dialogueTranslationLanguage)} trước` : filteredDialogueScenesMissingVoice.length ? "Gán voice cho nhân vật trước" : "Các cảnh trong phạm vi hiện tại đã có voice hoặc chưa có lời thoại"}>{dialogueTtsBatchProgress && !dialogueTtsBatchIsOriginal ? `Đang tạo voice ${voiceLanguageLabel(dialogueTranslationLanguage)} ${dialogueTtsBatchProgress}…` : `Tạo voice ${voiceLanguageLabel(dialogueTranslationLanguage)} · ${filteredDialogueTtsVoiceTargets.length}`}</button>}
               <button className="text-button" type="button" onClick={() => { setSceneSearch(""); setSceneChunkFilter("all"); setSceneReviewFilter("all"); setSceneAiReviewFilter("all"); setSceneMediaFilter("all"); }}>Xóa lọc</button>
             </div>
           </div>
@@ -3294,6 +3388,14 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                 || dialogueSegments.some((segment) => Object.values(segment.translatedAudio || {}).some((audio) => audio?.localPath))
                 || Boolean(sceneAudioRecord(scene).localPath);
               const missingTranslation = dialogueSegments.some((segment) => !segment.translations?.[dialogueTranslationLanguage]?.trim());
+              const sceneVoiceBusy = ttsRunning && ttsSceneId === scene.id;
+              const sceneVoiceButtonLabel = sceneVoiceBusy
+                ? "Đang tạo voice…"
+                : dialogueSavingSceneId === scene.id
+                  ? "Đang lưu thoại…"
+                  : readyTranslatedLineCount === dialogueSegments.length && dialogueSegments.length
+                    ? "Tạo lại voice"
+                    : "Tạo voice";
               const mediaKind = scene.media?.kind === "video" ? "Có video" : scene.media?.kind === "image" ? "Có ảnh" : "Thiếu media";
               const hasReadyVideo = scene.media?.kind === "video" && scene.media.status === "ready";
               const mediaJobActive = scene.mediaJob?.status === "queued" || scene.mediaJob?.status === "running";
@@ -3305,6 +3407,24 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                   : scene.mediaJob?.status === "failed"
                     ? `${scene.mediaJob.kind === "image" ? "Ảnh" : "Video"} lỗi: ${scene.mediaJob.error || "bấm nút để thử lại"}`
                     : "";
+              const imageActionBusy = mediaBusy;
+              const videoBlockedBySceneImage = sceneMissingVideoSceneImageReference(scene, videoGenerationSettingsForScene(scene));
+              const videoActionTitle = mediaJobActive && scene.mediaJob?.kind === "video"
+                ? mediaJobLabel
+                : videoBlockedBySceneImage
+                  ? "Tạo ảnh cảnh trước hoặc tắt Ảnh cảnh làm tham chiếu"
+                  : hasReadyVideo ? "Tạo lại video đã hoàn thành" : "Tạo video";
+              const imageActionTitle = mediaBusy
+                ? mediaJobLabel || (generatingSceneMediaKind === "image" ? "Đang xếp ảnh…" : "Đang xử lý media cảnh…")
+                : batchMediaBusy
+                  ? "Đang xử lý media hàng loạt…"
+                  : sceneMediaSettingsSaving
+                    ? "Đang lưu cấu hình media…"
+                    : generatingSceneId
+                      ? "Đang xử lý cảnh khác…"
+                      : videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning
+                        ? "Đang có tác vụ khác chạy…"
+                        : "Tạo ảnh cảnh";
               const expanded = expandedDramaSceneId === scene.id;
               const needsDialogueExtraction = sceneNeedsDialogueExtraction(scene);
               const sceneImagePrompt = sceneFieldValue(scene, "image_prompt", "imagePrompt");
@@ -3352,7 +3472,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                     {scene.mediaJob?.status === "failed" && <small className="scene-media-job-status error" role="status">{mediaJobLabel}</small>}
                     {renderDramaSceneReferencePicker(scene, "ảnh")}
                     <div className="ai-drama-icon-actions" onClick={(event) => event.stopPropagation()}>
-                      <button type="button" title="Tạo ảnh cảnh" onClick={() => void generateSceneImage(scene)} disabled={mediaBusy || batchMediaBusy || sceneMediaSettingsSaving || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning || Boolean(generatingSceneId)}><Icon name="spark" size={14} /></button>
+                      <button type="button" title={imageActionTitle} aria-label={imageActionTitle} aria-busy={imageActionBusy} onClick={() => void generateSceneImage(scene)} disabled={mediaBusy || batchMediaBusy || sceneMediaSettingsSaving || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning || Boolean(generatingSceneId)}><Icon name={imageActionBusy ? "clock" : "spark"} size={14} /></button>
                       <button type="button" title="Upload ảnh hoặc video" onClick={() => chooseDramaSceneUpload(scene)} disabled={mediaBusy}><Icon name="upload" size={14} /></button>
                       <button type="button" title={expanded ? "Thu gọn thông tin cảnh" : "Chỉnh ảnh tham chiếu"} onClick={() => { setSelectedSceneId(scene.id); setExpandedDramaSceneId((current) => current === scene.id ? "" : scene.id); }}><Icon name="image" size={14} /></button>
                       {scene.media?.status === "ready" && <button type="button" title="Xóa media cảnh" onClick={async () => { await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(scene.id)}/media`, { method: "DELETE" }); await loadScenes(); }}><Icon name="trash" size={14} /></button>}
@@ -3417,9 +3537,12 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                     <div className="ai-drama-video-reference-row" onClick={(event) => event.stopPropagation()}>
                       {renderDramaSceneReferencePicker(scene, "video")}
                       <div className="ai-drama-scene-media-actions">
-                        <button type="button" className="primary-button compact" title={mediaJobActive && scene.mediaJob?.kind === "video" ? mediaJobLabel : hasReadyVideo ? "Tạo lại video đã hoàn thành" : "Tạo video"} onClick={() => void generateSceneVideo(scene)} disabled={mediaBusy || batchMediaBusy || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning || Boolean(dialogueTtsBatchProgress) || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress)}><Icon name="play" size={13} />{mediaJobActive && scene.mediaJob?.kind === "video" ? scene.mediaJob.status === "queued" ? " Đang chờ…" : " Đang tạo…" : hasReadyVideo ? " Tạo lại" : " Tạo video"}</button>
-                        <button type="button" className="secondary-button compact" title={missingTranslation ? `Dịch thoại sang ${voiceLanguageLabel(dialogueTranslationLanguage)} trước` : `Tạo voice ${voiceLanguageLabel(dialogueTranslationLanguage)} cho cảnh`} onClick={() => void generateSceneTts(scene, Boolean(dialogueSegments.length && readyTranslatedLineCount === dialogueSegments.length), dialogueTranslationLanguage)} disabled={!dialogueSegments.length || missingTranslation || missingLineVoice || ttsRunning || renderRunning || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || Boolean(generatingSceneId) || Boolean(dialogueTtsBatchProgress) || dialogueSavingSceneId === scene.id || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress)}>
-                          {ttsRunning && ttsSceneId === scene.id ? "Đang tạo voice…" : readyTranslatedLineCount === dialogueSegments.length && dialogueSegments.length ? "Tạo lại voice" : "Tạo voice"}
+                        <button type="button" className="primary-button compact" title={videoActionTitle} onClick={() => void generateSceneVideo(scene)} disabled={mediaBusy || batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || videoBlockedBySceneImage || scriptBlocksIndependentTasks || ttsRunning || Boolean(dialogueTtsBatchProgress) || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress)}><Icon name="play" size={13} />{mediaJobActive && scene.mediaJob?.kind === "video" ? scene.mediaJob.status === "queued" ? " Đang chờ…" : " Đang tạo…" : hasReadyVideo ? " Tạo lại" : " Tạo video"}</button>
+                        <button type="button" className="secondary-button compact" title={dialogueSavingSceneId ? "Đang lưu timeline thoại; hãy đợi lưu xong" : missingTranslation ? `Dịch thoại sang ${voiceLanguageLabel(dialogueTranslationLanguage)} trước` : missingLineVoice ? "Gán voice cho nhân vật trước" : `Tạo voice ${voiceLanguageLabel(dialogueTranslationLanguage)} cho cảnh`} onClick={() => void generateSceneTts(scene, Boolean(dialogueSegments.length && readyTranslatedLineCount === dialogueSegments.length), dialogueTranslationLanguage)} disabled={!dialogueSegments.length || missingTranslation || missingLineVoice || ttsRunning || renderRunning || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || Boolean(generatingSceneId) || Boolean(dialogueTtsBatchProgress) || Boolean(dialogueSavingSceneId) || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress)}>
+                          {sceneVoiceButtonLabel}
+                        </button>
+                        <button type="button" className="secondary-button compact" title={missingLineVoice ? "Gán voice cho nhân vật trước" : `Tạo voice từ lời thoại gốc ${voiceLanguageLabel(project.language)} cho cảnh`} onClick={() => void generateSceneTts(scene, Boolean(dialogueSegments.length && readyLineCount === dialogueSegments.length), "")} disabled={!dialogueSegments.length || missingLineVoice || ttsRunning || renderRunning || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || Boolean(generatingSceneId) || Boolean(dialogueTtsBatchProgress) || Boolean(dialogueSavingSceneId) || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress)}>
+                          {ttsRunning && ttsSceneId === scene.id ? "Đang tạo voice gốc…" : readyLineCount === dialogueSegments.length && dialogueSegments.length ? "Tạo lại voice gốc" : "Tạo voice gốc"}
                         </button>
                         <button type="button" className="secondary-button compact" title="Upload video MP4 cho cảnh; file từ 50 MiB sẽ tự chia thành các phần 50 MiB" onClick={() => chooseDramaSceneUpload(scene, true)} disabled={mediaBusy || batchMediaBusy || videoQueueRunning || renderRunning || Boolean(generatingSceneId)}><Icon name="upload" size={13} /> {sceneUploadProgress?.sceneId === scene.id ? sceneUploadProgress.text : "Upload video"}</button>
                       </div>
@@ -3431,7 +3554,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                   <div className="ai-drama-scene-actions ai-drama-scene-expanded-actions">
                     {needsDialogueExtraction && <button className="secondary-button compact" type="button" onClick={() => void extractSceneDialogue(scene)} disabled={Boolean(dialogueExtractingSceneId) || Boolean(dialogueExtractBatchProgress) || ttsRunning || renderRunning || isRunning || Boolean(runningScriptChunkId)}>{dialogueExtractingSceneId === scene.id ? "AI đang hoàn thiện…" : "AI tách thoại & bổ sung chi tiết"}</button>}
                     <button className="secondary-button compact" type="button" onClick={() => void generateSceneImage(scene)} disabled={mediaBusy || batchMediaBusy || sceneMediaSettingsSaving || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning}>{mediaBusy && scene.mediaJob?.kind === "image" ? scene.mediaJob.status === "queued" ? "Đang chờ ảnh…" : "Đang tạo ảnh…" : generatingSceneId === scene.id && generatingSceneMediaKind === "image" ? "Đang xếp ảnh…" : "Tạo ảnh"}</button>
-                    <button className="primary-button compact" type="button" onClick={() => void generateSceneVideo(scene)} disabled={mediaBusy || batchMediaBusy || sceneMediaSettingsSaving || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning}>{mediaBusy && scene.mediaJob?.kind === "video" ? scene.mediaJob.status === "queued" ? "Đang chờ video…" : "Đang tạo video…" : generatingSceneId === scene.id && generatingSceneMediaKind === "video" ? "Đang xếp video…" : hasReadyVideo ? "Tạo lại video" : "Tạo video"}</button>
+                    <button className="primary-button compact" type="button" title={videoBlockedBySceneImage ? "Tạo ảnh cảnh trước hoặc tắt Ảnh cảnh làm tham chiếu" : undefined} onClick={() => void generateSceneVideo(scene)} disabled={mediaBusy || batchMediaBusy || sceneMediaSettingsSaving || videoQueueRunning || videoBlockedBySceneImage || scriptBlocksIndependentTasks || ttsRunning}>{mediaBusy && scene.mediaJob?.kind === "video" ? scene.mediaJob.status === "queued" ? "Đang chờ video…" : "Đang tạo video…" : generatingSceneId === scene.id && generatingSceneMediaKind === "video" ? "Đang xếp video…" : hasReadyVideo ? "Tạo lại video" : "Tạo video"}</button>
                   </div>
                   <section className="ai-drama-prompt-editor" aria-label={`Prompt tạo media cho ${sceneNumberLabel(scene)}`}>
                     <div className="ai-drama-prompt-editor-heading"><strong>Prompt chi tiết cho cảnh</strong><span>Ảnh · video · {sceneDuration} giây</span></div>
@@ -3500,7 +3623,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                       <details className="ai-drama-timeline-optional">
                         <summary>Voice & TTS tùy chọn<span>{readyLineCount}/{dialogueSegments.length} câu có audio</span></summary>
                         <div>
-                          <button type="button" className="primary-button compact" onClick={() => void generateSceneTts(scene, dialogueSegments.length > 0 && readyLineCount === dialogueSegments.length)} disabled={!dialogueSegments.length || missingLineVoice || ttsRunning || renderRunning || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || Boolean(dialogueTtsBatchProgress) || Boolean(generatingSceneId) || dialogueSavingSceneId === scene.id}>{ttsRunning && ttsSceneId === scene.id ? "Đang tạo audio…" : readyLineCount === dialogueSegments.length && dialogueSegments.length ? "Tạo lại audio" : `Tạo TTS · ${dialogueSegments.length - readyLineCount} câu`}</button>
+                          <button type="button" className="primary-button compact" title={dialogueSavingSceneId ? "Đang lưu timeline thoại; hãy đợi lưu xong" : "Tạo voice theo lời thoại gốc của cảnh"} onClick={() => void generateSceneTts(scene, dialogueSegments.length > 0 && readyLineCount === dialogueSegments.length)} disabled={!dialogueSegments.length || missingLineVoice || ttsRunning || renderRunning || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || Boolean(dialogueTtsBatchProgress) || Boolean(generatingSceneId) || Boolean(dialogueSavingSceneId)}>{ttsRunning && ttsSceneId === scene.id ? "Đang tạo audio…" : dialogueSavingSceneId === scene.id ? "Đang lưu thoại…" : readyLineCount === dialogueSegments.length && dialogueSegments.length ? "Tạo lại audio" : `Tạo TTS · ${dialogueSegments.length - readyLineCount} câu`}</button>
                           {sceneHasTts && <button type="button" className="secondary-button compact episode-delete-tts-button" onClick={() => void deleteChunkTts(scene.chunkId, project.chunks.findIndex((chunk) => chunk.id === scene.chunkId) + 1, scene.id)} disabled={Boolean(deletingTtsChunkId) || ttsRunning || renderRunning || isRunning || Boolean(runningScriptChunkId) || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || Boolean(generatingSceneId) || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress) || Boolean(dialogueTtsBatchProgress) || Boolean(dialogueSavingSceneId)}>{deletingTtsChunkId === scene.chunkId ? "Đang xoá…" : "Xoá TTS cảnh"}</button>}
                           {missingLineVoice && <small>Gán voice trong hồ sơ nhân vật hoặc dùng voice mặc định của project.</small>}
                           {dialogueSegments.filter((segment) => segment.audio?.localPath).map((segment) => <label key={`audio-${segment.id}`}><span>{segment.speakerName || characterProfiles.find((character) => character.id === segment.speakerCharacterId)?.name || "Narrator"} · {segment.text}</span><audio controls preload="none" src={`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(scene.id)}/tts?segmentId=${encodeURIComponent(segment.id)}`}>Trình duyệt không hỗ trợ phát audio.</audio></label>)}
@@ -3554,7 +3677,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
 
       <section className="hero-grid" id="source"><div className="progress-card panel-card"><div className="card-heading"><div><div className="section-kicker">TIẾN ĐỘ</div><h2>Tiến độ sản xuất</h2></div><StatusPill tone={project.completedScenes >= project.totalScenes ? "green" : "orange"}>{progress}%</StatusPill></div><div className="progress-main"><div className="progress-ring" style={{ background: `conic-gradient(#766ce8 0 ${progress}%, #efeff8 ${progress}% 100%)` }}><div className="ring-inner"><strong>{progress}<span>%</span></strong><small>hoàn tất</small></div></div><div className="progress-copy"><div className="progress-title">{project.completedScenes} <span>/ {project.totalScenes} cảnh</span></div><div className="progress-bar large"><span style={{ width: `${progress}%` }} /></div><div className="progress-foot"><span><span className="green-check"><Icon name="check" size={13} /></span>{project.completedChunks} / {project.totalChunks} gói đã xong</span><span>AI cần sửa: {project.aiReviewCount || sceneStats.ai_needs_changes} · Người dùng cần xử lý: {project.reviewCount}</span></div></div></div></div><div className="source-card panel-card"><div className="card-heading"><div><div className="section-kicker">NGUỒN</div><h2>{project.scriptMode === "manual" ? "Kịch bản đầu vào" : "Nguồn đầu vào"}</h2></div><span className="source-badge">{project.language.toUpperCase()}</span></div><label className="input-label">Video URL</label><div className="url-input-wrap"><Icon name="link" size={16} /><input value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} aria-label="Video URL" /><button onClick={saveSource}><Icon name="save" size={15} /></button></div><label className="input-label compact-label">{project.scriptMode === "manual" ? "Kịch bản thủ công" : "Transcript / brief"}</label><textarea className="source-textarea" value={sourceText} onChange={(event) => setSourceText(event.target.value)} placeholder={project.scriptMode === "manual" ? "Nhập kịch bản…" : "Nhập transcript hoặc brief…"} /><div className="source-foot"><span><span className="source-status-dot" />{project.sourceStatus === "ready" ? project.scriptMode === "manual" ? "Kịch bản đã lưu" : "Transcript đã sẵn sàng" : project.continuityContext ? `Continuity đã khóa đến ${project.continuityContext.chunkId}` : "Continuity sẽ được tạo sau chunk đầu tiên"}</span><button onClick={saveSource}>{sourceUrl.trim() && !sourceText.trim() && project.scriptMode !== "manual" ? "Lưu & lấy transcript" : project.scriptMode === "manual" ? "Lưu kịch bản" : "Lưu nguồn"} <Icon name="arrow" size={13} /></button></div><div className="provider-note"><span className="provider-mark">O</span><span>{project.scriptMode === "manual" ? "Script Studio · phân tích tùy chọn" : "Script LLM ·"} <strong>{project.scriptMode === "manual" ? project.scriptModel : "OpenAI Responses API"}</strong></span></div></div></section>
 
-      {project.presetId !== "ai-drama" && runMessage && <div className={`run-message ${runMessage.tone}`}><span><Icon name={runMessage.tone === "success" ? "check" : "alert"} size={13} /></span>{runMessage.text}</div>}
+      {project.presetId !== "ai-drama" && runMessage && <div className={`run-message ${runMessage.tone}`} role={runMessage.tone === "error" ? "alert" : "status"}><span><Icon name={runMessage.tone === "success" ? "check" : runMessage.tone === "info" ? "clock" : "alert"} size={13} /></span>{runMessage.text}</div>}
 
       <details className="config-overview panel-card">
         <summary>
@@ -3812,7 +3935,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
               <button className="text-button scene-reset-button" type="button" onClick={() => { setSceneSearch(""); setSceneChunkFilter("all"); setSceneReviewFilter("all"); setSceneAiReviewFilter("all"); setSceneMediaFilter("all"); }} disabled={!sceneSearch && sceneChunkFilter === "all" && sceneReviewFilter === "all" && sceneAiReviewFilter === "all" && sceneMediaFilter === "all"}>Xóa lọc</button>
             </div>
             <div className="batch-media-action-panel">
-              <div><strong>Tạo ảnh / video hàng loạt</strong><small>{filteredScenes.length} cảnh · {filteredImageTargets.length} ảnh · {filteredVideoTargets.length} video · {activeSceneMediaJobCount ? `${activeSceneMediaJobCount} job đang chạy nền · ` : ""}khung hình {project.aspectRatio} · {filteredScenes.filter((scene) => sceneCharacterIds(scene).length > 0).length} có nhân vật · {filteredScenes.filter((scene) => Boolean(sceneLocationId(scene))).length} có bối cảnh</small></div>
+              <div><strong>Tạo ảnh / video hàng loạt</strong><small>{filteredScenes.length} cảnh · {filteredImageTargets.length} ảnh · {filteredVideoTargets.length} video · {activeSceneMediaJobCount ? `${activeSceneMediaJobCount} job đang chạy nền · ` : ""}khung hình {project.aspectRatio} · {filteredScenes.filter((scene) => sceneCharacterIds(scene).length > 0).length} có nhân vật · {filteredScenes.filter((scene) => Boolean(sceneLocationId(scene))).length} có bối cảnh</small>{videoTargetsMissingSceneImage.length > 0 && <small className="scene-media-job-status error" role="status">Bỏ qua {videoTargetsMissingSceneImage.length} cảnh chưa có ảnh cảnh; hãy tạo ảnh trước hoặc tắt “Ảnh cảnh làm tham chiếu”.</small>}</div>
               <div className="batch-media-actions">
                 <button className="secondary-button compact" type="button" title={`Tự gán hồ sơ nhân vật và bối cảnh theo nội dung ${filteredScenes.length} cảnh. Hồ sơ bối cảnh được thêm vào prompt ảnh và video theo cài đặt tham chiếu.`} onClick={() => void autoAssignSceneReferences()} disabled={(!characterProfiles.length && !locationProfiles.length) || autoAssignCharactersBusy || batchMediaBusy || videoQueueRunning || sceneCharacterSaving}>
                   <Icon name="users" size={13} />{autoAssignCharactersBusy ? "Đang gán…" : "Tự gán hồ sơ"}
@@ -3945,7 +4068,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                 <button className="secondary-button compact" type="button" onClick={() => void generateSceneImage(selectedScene)} disabled={Boolean(generatingSceneId) || selectedScene.mediaJob?.status === "queued" || selectedScene.mediaJob?.status === "running" || sceneMediaSettingsSaving || batchMediaBusy || videoQueueRunning || ttsRunning || scriptBlocksIndependentTasks}>
                   <Icon name="spark" size={14} />{selectedScene.mediaJob?.kind === "image" && selectedScene.mediaJob.status === "queued" ? "Ảnh đang chờ…" : selectedScene.mediaJob?.kind === "image" && selectedScene.mediaJob.status === "running" ? "Đang tạo ảnh cảnh…" : generatingSceneId === selectedScene.id && generatingSceneMediaKind === "image" ? "Đang xếp ảnh cảnh…" : selectedReferenceImage ? "Tạo lại ảnh cảnh" : "Tạo ảnh cảnh"}
                 </button>
-                <button className="primary-button" type="button" onClick={() => void generateSceneVideo(selectedScene)} disabled={Boolean(generatingSceneId) || selectedScene.mediaJob?.status === "queued" || selectedScene.mediaJob?.status === "running" || sceneMediaSettingsSaving || batchMediaBusy || videoQueueRunning || ttsRunning || scriptBlocksIndependentTasks}>
+                <button className="primary-button" type="button" title={sceneMissingVideoSceneImageReference(selectedScene, videoGenerationSettingsForScene(selectedScene)) ? "Tạo ảnh cảnh trước hoặc tắt Ảnh cảnh làm tham chiếu" : undefined} onClick={() => void generateSceneVideo(selectedScene)} disabled={Boolean(generatingSceneId) || selectedScene.mediaJob?.status === "queued" || selectedScene.mediaJob?.status === "running" || sceneMediaSettingsSaving || batchMediaBusy || videoQueueRunning || sceneMissingVideoSceneImageReference(selectedScene, videoGenerationSettingsForScene(selectedScene)) || ttsRunning || scriptBlocksIndependentTasks}>
                   <Icon name="play" size={15} />{selectedScene.mediaJob?.kind === "video" && selectedScene.mediaJob.status === "queued" ? "Video đang chờ…" : selectedScene.mediaJob?.kind === "video" && selectedScene.mediaJob.status === "running" ? "Đang tạo video…" : generatingSceneId === selectedScene.id && generatingSceneMediaKind === "video" ? "Đang xếp video…" : selectedMedia?.kind === "video" ? "Tạo lại video AI" : "Tạo video AI"}
                 </button>
                 {selectedMedia?.sourceUrl && <a className="secondary-button compact" href={selectedMedia.sourceUrl} target="_blank" rel="noreferrer">Mở nguồn</a>}
@@ -4033,7 +4156,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                     {!visibleSceneVoices.some((voice) => voice.id === selectedSceneVoiceId) && <option value="">Chọn voice…</option>}
                     {visibleSceneVoices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name} · {voiceLanguageLabel(voice.language)}{voice.gender ? ` · ${voice.gender}` : ""}</option>)}
                   </select><small>{voiceCatalogLoading ? "Đang tải danh sách voice từ MaiVideo…" : voiceCatalog?.voices.length ? "Voice được lưu riêng cho cảnh; lời đọc dùng ngôn ngữ video của project, bất kể ngôn ngữ hồ sơ voice." : "Không tải được danh sách voice OmniVoice."}</small></label>}
-                  <div className="scene-tts-actions"><button className="primary-button compact" type="button" onClick={() => void generateSelectedSceneTts(project.presetId === "ai-drama" ? selectedSceneDialogueSegments.length > 0 && selectedSceneDialogueReadyCount === selectedSceneDialogueSegments.length : Boolean(selectedSceneAudio.localPath))} disabled={(project.presetId === "ai-drama" ? !selectedSceneDialogueSegments.length || selectedSceneDialogueMissingVoice : !selectedSceneVoice || !sceneText(selectedScene, "dialogue_or_voiceover", "voiceText", "voiceover")) || ttsRunning || renderRunning || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || Boolean(dialogueTtsBatchProgress) || Boolean(generatingSceneId) || sceneTtsSaving}><Icon name={ttsRunning && ttsChunkId === selectedScene.chunkId ? "clock" : "spark"} size={14} />{ttsRunning && ttsChunkId === selectedScene.chunkId ? "Đang tạo voice…" : project.presetId === "ai-drama" ? selectedSceneDialogueReadyCount === selectedSceneDialogueSegments.length && selectedSceneDialogueSegments.length ? "Tạo lại TTS các câu" : `Tạo TTS · ${selectedSceneDialogueSegments.length - selectedSceneDialogueReadyCount} câu` : selectedSceneAudio.localPath ? "Tạo lại TTS cảnh này" : "Tạo TTS cảnh này"}</button>{Boolean(selectedSceneAudio.voiceId) && project.presetId !== "ai-drama" && <span>Audio hiện có: {String(selectedSceneAudio.voiceName || selectedSceneAudio.voiceId)}</span>}</div>
+                  <div className="scene-tts-actions"><button className="primary-button compact" type="button" onClick={() => void generateSelectedSceneTts(project.presetId === "ai-drama" ? selectedSceneDialogueSegments.length > 0 && selectedSceneDialogueReadyCount === selectedSceneDialogueSegments.length : Boolean(selectedSceneAudio.localPath))} disabled={(project.presetId === "ai-drama" ? !selectedSceneDialogueSegments.length || selectedSceneDialogueMissingVoice : !selectedSceneVoice || !sceneText(selectedScene, "dialogue_or_voiceover", "voiceText", "voiceover")) || ttsRunning || renderRunning || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || Boolean(dialogueTtsBatchProgress) || Boolean(generatingSceneId) || Boolean(dialogueSavingSceneId) || sceneTtsSaving}><Icon name={ttsRunning && ttsSceneId === selectedScene.id || dialogueSavingSceneId === selectedScene.id ? "clock" : "spark"} size={14} />{ttsRunning && ttsSceneId === selectedScene.id ? "Đang tạo voice…" : dialogueSavingSceneId === selectedScene.id ? "Đang lưu timeline…" : project.presetId === "ai-drama" ? selectedSceneDialogueReadyCount === selectedSceneDialogueSegments.length && selectedSceneDialogueSegments.length ? "Tạo lại TTS các câu" : `Tạo TTS · ${selectedSceneDialogueSegments.length - selectedSceneDialogueReadyCount} câu` : selectedSceneAudio.localPath ? "Tạo lại TTS cảnh này" : "Tạo TTS cảnh này"}</button>{Boolean(selectedSceneAudio.voiceId) && project.presetId !== "ai-drama" && <span>Audio hiện có: {String(selectedSceneAudio.voiceName || selectedSceneAudio.voiceId)}</span>}</div>
                   {project.presetId === "ai-drama" && <div className="scene-tts-segment-players">{selectedSceneDialogueSegments.filter((segment) => segment.audio?.localPath).map((segment) => <label key={segment.id}><span>{characterProfiles.find((character) => character.id === segment.speakerCharacterId)?.name || "Narrator"} · {segment.text}</span><audio controls preload="none" src={`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(selectedScene.id)}/tts?segmentId=${encodeURIComponent(segment.id)}`}>Trình duyệt không hỗ trợ phát audio.</audio></label>)}</div>}
                   {selectedSceneAudioUrl && <audio className="scene-tts-player" controls preload="none" src={selectedSceneAudioUrl}>Trình duyệt không hỗ trợ phát audio.</audio>}
                 </section>
@@ -4222,7 +4345,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
           </div>
           <div className="episode-script-import-note"><Icon name="help" size={15} /><span>Mẫu tạo đủ scene ID theo phạm vi tập, mỗi cảnh mặc định 15 giây. Hãy sửa nội dung trong dấu [ ], chỉnh timecode khi đổi cảnh sang 5 hoặc 10 giây, và giữ ID liên tục. Với AI Drama, cảnh dialogue_led bắt buộc tối thiểu 10 từ/5 giây, 20 từ/10 giây, 30 từ/15 giây; mục tiêu tương ứng 10–15, 20–30, 30–45 từ (không quá 3 từ/giây). Import sẽ báo lỗi nếu thiếu hoặc quá mức. Cảnh visual_led/im lặng có chủ đích được miễn. Hook mở tập phải vào thẳng điểm gây tò mò trong 0–5 giây; end hook phải tạo hệ quả nối sang tập kế.</span></div>
           <label className="episode-script-json-field"><span>JSON scene-script.v1 · một tập</span><textarea spellCheck={false} aria-label="JSON kịch bản của một tập" value={episodeScriptDraft} onChange={(event) => updateEpisodeScriptDraft(event.target.value)} disabled={importingScripts} /></label>
-          {runMessage && <div className={"run-message " + runMessage.tone} role={runMessage.tone === "error" ? "alert" : "status"}><span><Icon name={runMessage.tone === "success" ? "check" : "alert"} size={13} /></span>{runMessage.text}</div>}
+          {runMessage && <div className={"run-message " + runMessage.tone} role={runMessage.tone === "error" ? "alert" : "status"}><span><Icon name={runMessage.tone === "success" ? "check" : runMessage.tone === "info" ? "clock" : "alert"} size={13} /></span>{runMessage.text}</div>}
           <div className="character-setup-actions"><button className="secondary-button" type="button" onClick={() => setEpisodeScriptEditorOpen(false)} disabled={importingScripts}>Để sau</button><button className="primary-button" type="button" onClick={() => void importEpisodeScriptDraft()} disabled={importingScripts || !episodeScriptDraft.trim()}><Icon name={importingScripts ? "clock" : "file"} size={15} />{importingScripts ? "Đang nhập tập…" : "Nhập kịch bản tập này"}</button><button className="secondary-button" type="button" onClick={() => void copyEpisodeScriptDraft()} disabled={importingScripts || !episodeScriptDraft.trim()} title="Sao chép JSON hiện có trong trình soạn thảo"><Icon name="copy" size={15} />Copy JSON</button></div>
         </section>
       </div>}

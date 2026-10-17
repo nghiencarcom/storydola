@@ -5,15 +5,16 @@ import video_worker_ui as worker
 
 
 class ModelSelectorTests(unittest.IsolatedAsyncioTestCase):
-    async def test_chat_settings_default_is_set_to_pro_and_modal_is_closed(self):
+    async def _assert_default_chat_mode_is_set(self, mode):
         events = []
+        mode_xpath = f'xpath=//span[text()="{mode}"]'
 
         class Page:
             def __init__(self):
                 self.modal_open = False
-                self.pro_already_selected = False
+                self.selected_mode = ""
                 self.default_mode_clicked = False
-                self.pro_clicked = False
+                self.mode_clicked = False
                 self.wait_for_timeout = AsyncMock()
 
             def locator(self, selector):
@@ -27,13 +28,13 @@ class ModelSelectorTests(unittest.IsolatedAsyncioTestCase):
             async def is_visible(self):
                 if self.selector == 'xpath=//div[@data-testid="setting-modal-close"]':
                     return self.page.modal_open
-                if self.selector == 'xpath=//span[text()="Pro"]':
-                    return self.page.pro_already_selected
+                if self.selector == mode_xpath:
+                    return self.page.selected_mode == mode
                 return True
 
             async def count(self):
-                if self.selector == 'xpath=//span[text()="Pro"]':
-                    return int(self.page.pro_already_selected)
+                if self.selector == mode_xpath:
+                    return int(self.page.selected_mode == mode)
                 return 1
 
             def nth(self, _index):
@@ -44,46 +45,56 @@ class ModelSelectorTests(unittest.IsolatedAsyncioTestCase):
                 if self.selector == 'xpath=//div[@data-testid="setting-modal-close"]':
                     if (state == "visible") != self.page.modal_open:
                         raise AssertionError("unexpected settings modal visibility")
+                elif self.selector == mode_xpath and not self.page.default_mode_clicked:
+                    raise AssertionError("mode option waited for before opening default mode")
 
             async def click(self, *, timeout):
                 events.append(("click", self.selector))
                 if self.selector == 'xpath=//button[@aria-label="Settings"]':
                     self.page.modal_open = True
-                elif self.selector == 'xpath=//div[text()="Default Mode for New Chats"]':
+                elif self.selector == 'xpath=//div[text()="Set Default Mode"]':
                     self.page.default_mode_clicked = True
-                elif self.selector == 'xpath=//div[1]/span[text()="Pro"]':
-                    self.page.pro_clicked = True
+                elif self.selector == mode_xpath:
+                    self.page.mode_clicked = True
+                    self.page.selected_mode = mode
                     self.assert_default_mode_opened()
                 elif self.selector == 'xpath=//div[@data-testid="setting-modal-close"]':
                     self.page.modal_open = False
 
             def assert_default_mode_opened(self):
                 if not self.page.default_mode_clicked:
-                    raise AssertionError("Pro was selected before the default mode setting")
+                    raise AssertionError("mode was selected before the default mode setting")
 
         page = Page()
-        await worker._set_default_chat_mode_pro(page, "profile-a")
+        await worker._set_default_chat_mode(page, mode, "profile-a")
 
         self.assertTrue(page.default_mode_clicked)
-        self.assertTrue(page.pro_clicked)
+        self.assertTrue(page.mode_clicked)
         self.assertFalse(page.modal_open)
         self.assertEqual(
             [event[1] for event in events if event[0] == "click"],
             [
                 'xpath=//button[@aria-label="Settings"]',
-                'xpath=//div[text()="Default Mode for New Chats"]',
-                'xpath=//div[1]/span[text()="Pro"]',
+                'xpath=//div[text()="Set Default Mode"]',
+                mode_xpath,
                 'xpath=//div[@data-testid="setting-modal-close"]',
             ],
         )
 
-    async def test_already_pro_skips_default_mode_change_and_closes_settings(self):
+    async def test_chat_settings_default_is_set_to_pro_and_modal_is_closed(self):
+        await self._assert_default_chat_mode_is_set("Pro")
+
+    async def test_chat_settings_default_switches_to_fast_and_modal_is_closed(self):
+        await self._assert_default_chat_mode_is_set("Fast")
+
+    async def _assert_already_selected_mode_only_closes_settings(self, mode):
         events = []
+        mode_xpath = f'xpath=//span[text()="{mode}"]'
 
         class Page:
             def __init__(self):
                 self.modal_open = False
-                self.pro_already_selected = True
+                self.selected_mode = mode
                 self.wait_for_timeout = AsyncMock()
 
             def locator(self, selector):
@@ -97,12 +108,12 @@ class ModelSelectorTests(unittest.IsolatedAsyncioTestCase):
             async def is_visible(self):
                 if self.selector == 'xpath=//div[@data-testid="setting-modal-close"]':
                     return self.page.modal_open
-                if self.selector == 'xpath=//span[text()="Pro"]':
-                    return self.page.pro_already_selected
+                if self.selector == mode_xpath:
+                    return self.page.selected_mode == mode
                 return True
 
             async def count(self):
-                return int(self.page.pro_already_selected) if self.selector == 'xpath=//span[text()="Pro"]' else 1
+                return int(self.page.selected_mode == mode) if self.selector == mode_xpath else 1
 
             def nth(self, _index):
                 return self
@@ -120,7 +131,7 @@ class ModelSelectorTests(unittest.IsolatedAsyncioTestCase):
                     self.page.modal_open = False
 
         page = Page()
-        await worker._set_default_chat_mode_pro(page, "profile-a")
+        await worker._set_default_chat_mode(page, mode, "profile-a")
 
         self.assertEqual(
             events,
@@ -131,13 +142,21 @@ class ModelSelectorTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(page.modal_open)
 
+    async def test_already_pro_skips_default_mode_change_and_closes_settings(self):
+        await self._assert_already_selected_mode_only_closes_settings("Pro")
+
+    async def test_already_fast_skips_default_mode_change_and_closes_settings(self):
+        await self._assert_already_selected_mode_only_closes_settings("Fast")
+
     async def test_chat_route_applies_default_mode_even_when_already_open(self):
         page = MagicMock(url="https://www.dola.com/chat")
         context = MagicMock()
         configure = AsyncMock()
-        with patch.object(worker, "_set_default_chat_mode_pro", configure):
-            await worker._ensure_dola_chat_route(page, context, "profile-a")
-        configure.assert_awaited_once_with(page, "profile-a")
+        with patch.object(worker, "_set_default_chat_mode", configure):
+            await worker._ensure_dola_chat_route(
+                page, context, "profile-a", default_mode="Fast"
+            )
+        configure.assert_awaited_once_with(page, "Fast", "profile-a")
 
     async def test_closes_account_settings_modal_before_mode_selection(self):
         class Page:

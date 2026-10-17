@@ -2,7 +2,7 @@ import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { resolveMediaGenerationSettings } from "../../../../lib/media-generation-settings";
 import { createSceneMediaJob, startSceneMediaQueue } from "../../../../lib/scene-media-queue";
-import { chunkForScene, readProjectScenes } from "../../../../lib/scene-store";
+import { chunkForScene, readProjectScenes, sceneReferenceImage } from "../../../../lib/scene-store";
 import { makeActivity, now, readDataForUser, updateDataForUser } from "../../../../lib/server-store";
 import type { MediaGenerationSettings, SceneMediaJob, StoryProject } from "../../../../lib/project-types";
 
@@ -76,6 +76,21 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   if (scenesWithoutOutput.length) return NextResponse.json({ message: `Chunk chưa có output ở ${scenesWithoutOutput.join(", ")}.` }, { status: 409 });
 
   const explicitSettings = settingsRecord(body.mediaGeneration);
+  if (kind === "video") {
+    const missingSceneImageIds = requestedScenes
+      .filter((scene): scene is NonNullable<typeof scene> => Boolean(scene))
+      .filter((scene) => {
+        const savedSceneSettings = scene.mediaGeneration || scene.media_generation;
+        const settings = resolveMediaGenerationSettings({ ...project.mediaGeneration, ...settingsRecord(savedSceneSettings), ...explicitSettings });
+        return settings.videoUseSceneImageReference && sceneReferenceImage(scene)?.status !== "ready";
+      })
+      .map((scene) => scene.id);
+    if (missingSceneImageIds.length) {
+      return NextResponse.json({
+        message: `Chưa có ảnh cảnh sẵn sàng tại ${missingSceneImageIds.join(", ")}. Hãy tạo ảnh cảnh trước hoặc tắt “Ảnh cảnh làm tham chiếu” nếu chỉ muốn gửi ảnh nhân vật/bối cảnh.`,
+      }, { status: 409 });
+    }
+  }
   let replacedLegacyVideoJobs = 0;
   let queued: SceneMediaJob[];
   try {

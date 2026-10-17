@@ -1155,14 +1155,17 @@ async def _goto_dola_chat(page, url: str = "https://www.dola.com/chat"):
         raise
 
 
-async def _set_default_chat_mode_pro(page, account: str = "profile") -> None:
-    """Set Dola's default model for new chats to Pro from its Settings modal."""
+async def _set_default_chat_mode(
+    page, mode: str = "Pro", account: str = "profile"
+) -> None:
+    """Set Dola's default model for new chats from its Settings modal."""
+    mode = " ".join(str(mode or "Pro").split()).title()
+    if mode not in {"Fast", "Pro"}:
+        raise ValueError("Dola default chat mode must be Fast or Pro")
     settings_button = page.locator('xpath=//button[@aria-label="Settings"]')
-    default_mode = page.locator(
-        'xpath=//div[text()="Default Mode for New Chats"]'
-    )
-    pro_indicator = page.locator('xpath=//span[text()="Pro"]')
-    pro_option = page.locator('xpath=//div[1]/span[text()="Pro"]')
+    default_mode = page.locator('xpath=//div[text()="Set Default Mode"]')
+    mode_indicator = page.locator(f'xpath=//span[text()="{mode}"]')
+    mode_option = page.locator(f'xpath=//span[text()="{mode}"]')
     close_button = page.locator(
         'xpath=//div[@data-testid="setting-modal-close"]'
     )
@@ -1198,26 +1201,33 @@ async def _set_default_chat_mode_pro(page, account: str = "profile") -> None:
         await close_button.wait_for(
             state="visible", timeout=SETTINGS_MODAL_BUTTON_WAIT_MS
         )
-        already_pro = False
-        for index in range(await pro_indicator.count()):
-            if await pro_indicator.nth(index).is_visible():
-                already_pro = True
+        already_selected = False
+        for index in range(await mode_indicator.count()):
+            if await mode_indicator.nth(index).is_visible():
+                already_selected = True
                 break
-        if not already_pro:
+        if not already_selected:
             await default_mode.wait_for(
                 state="visible", timeout=SETTINGS_MODAL_BUTTON_WAIT_MS
             )
             await default_mode.click(timeout=SETTINGS_MODAL_BUTTON_WAIT_MS)
-            await pro_option.wait_for(
+            await mode_option.wait_for(
                 state="visible", timeout=SETTINGS_MODAL_BUTTON_WAIT_MS
             )
-            await pro_option.click(timeout=SETTINGS_MODAL_BUTTON_WAIT_MS)
+            await mode_option.click(timeout=SETTINGS_MODAL_BUTTON_WAIT_MS)
             await page.wait_for_timeout(250)
+            await mode_indicator.wait_for(
+                state="visible", timeout=SETTINGS_MODAL_BUTTON_WAIT_MS
+            )
         await close_button.click(timeout=SETTINGS_MODAL_BUTTON_WAIT_MS)
         await close_button.wait_for(
             state="hidden", timeout=SETTINGS_MODAL_CLOSE_WAIT_MS
         )
-        action = "already Pro" if already_pro else "default mode for new chats set to Pro"
+        action = (
+            f"default mode already {mode}"
+            if already_selected
+            else f"default mode for new chats set to {mode}"
+        )
         print(f"[{account}] Dola {action}", flush=True)
     except Exception as error:
         if modal_open:
@@ -1232,7 +1242,7 @@ async def _set_default_chat_mode_pro(page, account: str = "profile") -> None:
             except Exception:
                 pass
         raise PreSubmitSetupError(
-            f"{account} không đặt được Default Mode for New Chats thành Pro "
+            f"{account} không đặt được Default Mode for New Chats thành {mode} "
             f"trong Settings: {str(error).splitlines()[0]}"
         ) from error
 
@@ -1435,15 +1445,17 @@ async def _dismiss_account_settings_modal(page, account: str = "profile") -> boo
     )
 
 
-async def _ensure_dola_chat_route(page, context, account: str) -> None:
-    """Recover one Dola redirect and set the default model before composing.
+async def _ensure_dola_chat_route(
+    page, context, account: str, *, default_mode: str = "Pro"
+) -> None:
+    """Recover one Dola redirect and set the requested default chat mode.
 
-    Persistent profiles can reopen on a settings/account page. Since the
-    Fast/Pro controls are discovered from the page, never search or click
-    controls there: reopen /chat once and stop if Dola sends us elsewhere.
+    Persistent profiles can reopen on a settings/account page. Return to /chat,
+    set the account's default mode using the current Settings control, then let
+    the caller explicitly select the per-task mode in the composer.
     """
     if _is_dola_chat_url(page.url):
-        await _set_default_chat_mode_pro(page, account)
+        await _set_default_chat_mode(page, default_mode, account)
         return
 
     previous_path = urlparse(str(page.url or "")).path or "/"
@@ -1455,7 +1467,7 @@ async def _ensure_dola_chat_route(page, context, account: str) -> None:
     await _goto_dola_chat(page)
     await page.wait_for_timeout(350)
     if _is_dola_chat_url(page.url):
-        await _set_default_chat_mode_pro(page, account)
+        await _set_default_chat_mode(page, default_mode, account)
         return
 
     cookies = await context.cookies("https://www.dola.com")
@@ -1659,7 +1671,9 @@ async def _reopen_dola_chat_and_retry_mode(
     except Exception:
         pass
     await _goto_dola_chat(page)
-    await _ensure_dola_chat_route(page, page.context, account)
+    await _ensure_dola_chat_route(
+        page, page.context, account, default_mode=mode
+    )
     await _wait_for_prompt_editor(page, timeout=60000)
     await _select_chat_mode(page, mode, account, allow_chat_retry=False)
     return True
@@ -1675,7 +1689,9 @@ async def _select_chat_mode(
     other_mode = "Pro" if mode == "Fast" else "Fast"
     modal_dismissed = await _dismiss_account_settings_modal(page, account)
     if not _is_dola_chat_url(page.url):
-        await _ensure_dola_chat_route(page, page.context, account)
+        await _ensure_dola_chat_route(
+            page, page.context, account, default_mode=mode
+        )
         modal_dismissed = (
             await _dismiss_account_settings_modal(page, account)
             or modal_dismissed
@@ -6364,7 +6380,9 @@ async def generate_video(account: str, prompt: str, ratio: str = None,
                     f"{account} Dola login wall before composer; "
                     "stored cookie does not prove authentication, Gmail relogin required"
                 )
-            await _ensure_dola_chat_route(page, context, account)
+            await _ensure_dola_chat_route(
+                page, context, account, default_mode=chat_mode
+            )
             # The action button is the real readiness signal. The previous
             # fixed 5-second sleep made every queued task pay the same cost
             # even when Dola had already rendered the chat UI.

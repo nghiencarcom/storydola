@@ -312,6 +312,7 @@ h2 { margin-top: 7px; color: #34374a; font-size: 17px; letter-spacing: -.025em; 
 .run-message { display: flex; align-items: center; gap: 9px; padding: 10px 13px; margin-bottom: 17px; border: 1px solid; border-radius: 10px; font-size: 10px; }
 .run-message.success { color: #318f6b; border-color: #d5f0e4; background: #f1fbf6; }
 .run-message.error { color: #bd6874; border-color: #f6d8dc; background: #fff7f7; }
+.run-message.info { color: #5d68a6; border-color: #dce2fb; background: #f5f7ff; }
 .run-message span { display: grid; place-items: center; width: 19px; height: 19px; border-radius: 50%; font-size: 11px; font-weight: 800; background: rgba(255,255,255,.65); }
 .source-textarea { width: 100%; min-height: 76px; padding: 10px; resize: vertical; border: 1px solid #e9eaf2; border-radius: 8px; outline: none; color: #6c7183; background: #fafbfc; font-size: 10px; line-height: 1.5; }
 .source-textarea:focus, .form-field input:focus, .form-field select:focus, .form-field textarea:focus, .project-search input:focus { border-color: #c5c1f5; box-shadow: 0 0 0 3px #f3f2ff; }
@@ -2052,7 +2053,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .ai-drama-video-preview-meta { display: block; margin-top: 4px; color: #77849b; font-size: 9px; line-height: 1.4; }
 .ai-drama-video-reference-row { display: grid; min-width: 0; gap: 8px; padding-top: 8px; margin-top: 2px; border-top: 1px solid #edf1f7; }
 .ai-drama-video-reference-row > .ai-drama-row-reference-picker { width: 100%; min-width: 0; }
-.ai-drama-scene-media-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; min-width: 0; }
+.ai-drama-scene-media-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; min-width: 0; }
 .ai-drama-scene-media-actions button { justify-content: center; min-width: 0; min-height: 34px; padding: 5px 6px; font-size: 9px; line-height: 1.2; text-align: center; white-space: normal; }
 .ai-drama-translation-tools { display: flex; min-width: 0; align-items: center; flex-wrap: nowrap; gap: 7px; margin: 0; padding: 0; border: 0; background: transparent; }
 .ai-drama-translation-tools label { display: flex; flex: 0 1 auto; align-items: center; min-width: 0; gap: 6px; color: #65728a; font-size: 9px; font-weight: 700; white-space: nowrap; }
