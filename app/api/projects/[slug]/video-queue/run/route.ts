@@ -6,6 +6,8 @@ import { chunkForScene, previousSceneContinuityReference, readProjectScenes } fr
 import { getProjectOrThrow, makeActivity, markRenderStale, now, readChunkOutput, readData, saveChunkOutput, updateData } from "../../../../../lib/server-store";
 import { seedancePublicBaseUrlErrorMessage } from "../../../../../lib/seedance-reference-links";
 import { canResumeVideoQueueJob, claimVideoQueueJob, isVideoQueueJobActive, releaseVideoQueueJob } from "../../../../../lib/video-queue-runtime";
+import { DEFAULT_RUN_CONCURRENCY } from "../../../../../lib/run-concurrency-config";
+import { getRunConcurrencyLimit } from "../../../../../lib/user-settings";
 
 export const runtime = "nodejs";
 
@@ -14,7 +16,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function emptyQueue(): VideoQueueState {
-  return { status: "idle", concurrency: 20, jobs: [], updatedAt: now() };
+  return { status: "idle", concurrency: DEFAULT_RUN_CONCURRENCY, jobs: [], updatedAt: now() };
 }
 
 function queueSummary(queue: VideoQueueState) {
@@ -55,10 +57,9 @@ function recoverStaleJobs(queue: VideoQueueState) {
   }
 }
 
-export async function POST(request: Request, context: { params: Promise<{ slug: string }> }) {
+export async function POST(_request: Request, context: { params: Promise<{ slug: string }> }) {
   const { slug } = await context.params;
-  const body = await request.json().catch(() => ({})) as { limit?: number };
-  const requestedConcurrency = Math.max(1, Math.min(20, Number(body.limit) || 20));
+  const requestedConcurrency = await getRunConcurrencyLimit();
   const started = await updateData((data) => {
     const project = getProjectOrThrow(data, slug);
     const queue = project.videoQueue || emptyQueue();

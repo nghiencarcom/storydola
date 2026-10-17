@@ -50,7 +50,7 @@ export async function GET() {
       startSceneMediaQueue(userId, project.slug);
     }
   }
-  const config = getProviderConfig();
+  const config = await getProviderConfig();
   const payload: WorkspacePayload = {
     projects: data.projects,
     activities: data.activities.slice(0, 80),

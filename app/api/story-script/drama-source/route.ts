@@ -313,7 +313,7 @@ export async function POST(request: Request) {
   const brief = typeof body.brief === "string" ? body.brief.trim() : "";
   if (!projectTitle) return NextResponse.json({ ok: false, message: "Tên project là bắt buộc." }, { status: 400 });
   if (brief.length < 20 || brief.length > 10000) return NextResponse.json({ ok: false, message: "Ý tưởng cần từ 20 đến 10.000 ký tự." }, { status: 400 });
-  const config = getProviderConfig();
+  const config = await getProviderConfig();
   if (!config.keyConfigured) return NextResponse.json({ ok: false, code: "SCRIPT_LLM_NOT_CONFIGURED", message: "Chưa cấu hình OPENAI_API_KEY ở server." }, { status: 503 });
 
   const requestedDuration = Number(body.durationMinutes);

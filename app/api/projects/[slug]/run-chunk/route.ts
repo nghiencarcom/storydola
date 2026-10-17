@@ -13,6 +13,7 @@ import { normalizeAiDramaSceneTimings } from "../../../../lib/ai-drama-scene-tim
 import { sanitizeDramaScenePrompts } from "../../../../lib/visual-prompt-safety";
 import { claimProjectChunkRun, releaseProjectChunkRun } from "../../../../lib/chunk-generation-lock";
 import { readProjectScenes } from "../../../../lib/scene-store";
+import { getRunConcurrencyLimit } from "../../../../lib/user-settings";
 import { getPreviousContinuityContext, getProjectOrThrow, makeActivity, markRenderStale, now, readData, saveChunkOutput, updateData, updateProjectRecord } from "../../../../lib/server-store";
 
 export const runtime = "nodejs";
@@ -257,6 +258,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
         projectVoiceLanguage: project.voiceLanguage,
         previousScenes,
         sceneStart: chunk.sceneStart,
+        concurrency: await getRunConcurrencyLimit(),
       });
     // Manual mode bypasses the script-generation LLM, but keeps the AI
     // pre-check so every scene is still evaluated before human review.

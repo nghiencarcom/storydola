@@ -6,6 +6,7 @@ import { isProjectRenderActive, claimProjectRender, releaseProjectRender } from 
 import { readProjectScenes } from "../../../../lib/scene-store";
 import { continuityContextFromOutput } from "../../../../lib/story-context";
 import { claimProjectTts, isProjectTtsActive, releaseProjectTts } from "../../../../lib/tts-lock";
+import { hasExplicitDialogueSegments, readDialogueSegments } from "../../../../lib/dialogue-segments";
 import { makeActivity, markRenderStale, now, readChunkOutput, readData, saveChunkOutput, updateData } from "../../../../lib/server-store";
 import type { ProjectChunk, StoryProject, ProjectVideoPublishingPackage, VideoPublishingSet } from "../../../../lib/project-types";
 import { normalizeProjectStyleSettings } from "../../../../lib/visual-styles";
@@ -351,8 +352,14 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
         const oldChunk = project.chunks.find((item) => item.id === episode.chunkId);
         if (oldChunk?.render) chunk.render = markRenderStale(oldChunk.render);
         else chunk.render = undefined;
-        chunk.tts = aiReview.scenes.some((scene) => String(scene.dialogue_or_voiceover || "").trim())
-          ? { status: "idle", completed: 0, total: aiReview.scenes.filter((scene) => String(scene.dialogue_or_voiceover || "").trim()).length, failed: 0, updatedAt: timestamp }
+        const ttsTotal = aiReview.scenes.reduce((total, scene) => {
+          if (project.presetId === "ai-drama" && hasExplicitDialogueSegments(scene)) {
+            return total + readDialogueSegments(scene, project.characters || []).length;
+          }
+          return total + (String(scene.dialogue_or_voiceover || "").trim() ? 1 : 0);
+        }, 0);
+        chunk.tts = ttsTotal
+          ? { status: "idle", completed: 0, total: ttsTotal, failed: 0, updatedAt: timestamp }
           : { status: "not_needed", completed: 0, total: 0, failed: 0, updatedAt: timestamp };
         importedChunkRecords.push(chunk);
       }

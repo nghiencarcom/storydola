@@ -9,11 +9,13 @@ import { getMaiVideoApiKey } from "../../../../lib/maivideo-api-keys";
 import { seedancePublicBaseUrlErrorMessage, seedancePublicBaseUrlIssue } from "../../../../lib/seedance-reference-links";
 import { getProjectOrThrow, makeActivity, now, readData, updateData } from "../../../../lib/server-store";
 import { sceneReferenceCharacterIds, sceneReferenceLocationId } from "../../../../lib/scene-reference-assignments";
+import { DEFAULT_RUN_CONCURRENCY } from "../../../../lib/run-concurrency-config";
+import { getRunConcurrencyLimit } from "../../../../lib/user-settings";
 
 export const runtime = "nodejs";
 
 function emptyQueue(): VideoQueueState {
-  return { status: "idle", concurrency: 20, jobs: [], updatedAt: now() };
+  return { status: "idle", concurrency: DEFAULT_RUN_CONCURRENCY, jobs: [], updatedAt: now() };
 }
 
 function mediaRecord(value: unknown) {
@@ -56,7 +58,6 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     onlyMissing?: boolean;
     retryFailed?: boolean;
     regenerate?: boolean;
-    concurrency?: number;
   };
   const scenes = await readProjectScenes(project);
   const requestedIds = Array.isArray(body.sceneIds) ? new Set(body.sceneIds.map((value) => String(value))) : null;
@@ -153,10 +154,11 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       return NextResponse.json({ ok: false, code, message }, { status: 503 });
     }
   }
+  const concurrency = await getRunConcurrencyLimit();
   const updated = await updateData((data) => {
     const current = getProjectOrThrow(data, slug);
     const queue = current.videoQueue || emptyQueue();
-    queue.concurrency = Math.max(1, Math.min(20, Number(body.concurrency) || queue.concurrency || 20));
+    queue.concurrency = concurrency;
     let added = 0;
     let retried = 0;
     for (const scene of candidates) {

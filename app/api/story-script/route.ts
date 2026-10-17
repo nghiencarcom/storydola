@@ -29,7 +29,7 @@ type ScriptRequest = {
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as ScriptRequest;
   const preset = STORY_PRESETS[body.presetId || "ai-story"] || STORY_PRESETS["ai-story"];
-  const config = getProviderConfig();
+  const config = await getProviderConfig();
   if (!config.keyConfigured) return NextResponse.json({ ok: false, code: "SCRIPT_LLM_NOT_CONFIGURED", message: "Chưa cấu hình OPENAI_API_KEY ở server. Không đặt API key trong trình duyệt.", preset: preset.id, provider: { baseUrl: config.baseUrl, model: config.primaryModel, fallbackModels: config.fallbackModels, reasoningEffort: config.reasoningEffort, serviceTier: config.serviceTier } }, { status: 503 });
 
   const sceneStart = body.sceneStart ?? 1;

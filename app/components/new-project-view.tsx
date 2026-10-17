@@ -164,6 +164,7 @@ const emptyForm: FormState = {
 export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: string; fixedPresetId?: StoryPresetId }) {
   const { getProject, createProject, updateProject, provider, refresh } = useProjects();
   const existing = projectSlug ? getProject(projectSlug) : undefined;
+  const isFixedAiDramaCreation = !projectSlug && fixedPresetId === "ai-drama";
   const [form, setForm] = useState<FormState>(() => ({ ...emptyForm, presetId: fixedPresetId || emptyForm.presetId }));
   const [customChunkSize, setCustomChunkSize] = useState(false);
   const [voiceCatalog, setVoiceCatalog] = useState<OmniVoiceCatalog | null>(null);
@@ -902,8 +903,8 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
                 <span>Cách nhập kịch bản</span>
                 <select id="project-script-mode" value={projectSlug ? form.scriptMode : scriptEntryMode} onChange={(event) => selectScriptEntryMode(event.target.value as ScriptEntryMode)} disabled={Boolean(pendingScriptImport)}>
                   <option value="ai">{form.presetId === "ai-drama" ? "AI viết kịch bản nguồn từ ý tưởng" : "AI tạo kịch bản từ nguồn"}</option>
-                  <option value="manual">Tôi tự nhập kịch bản</option>
-                  {!projectSlug && <option value="json">Nhập JSON từ GPT</option>}
+                  {!isFixedAiDramaCreation && <option value="manual">Tôi tự nhập kịch bản</option>}
+                  {!projectSlug && !isFixedAiDramaCreation && <option value="json">Nhập JSON từ GPT</option>}
                 </select>
                 {currentScriptEntryMode === "json"
                   ? <small className="field-help">Dán JSON hoặc nạp file; nội dung này là nguồn kịch bản chính của project.</small>

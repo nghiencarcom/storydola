@@ -1155,6 +1155,29 @@ async def _goto_dola_chat(page, url: str = "https://www.dola.com/chat"):
         raise
 
 
+async def _wait_for_default_mode_setting(page, timeout_ms: int):
+    """Prefer Dola's current setting label and accept its previous label."""
+    selectors = (
+        'xpath=//div[text()="Set Default Mode"]',
+        'xpath=//div[text()="Default Mode for New Chats"]',
+    )
+    deadline = time.monotonic() + max(1, int(timeout_ms)) / 1000
+    while time.monotonic() < deadline:
+        for selector in selectors:
+            try:
+                locator = page.locator(selector)
+                for index in range(await locator.count()):
+                    candidate = locator.nth(index)
+                    if await candidate.is_visible():
+                        return candidate
+            except Exception:
+                continue
+        await page.wait_for_timeout(100)
+    raise TimeoutError(
+        "Dola Settings did not show Set Default Mode or Default Mode for New Chats"
+    )
+
+
 async def _set_default_chat_mode(
     page, mode: str = "Pro", account: str = "profile"
 ) -> None:
@@ -1163,7 +1186,6 @@ async def _set_default_chat_mode(
     if mode not in {"Fast", "Pro"}:
         raise ValueError("Dola default chat mode must be Fast or Pro")
     settings_button = page.locator('xpath=//button[@aria-label="Settings"]')
-    default_mode = page.locator('xpath=//div[text()="Set Default Mode"]')
     mode_indicator = page.locator(f'xpath=//span[text()="{mode}"]')
     mode_option = page.locator(f'xpath=//span[text()="{mode}"]')
     close_button = page.locator(
@@ -1207,8 +1229,8 @@ async def _set_default_chat_mode(
                 already_selected = True
                 break
         if not already_selected:
-            await default_mode.wait_for(
-                state="visible", timeout=SETTINGS_MODAL_BUTTON_WAIT_MS
+            default_mode = await _wait_for_default_mode_setting(
+                page, timeout_ms=SETTINGS_MODAL_BUTTON_WAIT_MS
             )
             await default_mode.click(timeout=SETTINGS_MODAL_BUTTON_WAIT_MS)
             await mode_option.wait_for(

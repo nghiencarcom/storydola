@@ -7,8 +7,8 @@ import { saveGeneratedSceneMedia } from "./scene-media-output";
 import { seedancePublicBaseUrlErrorMessage, seedancePublicBaseUrlIssue } from "./seedance-reference-links";
 import { makeActivity, now, readDataForUser, updateDataForUser } from "./server-store";
 import { sceneReferenceCharacterIds, sceneReferenceLocationId } from "./scene-reference-assignments";
+import { getRunConcurrencyLimit } from "./user-settings";
 
-const CONCURRENCY = 20;
 type SceneMediaQueueEntry = {
   userId: string;
   slug: string;
@@ -190,7 +190,6 @@ async function claimNextJob(userId: string, slug: string): Promise<{ job: SceneM
     const project = data.projects.find((item) => item.slug === slug);
     if (!project) return undefined;
     project.sceneMediaJobs ||= [];
-    if (project.sceneMediaJobs.filter((job) => job.status === "running" && job.workerId === WORKER_ID).length >= CONCURRENCY) return undefined;
     const job = project.sceneMediaJobs.find((item) => item.status === "queued");
     if (!job) return undefined;
     job.status = "running";
@@ -410,7 +409,7 @@ async function pumpUserQueue(userId: string) {
   }
   queueRuntime.pumpingUsers.add(userId);
   try {
-    while (activeJobCount(userId) < CONCURRENCY) {
+    while (activeJobCount(userId) < await getRunConcurrencyLimit(userId)) {
       const candidates = Array.from(queueRuntime.queues.entries())
         .filter(([, entry]) => entry.userId === userId && entry.ready)
         .sort((left, right) => left[1].lastClaimedAt - right[1].lastClaimedAt);
@@ -419,6 +418,7 @@ async function pumpUserQueue(userId: string) {
       let claimedNext = false;
       for (const [key, entry] of candidates) {
         const revision = entry.revision;
+        if (activeJobCount(userId) >= await getRunConcurrencyLimit(userId)) break;
         const claimed = await claimNextJob(entry.userId, entry.slug);
         if (!claimed) {
           if (queueRuntime.queues.get(key) === entry && entry.revision === revision) queueRuntime.queues.delete(key);
@@ -462,6 +462,10 @@ export function startSceneMediaQueue(userId: string, slug: string) {
   if (entry.ready) {
     void recoverInterruptedJobs(userId, slug).catch(() => undefined).finally(() => requestUserQueuePump(userId));
   }
+}
+
+export function refreshUserSceneMediaConcurrency(userId: string) {
+  requestUserQueuePump(userId);
 }
 
 export function createSceneMediaJob(input: {

@@ -1838,6 +1838,7 @@ export async function materializeChunkMedia({
   projectVoiceLanguage,
   previousScenes = [],
   sceneStart = 1,
+  concurrency: concurrencyOverride,
 }: {
   projectSlug: string;
   chunkId: string;
@@ -1860,11 +1861,12 @@ export async function materializeChunkMedia({
   projectVoiceLanguage?: string;
   previousScenes?: unknown[];
   sceneStart?: number;
+  concurrency?: number;
 }) {
   const normalizedSource = presetId === "ai-drama" ? "maivideo-video" : mediaSource || "stock-mixed";
   const settings = resolveMediaGenerationSettings(mediaGeneration);
   const materialized: SceneRecord[] = [];
-  const concurrency = Math.max(1, Math.min(5, Number(process.env.STORYAI_MEDIA_CONCURRENCY) || 5));
+  const concurrency = Math.max(1, Math.min(20, Number(concurrencyOverride) || Number(process.env.STORYAI_MEDIA_CONCURRENCY) || 5));
   const normalizedScenes = scenes.map((sceneValue, index) => {
     const normalized = sceneWithMatchedReferences(sceneValue && typeof sceneValue === "object" ? sceneValue as SceneRecord : { raw_scene: sceneValue }, characters, locations);
     const sceneNumber = Number(normalized.sceneNumber) || sceneStart + index;

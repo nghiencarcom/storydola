@@ -17,6 +17,7 @@ import { sanitizeDramaVisualPrompt } from "../lib/visual-prompt-safety";
 import { MAX_SCENE_MEDIA_UPLOAD_BYTES } from "../lib/scene-media-upload-config";
 import { shouldChunkSceneMediaFile, uploadSceneMediaInChunks } from "../lib/scene-media-upload-client";
 import { createEpisodeScriptTemplate } from "../lib/project-script-templates";
+import { DEFAULT_RUN_CONCURRENCY, MAX_RUN_CONCURRENCY, MIN_RUN_CONCURRENCY } from "../lib/run-concurrency-config";
 import { ShortDramaStudio } from "./short-drama-studio";
 import { Icon } from "./ui-icon";
 
@@ -119,10 +120,6 @@ type MaiVideoImagePreview = {
   previewUrl: string;
   source: string;
 };
-
-const BATCH_PROFILE_IMAGE_CONCURRENCY = 5;
-const BATCH_TTS_EPISODE_CONCURRENCY = 5;
-const VIDEO_QUEUE_CONCURRENCY = 20;
 
 async function forEachConcurrent<T>(items: T[], concurrency: number, task: (item: T, index: number) => Promise<void>) {
   let nextIndex = 0;
@@ -602,11 +599,25 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   const [logoUploading, setLogoUploading] = useState(false);
   const [renderSettings, setRenderSettings] = useState<RenderSettings>(() => projectRenderSettings(project, project.render?.settings));
   const [videoQueueRunning, setVideoQueueRunning] = useState(false);
+  const [maxConcurrentJobs, setMaxConcurrentJobs] = useState(DEFAULT_RUN_CONCURRENCY);
   const characterImageInputRef = useRef<HTMLInputElement>(null);
   const locationImageInputRef = useRef<HTMLInputElement>(null);
   const videoQueueStopRef = useRef(false);
   const autoResumeVideoQueueAtRef = useRef<Record<string, number>>({});
   const scenesLoadInFlightRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/settings/concurrency", { cache: "no-store" })
+      .then((response) => response.ok ? response.json() : null)
+      .then((payload) => {
+        if (cancelled || !payload) return;
+        const value = Number(payload.maxConcurrentJobs);
+        if (Number.isInteger(value)) setMaxConcurrentJobs(Math.max(MIN_RUN_CONCURRENCY, Math.min(MAX_RUN_CONCURRENCY, value)));
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     const search = new URLSearchParams(window.location.search);
@@ -1314,7 +1325,20 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
 
   const visibleChunks = chunks.filter((chunk) => activeFilter === "Tất cả" || (activeFilter === "Đang xử lý" && chunk.status === "running") || (activeFilter === "Cần review" && chunk.status === "review"));
   const pendingEpisodeRenders = project?.chunks.filter((chunk) => Boolean(chunk.outputPath) && chunk.render?.status !== "running" && (chunk.render?.stale === true || chunk.render?.status !== "completed")) || [];
-  const pendingEpisodeTts = project?.chunks.filter((chunk) => Boolean(chunk.outputPath) && chunk.tts?.status !== "completed" && chunk.tts?.status !== "not_needed") || [];
+  const ttsTargetCountsByChunk = useMemo(() => {
+    const counts = new Map<string, number>();
+    if (!project) return counts;
+    for (const scene of scenes) {
+      const count = project.presetId === "ai-drama" && hasExplicitDialogueSegments(scene)
+        ? sceneDialogueSegments(scene, project.characters || []).length
+        : sceneText(scene, "dialogue_or_voiceover", "voiceText", "voiceover", "ttsVoice", "tts_voice") ? 1 : 0;
+      if (count) counts.set(scene.chunkId, (counts.get(scene.chunkId) || 0) + count);
+    }
+    return counts;
+  }, [project, scenes]);
+  const pendingEpisodeTts = project?.chunks.filter((chunk) => Boolean(chunk.outputPath)
+    && chunk.tts?.status !== "completed"
+    && (chunk.tts?.status !== "not_needed" || (ttsTargetCountsByChunk.get(chunk.id) || 0) > 0)) || [];
   const scriptGenerationBusy = isRunning || Boolean(runningScriptChunkId);
   const scriptBlocksIndependentTasks = project?.presetId !== "ai-drama" && scriptGenerationBusy;
   const episodeExtensionBusy = isRunning || Boolean(runningScriptChunkId) || renderRunning || ttsRunning || videoQueueRunning || Boolean(generatingSceneId) || project?.render?.status === "running" || project?.videoQueue?.status === "running" || Boolean(project?.chunks.some((chunk) => chunk.status === "processing" || chunk.render?.status === "running" || chunk.tts?.status === "running"));
@@ -1675,7 +1699,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
       const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/video-queue`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ onlyMissing: regenerate ? false : onlyMissing, regenerate, sceneIds: targetScenes.map((scene) => scene.id), concurrency: VIDEO_QUEUE_CONCURRENCY }),
+        body: JSON.stringify({ onlyMissing: regenerate ? false : onlyMissing, regenerate, sceneIds: targetScenes.map((scene) => scene.id), concurrency: maxConcurrentJobs }),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || !payload.ok) throw new Error(payload.message || "Không thể xếp hàng video AI.");
@@ -1713,13 +1737,13 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
       const worker = async () => {
         try {
           while (!videoQueueStopRef.current) {
-            const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/video-queue/run`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ limit: VIDEO_QUEUE_CONCURRENCY }) });
+            const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/video-queue/run`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ limit: maxConcurrentJobs }) });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(payload.message || "Video queue thất bại.");
             if (!payload.processed) break;
             if (!payload.ok && !payload.retryQueued) failures.push(payload.message || "Một job video AI thất bại.");
             processed += 1;
-            setBatchMediaProgress(`Video queue · ${processed} job đã xử lý · tối đa ${VIDEO_QUEUE_CONCURRENCY} luồng`);
+            setBatchMediaProgress(`Video queue · ${processed} job đã xử lý · tối đa ${maxConcurrentJobs} luồng`);
             if (payload.retryQueued) {
               const retriedJob = payload.queue?.jobs?.find((job: { id: string }) => job.id === payload.jobId);
               const attempt = Math.max(1, Number(retriedJob?.attempt) || 1);
@@ -1732,7 +1756,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
           videoQueueStopRef.current = true;
         }
       };
-      await Promise.all(Array.from({ length: VIDEO_QUEUE_CONCURRENCY }, () => worker()));
+      await Promise.all(Array.from({ length: maxConcurrentJobs }, () => worker()));
       if (processed) {
         await refresh();
         await loadScenes();
@@ -1957,12 +1981,12 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
 
     setTtsRunning(true);
     setTtsChunkId("");
-    setBatchTtsProgress(`0/${targets.length} · tối đa ${Math.min(targets.length, BATCH_TTS_EPISODE_CONCURRENCY)} luồng`);
+    setBatchTtsProgress(`0/${targets.length} · tối đa ${Math.min(targets.length, maxConcurrentJobs)} luồng`);
     setSceneError("");
     const generated: string[] = [];
     const failed: string[] = [];
     let finishedCount = 0;
-    await forEachConcurrent(targets, BATCH_TTS_EPISODE_CONCURRENCY, async (chunk) => {
+    await forEachConcurrent(targets, maxConcurrentJobs, async (chunk) => {
       const episodeNumber = project.chunks.findIndex((item) => item.id === chunk.id) + 1;
       const episodeLabel = `Tập ${String(episodeNumber).padStart(2, "0")}`;
       try {
@@ -1979,7 +2003,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
         failed.push(`${episodeLabel}: ${cause instanceof Error ? cause.message : "lỗi không xác định"}`);
       } finally {
         finishedCount += 1;
-        setBatchTtsProgress(`${finishedCount}/${targets.length} · tối đa ${Math.min(targets.length, BATCH_TTS_EPISODE_CONCURRENCY)} luồng`);
+        setBatchTtsProgress(`${finishedCount}/${targets.length} · tối đa ${Math.min(targets.length, maxConcurrentJobs)} luồng`);
       }
     });
     await refresh().catch(() => undefined);
@@ -2543,8 +2567,8 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
     const failures: string[] = [];
     try {
       let finishedCount = 0;
-      setProfileBatchProgress((current) => ({ ...current, [kind]: `0/${targets.length} · tối đa ${Math.min(targets.length, BATCH_PROFILE_IMAGE_CONCURRENCY)} luồng` }));
-      await forEachConcurrent(targets, BATCH_PROFILE_IMAGE_CONCURRENCY, async (profile) => {
+      setProfileBatchProgress((current) => ({ ...current, [kind]: `0/${targets.length} · tối đa ${Math.min(targets.length, maxConcurrentJobs)} luồng` }));
+      await forEachConcurrent(targets, maxConcurrentJobs, async (profile) => {
         try {
           const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/${kind}/${encodeURIComponent(profile.id)}/image`, {
             method: "POST",
@@ -2559,7 +2583,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
           failures.push(`${profile.name}: ${reason}`);
         } finally {
           finishedCount += 1;
-          setProfileBatchProgress((current) => ({ ...current, [kind]: `${finishedCount}/${targets.length} · tối đa ${Math.min(targets.length, BATCH_PROFILE_IMAGE_CONCURRENCY)} luồng` }));
+          setProfileBatchProgress((current) => ({ ...current, [kind]: `${finishedCount}/${targets.length} · tối đa ${Math.min(targets.length, maxConcurrentJobs)} luồng` }));
         }
       });
       await refresh();
@@ -3722,6 +3746,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
           {visibleChunks.map((chunk) => {
             const renderFileBase = `/api/projects/${encodeURIComponent(project.slug)}/chunks/${encodeURIComponent(chunk.id)}/render/file`;
             const episodeScenes = scenes.filter((scene) => scene.chunkId === chunk.id);
+            const episodeTtsTargetCount = ttsTargetCountsByChunk.get(chunk.id) || 0;
             const episodeHasTts = Number(chunk.tts?.completed) > 0 || episodeScenes.some((scene) => {
               const sceneAudio = [scene.audio, scene.voice, scene.tts].some((value) => {
                 if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -3788,7 +3813,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                 <div className="chunk-export-actions">
                   {isGeneratingThisTts
                     ? <StatusPill tone="orange">TTS {chunk.tts?.completed || 0}/{chunk.tts?.total || 0}</StatusPill>
-                    : chunk.tts?.status !== "not_needed" && <button className="secondary-button compact episode-render-button" type="button" onClick={() => void generateChunkTts(chunk.id, chunk.episodeNumber, chunk.tts?.status === "completed")} disabled={!chunk.hasScript || ttsRunning || renderRunning || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || Boolean(generatingSceneId)} title={chunk.tts?.status === "completed" ? "Tạo lại TTS cho tập này" : "Tạo TTS cho tập này"}>
+                    : (chunk.tts?.status !== "not_needed" || episodeTtsTargetCount > 0) && <button className="secondary-button compact episode-render-button" type="button" onClick={() => void generateChunkTts(chunk.id, chunk.episodeNumber, chunk.tts?.status === "completed")} disabled={!chunk.hasScript || ttsRunning || renderRunning || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || Boolean(generatingSceneId)} title={chunk.tts?.status === "completed" ? "Tạo lại TTS cho tập này" : "Tạo TTS cho tập này"}>
                       <Icon name="spark" size={13} />{chunk.tts?.status === "completed" ? "Tạo lại TTS" : chunk.tts?.status === "partial" || chunk.tts?.status === "failed" || chunk.tts?.status === "running" ? "Thử lại TTS" : "Tạo TTS"}
                     </button>}
                   {chunk.tts && chunk.tts.status !== "not_needed" && (chunk.tts.completed > 0 || chunk.tts.failed > 0) && <small className={chunk.tts.failed ? "episode-render-error" : "episode-render-note"} title={chunk.tts.error}>{chunk.tts.status === "completed" ? `TTS sẵn sàng · ${chunk.tts.completed}/${chunk.tts.total} ${project.presetId === "ai-drama" ? "câu" : "cảnh"}` : `TTS ${chunk.tts.completed}/${chunk.tts.total}${chunk.tts.failed ? ` · ${chunk.tts.failed} lỗi` : ""}`}</small>}
