@@ -1,0 +1,47 @@
+name: Publish Windows update ZIP
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/publish-windows-update.yml"
+      - "release/StoryDola-Windows-v*-patch-from-v*.zip"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish patch to the matching release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          tag="v${version}"
+          shopt -s nullglob
+          patches=("release/StoryDola-Windows-v${version}-patch-from-v"*.zip)
+          if [ "${#patches[@]}" -ne 1 ]; then
+            echo "Expected one patch ZIP for ${tag}; found ${#patches[@]}" >&2
+            exit 1
+          fi
+
+          patch_file="${patches[0]}"
+          latest_file="${RUNNER_TEMP}/StoryDola-Windows-latest.zip"
+          cp "${patch_file}" "${latest_file}"
+          base_version="${patch_file##*-from-v}"
+          base_version="${base_version%.zip}"
+
+          if ! gh release view "${tag}" >/dev/null 2>&1; then
+            gh release create "${tag}" \
+              --verify-tag \
+              --title "StoryDola Windows ${tag}" \
+              --notes "Windows patch update ${base_version} → ${version}. It contains only changed application files and preserves local settings, data, and profiles."
+          fi
+
+          gh release upload "${tag}" "${patch_file}" "${latest_file}" --clobber
