@@ -57,6 +57,15 @@ SEVEN_DAY_FREE_LIMIT_PATTERN = re.compile(
     r"\b(?:you['’]ve|you\s+have)\s+reached\s+the\s+7\s*[-–—]\s*day\s+free\s+limit\b",
     re.IGNORECASE,
 )
+FAST_MODE_REQUIRED_PATTERN = re.compile(
+    r"\b(?:please\s+)?(?:switch|change)\s+(?:to\s+)?(?:seedance\s+)?fast(?:\s+mode)?\b|"
+    r"\b(?:please\s+)?use\s+(?:seedance\s+)?fast(?:\s+mode)?\b[\s\S]{0,80}"
+    r"\b(?:instead|to\s+(?:continue|create|generate|retry)|for\s+this)\b|"
+    r"\bfast(?:\s+mode)?\s+(?:is\s+)?(?:required|needed)\b|"
+    r"(?:chuyển\s+sang|dùng|sử\s+dụng)\s+(?:chế\s+độ\s+)?fast\b|"
+    r"(?:切换|改用|使用)\s*(?:Seedance\s*)?Fast(?:模式)?",
+    re.IGNORECASE,
+)
 FAST_MODE_FALLBACK_MESSAGE = (
     "Dola đã hết lượt tạo video Pro trong 7 ngày; đang chuyển sang Fast để gửi lại prompt."
 )
@@ -83,7 +92,7 @@ VIDEO_LIMIT_MESSAGE = "Tài khoản Dola đã đạt giới hạn tạo video th
 
 
 def _is_seven_day_free_limit(value) -> bool:
-    """Recognize Dola's explicit 7-day Pro limit that offers Fast mode."""
+    """Recognize Dola's explicit Pro limit or instruction to switch to Fast."""
     if isinstance(value, bytes):
         value = value.decode("utf-8", "replace")
     if isinstance(value, (dict, list, tuple)):
@@ -92,6 +101,7 @@ def _is_seven_day_free_limit(value) -> bool:
         raw = str(value or "")
     return bool(
         SEVEN_DAY_FREE_LIMIT_PATTERN.search(raw)
+        or FAST_MODE_REQUIRED_PATTERN.search(raw)
         or FAST_MODE_FALLBACK_MESSAGE in raw
     )
 

@@ -1609,6 +1609,67 @@ def _schedule_post_submit_credit_retry(row: dict, detail: str = "") -> bool:
     ):
         return False
 
+    timings = _decode_task_timings(current.get("timings_json")) or {}
+    credit_tried = timings.get("credit_tried_accounts")
+    credit_tried = [
+        str(name).strip()
+        for name in credit_tried
+        if str(name).strip()
+    ] if isinstance(credit_tried, (list, tuple, set)) else []
+    account = str(current.get("account") or "").strip()
+    if account and account not in credit_tried:
+        credit_tried.append(account)
+
+    profile_attempts = []
+    if _is_pro_to_fast_fallback(timings):
+        raw_attempts = timings.get("pro_to_fast_profile_tried_accounts")
+        profile_attempts = [
+            str(name).strip()
+            for name in raw_attempts
+            if str(name).strip()
+        ] if isinstance(raw_attempts, (list, tuple, set)) else []
+        if account and account not in profile_attempts:
+            profile_attempts.append(account)
+        timings["pro_to_fast_profile_tried_accounts"] = profile_attempts
+
+    tried_elsewhere = []
+    for key in (
+        "provider_busy_tried_accounts",
+        "daily_limit_tried_accounts",
+        "rate_limit_tried_accounts",
+        "cannot_answer_tried_accounts",
+        "manual_retry_excluded_accounts",
+        "credit_tried_accounts",
+        "fast_to_pro_tried_accounts",
+        "pro_to_fast_profile_tried_accounts",
+    ):
+        values = timings.get(key)
+        if isinstance(values, (list, tuple, set)):
+            tried_elsewhere.extend(
+                str(name).strip() for name in values if str(name).strip()
+            )
+    excluded_accounts = list(dict.fromkeys(
+        tried_elsewhere + credit_tried + profile_attempts
+    ))
+    available_names = {
+        str(item.get("name") or "").strip()
+        for item in render_pool.list_accounts()
+    }
+    if not any(name and name not in excluded_accounts for name in available_names):
+        timings["credit_tried_accounts"] = credit_tried
+        timings["credit_retry_stop_reason"] = "no_untried_profiles"
+        store.update(task_id, timings_json=_encode_task_timings(timings))
+        return False
+
+    try:
+        retry_count = max(0, int(timings.get("auto_credit_profile_retry_count") or 0))
+    except (TypeError, ValueError):
+        retry_count = 0
+    timings["credit_tried_accounts"] = credit_tried
+    timings["auto_credit_profile_retry_count"] = retry_count + 1
+    timings["last_auto_retry_reason"] = "post_submit_credit_profile_rotation"
+    timings["last_auto_retry_at"] = time.time()
+
     store.update(
         task_id,
         status="submitting",
@@ -1619,6 +1680,7 @@ def _schedule_post_submit_credit_retry(row: dict, detail: str = "") -> bool:
         error="Dola báo profile hiện tại hết credit; đang chuyển sang profile khác.",
         failure_code=None,
         finished_at=None,
+        timings_json=_encode_task_timings(timings),
     )
     ratio = current.get("ratio")
     if ratio == "default":
@@ -1636,11 +1698,12 @@ def _schedule_post_submit_credit_retry(row: dict, detail: str = "") -> bool:
             reference_image_names=_task_reference_image_names(
                 current.get("reference_image_names")
             ),
+            excluded_accounts=excluded_accounts,
         ),
     )
     print(
         f"[pool] task={task_id} post-submit credit error; scheduled a fresh "
-        f"profile attempt: {str(detail)[:180]}",
+        f"profile attempt ({retry_count + 1}): {str(detail)[:180]}",
         flush=True,
     )
     return True
@@ -1794,7 +1857,7 @@ def _schedule_fast_mode_fallback(row: dict, detail: str = "") -> bool:
     timings["requested_model_before_fast_mode_fallback"] = current_model
     timings["fast_mode_fallback_account"] = account
     timings["chat_mode_override"] = "Fast"
-    timings["last_auto_retry_reason"] = "pro_seven_day_limit_fast_mode"
+    timings["last_auto_retry_reason"] = "pro_requires_fast_mode"
     timings["last_auto_retry_at"] = time.time()
     try:
         total_retry_count = max(0, int(current.get("retry_count") or 0)) + 1
@@ -1819,7 +1882,7 @@ def _schedule_fast_mode_fallback(row: dict, detail: str = "") -> bool:
         last_poll_at=0,
         video_url=None,
         video_metadata=None,
-        error="Dola đạt giới hạn 7 ngày ở Pro; đang chuyển sang Fast và gửi lại cùng prompt.",
+        error="Dola yêu cầu chuyển sang Fast; đang gửi lại cùng prompt trên profile này.",
         failure_code=None,
         started_at=None,
         finished_at=None,
@@ -1842,7 +1905,7 @@ def _schedule_fast_mode_fallback(row: dict, detail: str = "") -> bool:
         ),
     )
     print(
-        f"[pool] task={task_id} Pro 7-day free limit; retrying once in Fast "
+        f"[pool] task={task_id} Pro requires Fast; retrying once in Fast "
         f"on the same profile {account}: {str(detail)[:180]}",
         flush=True,
     )
@@ -1861,7 +1924,7 @@ def _mark_fast_mode_fallback_failed(row: dict, detail: str = "") -> None:
     ):
         return
     message = (
-        "Dola yêu cầu chuyển sang Fast sau khi hết giới hạn Pro 7 ngày, "
+        "Dola yêu cầu chuyển sang Fast ở chế độ Pro, "
         "nhưng không thể thử lại trên profile hiện tại. "
         f"{str(detail)[:260]}"
     )
@@ -1875,7 +1938,11 @@ def _mark_fast_mode_fallback_failed(row: dict, detail: str = "") -> None:
 
 
 class FastToProLimitError(RuntimeError):
-    """The one Pro retry after Fast credit exhaustion did not complete."""
+    """The Pro fallback after Fast credit exhaustion failed on one profile."""
+
+    def __init__(self, original_error):
+        self.original_error = original_error
+        super().__init__(str(original_error))
 
 
 def _is_fast_to_pro_retry(timings: dict | None) -> bool:
@@ -1890,10 +1957,23 @@ def _is_fast_to_pro_retry(timings: dict | None) -> bool:
     )
 
 
+def _is_pro_to_fast_fallback(timings: dict | None) -> bool:
+    timings = timings if isinstance(timings, dict) else {}
+    try:
+        fallback_count = int(timings.get("auto_fast_mode_fallback_count") or 0)
+    except (TypeError, ValueError):
+        fallback_count = 0
+    return (
+        fallback_count > 0
+        and str(timings.get("chat_mode_default") or "").strip().casefold() == "pro"
+        and str(timings.get("chat_mode_override") or "").strip().casefold() == "fast"
+    )
+
+
 def _fast_to_pro_limit_message(detail: str = "") -> str:
     message = (
-        "Fast đã hết credit; hệ thống đã thử lại Seedance 2.5 ở chế độ Pro "
-        "nhưng vẫn thất bại. Limit: kiểm tra credit/lượt tạo video của tài khoản Dola."
+        "Fast đã hết credit; hệ thống đã thử Seedance 2.5 Pro trên các profile "
+        "khả dụng nhưng vẫn thất bại. Limit: kiểm tra credit/lượt tạo video của Dola."
     )
     detail = str(detail or "").strip()
     if detail:
@@ -2001,6 +2081,126 @@ def _schedule_fast_to_pro_fallback(row: dict, detail: str = "") -> bool:
     print(
         f"[pool] task={task_id} Fast credit exhausted; retrying once in Pro "
         f"on {account or 'an available profile'}: {str(detail)[:180]}",
+        flush=True,
+    )
+    return True
+
+
+def _schedule_fast_to_pro_profile_retry(row: dict, error) -> bool:
+    """Move a failed Pro fallback attempt to a profile not tried for this task."""
+    task_id = str(row.get("id") or "").strip()
+    if not task_id or task_id in VIDEO_CANCELLED_TASKS:
+        return False
+    current = store.get(task_id)
+    if not current or current.get("status") not in {"submitting", "processing"}:
+        return False
+    if (
+        current.get("account") != row.get("account")
+        or current.get("conversation_id") != row.get("conversation_id")
+    ):
+        return False
+
+    account = str(current.get("account") or "").strip()
+    if not account:
+        return False
+    timings = _decode_task_timings(current.get("timings_json")) or {}
+    if not _is_fast_to_pro_retry(timings):
+        return False
+
+    original_error = getattr(error, "original_error", None)
+    detail = str(error or "").strip()
+    if isinstance(original_error, ProviderBusyError):
+        render_pool._mark_provider_busy(account, str(original_error))
+
+    tried = timings.get("fast_to_pro_tried_accounts")
+    tried = [
+        str(name).strip()
+        for name in tried
+        if str(name).strip()
+    ] if isinstance(tried, (list, tuple, set)) else []
+    if account not in tried:
+        tried.append(account)
+    timings["fast_to_pro_tried_accounts"] = tried
+
+    exclusions = []
+    for key in (
+        "provider_busy_tried_accounts",
+        "daily_limit_tried_accounts",
+        "rate_limit_tried_accounts",
+        "cannot_answer_tried_accounts",
+        "manual_retry_excluded_accounts",
+        "credit_tried_accounts",
+        "fast_to_pro_tried_accounts",
+    ):
+        values = timings.get(key)
+        if isinstance(values, (list, tuple, set)):
+            exclusions.extend(
+                str(name).strip() for name in values if str(name).strip()
+            )
+    exclusions = list(dict.fromkeys(exclusions))
+    available_names = {
+        str(item.get("name") or "").strip()
+        for item in render_pool.list_accounts()
+    }
+    if not any(name and name not in exclusions for name in available_names):
+        timings["fast_to_pro_tried_accounts"] = tried
+        timings["fast_to_pro_retry_stop_reason"] = "no_untried_profiles"
+        store.update(task_id, timings_json=_encode_task_timings(timings))
+        return False
+
+    try:
+        retry_count = max(0, int(timings.get("auto_fast_to_pro_profile_retry_count") or 0))
+    except (TypeError, ValueError):
+        retry_count = 0
+    timings["fast_to_pro_tried_accounts"] = tried
+    timings["auto_fast_to_pro_profile_retry_count"] = retry_count + 1
+    timings["fast_to_pro_retry_stop_reason"] = None
+    timings["last_auto_retry_reason"] = "fast_to_pro_profile_rotation"
+    timings["last_auto_retry_at"] = time.time()
+
+    ratio = current.get("ratio")
+    if ratio == "default":
+        ratio = None
+    store.update(
+        task_id,
+        status="submitting",
+        account=None,
+        conversation_id=None,
+        deadline_at=None,
+        last_poll_at=0,
+        video_url=None,
+        video_metadata=None,
+        error=(
+            f"Fast đã hết credit; Pro lỗi trên profile {account}, "
+            "đang chuyển sang profile chưa thử. "
+            f"Lỗi: {detail[:220]}"
+        )[:500],
+        failure_code=None,
+        started_at=None,
+        finished_at=None,
+        retry_count=max(0, int(current.get("retry_count") or 0)) + 1,
+        last_retry_at=time.time(),
+        timings_json=_encode_task_timings(timings),
+    )
+    _track_video_task(
+        task_id,
+        _run_task(
+            task_id,
+            current.get("model") or "seedance-2.5",
+            current.get("prompt") or "",
+            ratio,
+            current.get("duration"),
+            _task_reference_images(current.get("reference_images")),
+            _task_client(current),
+            reference_image_names=_task_reference_image_names(
+                current.get("reference_image_names")
+            ),
+            excluded_accounts=exclusions,
+        ),
+    )
+    print(
+        f"[pool] task={task_id} Pro fallback failed on {account}; "
+        f"rotating profile ({retry_count + 1}): {detail[:180]}",
         flush=True,
     )
     return True
@@ -2264,6 +2464,9 @@ def _schedule_provider_busy_retry(
         "rate_limit_tried_accounts",
         "cannot_answer_tried_accounts",
         "manual_retry_excluded_accounts",
+        "credit_tried_accounts",
+        "fast_to_pro_tried_accounts",
+        "pro_to_fast_profile_tried_accounts",
     ):
         values = timings.get(key)
         if isinstance(values, (list, tuple, set)):
@@ -2597,6 +2800,9 @@ async def _run_task(
         "rate_limit_tried_accounts",
         "cannot_answer_tried_accounts",
         "manual_retry_excluded_accounts",
+        "credit_tried_accounts",
+        "fast_to_pro_tried_accounts",
+        "pro_to_fast_profile_tried_accounts",
     ):
         values = timings.get(key)
         if isinstance(values, (list, tuple, set)):
@@ -2625,6 +2831,8 @@ async def _run_task(
     fast_mode_fallback_detail = None
     fast_to_pro_fallback_row = None
     fast_to_pro_fallback_detail = None
+    fast_to_pro_profile_retry_row = None
+    fast_to_pro_profile_retry_error = None
     post_submit_account_limit_retry_row = None
     post_submit_account_limit_retry_detail = None
     post_submit_rate_limit_retry_row = None
@@ -2657,6 +2865,34 @@ async def _run_task(
                          failure_code=None, finished_at=None,
                          timings_json=_encode_task_timings(conversation_timings))
 
+        def on_account_attempt(account):
+            current_row = store.get(task_id) or {}
+            attempt_timings = _decode_task_timings(
+                current_row.get("timings_json")
+            ) or {}
+            attempt_account = str(account or "").strip()
+            tracking_key = None
+            if _is_fast_to_pro_retry(attempt_timings):
+                tracking_key = "fast_to_pro_tried_accounts"
+            elif _is_pro_to_fast_fallback(attempt_timings):
+                tracking_key = "pro_to_fast_profile_tried_accounts"
+            if not tracking_key or not attempt_account:
+                return
+            tried = attempt_timings.get(tracking_key)
+            tried = [
+                str(name).strip()
+                for name in tried
+                if str(name).strip()
+            ] if isinstance(tried, (list, tuple, set)) else []
+            if attempt_account not in tried:
+                tried.append(attempt_account)
+                attempt_timings[tracking_key] = tried
+                timings[tracking_key] = tried
+                store.update(
+                    task_id,
+                    timings_json=_encode_task_timings(attempt_timings),
+                )
+
         def on_account_rotation(account, reason):
             """Clear the old accepted conversation before trying another profile."""
             del account, reason
@@ -2680,7 +2916,28 @@ async def _run_task(
             # conversation id, recovery keeps the profile binding. The explicit
             # post-submit credit path above is the only exception and clears
             # the old conversation before switching profiles.
-            store.update(task_id, status="submitting", account=account)
+            current_row = store.get(task_id) or {}
+            profile_timings = _decode_task_timings(
+                current_row.get("timings_json")
+            ) or {}
+            if _is_pro_to_fast_fallback(profile_timings):
+                tried = profile_timings.get("pro_to_fast_profile_tried_accounts")
+                tried = [
+                    str(name).strip()
+                    for name in tried
+                    if str(name).strip()
+                ] if isinstance(tried, (list, tuple, set)) else []
+                account_name = str(account or "").strip()
+                if account_name and account_name not in tried:
+                    tried.append(account_name)
+                    profile_timings["pro_to_fast_profile_tried_accounts"] = tried
+                    timings["pro_to_fast_profile_tried_accounts"] = tried
+            store.update(
+                task_id,
+                status="submitting",
+                account=account,
+                timings_json=_encode_task_timings(profile_timings),
+            )
 
         def on_waiting():
             # A task can spend time in the pool before any profile has received
@@ -2768,6 +3025,7 @@ async def _run_task(
                 on_conversation_id=on_conversation_id, on_poll=on_poll,
                 reference_image_paths=reference_paths, on_timing=on_timing,
                 task_id=task_id, on_profile_bound=on_profile_bound,
+                on_account_attempt=on_account_attempt,
                 on_account_rotation=on_account_rotation,
                 on_waiting=on_waiting,
                 preferred_account=preferred_generation_account,
@@ -2782,7 +3040,7 @@ async def _run_task(
             raise
         except Exception as exc:
             if _is_fast_to_pro_retry(timings):
-                raise FastToProLimitError(str(exc)) from exc
+                raise FastToProLimitError(exc) from exc
             raise
         timings["generation_and_poll_ms"] = round(
             (time.monotonic() - generation_started) * 1000
@@ -2793,13 +3051,8 @@ async def _run_task(
                      video_metadata=_encode_video_metadata(result),
                      error=None, failure_code=None, finished_at=time.time())
     except FastToProLimitError as e:
-        store.update(
-            task_id,
-            status="failed",
-            error=_fast_to_pro_limit_message(str(e)),
-            failure_code="LIMIT",
-            finished_at=time.time(),
-        )
+        fast_to_pro_profile_retry_row = store.get(task_id)
+        fast_to_pro_profile_retry_error = e
     except RenderStillProcessingError as e:
         keep_polling = _continue_video_polling(task_id, str(e))
         if not keep_polling:
@@ -2812,8 +3065,14 @@ async def _run_task(
                      failure_code="DAILY_LIMIT", finished_at=time.time())
     except CreditInsufficientError as e:
         if str(chat_mode_override or "").casefold() == "fast":
-            fast_to_pro_fallback_row = store.get(task_id)
-            fast_to_pro_fallback_detail = str(e)
+            latest_timings = _decode_task_timings(
+                (store.get(task_id) or {}).get("timings_json")
+            ) or {}
+            if _is_pro_to_fast_fallback(latest_timings):
+                post_submit_credit_detail = str(e)
+            else:
+                fast_to_pro_fallback_row = store.get(task_id)
+                fast_to_pro_fallback_detail = str(e)
         else:
             store.update(task_id, status="failed", error=str(e)[:500],
                          failure_code="CREDIT", finished_at=time.time())
@@ -2898,8 +3157,14 @@ async def _run_task(
             provider_rejection_retry_detail = str(e)
     except PostSubmitCreditError as e:
         if str(chat_mode_override or "").casefold() == "fast":
-            fast_to_pro_fallback_row = store.get(task_id)
-            fast_to_pro_fallback_detail = str(e)
+            latest_timings = _decode_task_timings(
+                (store.get(task_id) or {}).get("timings_json")
+            ) or {}
+            if _is_pro_to_fast_fallback(latest_timings):
+                post_submit_credit_detail = str(e)
+            else:
+                fast_to_pro_fallback_row = store.get(task_id)
+                fast_to_pro_fallback_detail = str(e)
         else:
             store.update(task_id, status="failed", error=str(e)[:500],
                          failure_code="CREDIT_DURING_RENDER", finished_at=time.time())
@@ -2963,6 +3228,19 @@ async def _run_task(
                 render_pool.release_poll_reservation(row["account"])
         if acquired:
             await key_limiter.release(api_key_hash)
+        if (
+            fast_to_pro_profile_retry_error
+            and fast_to_pro_profile_retry_row
+            and task_id not in VIDEO_CANCELLED_TASKS
+        ):
+            if not _schedule_fast_to_pro_profile_retry(
+                fast_to_pro_profile_retry_row,
+                fast_to_pro_profile_retry_error,
+            ):
+                _mark_fast_to_pro_limit(
+                    fast_to_pro_profile_retry_row,
+                    str(fast_to_pro_profile_retry_error),
+                )
         if (
             fast_to_pro_fallback_detail
             and fast_to_pro_fallback_row
@@ -3171,6 +3449,7 @@ async def _resume_task(row: dict):
     provider_busy_detail = None
     fast_mode_fallback_detail = None
     fast_to_pro_fallback_detail = None
+    fast_to_pro_profile_retry_detail = None
     content_policy_detail = None
     content_policy_final_detail = None
     provider_rejection_row = None
@@ -3218,7 +3497,7 @@ async def _resume_task(row: dict):
             raise
         except Exception as exc:
             if _is_fast_to_pro_retry(task_timings):
-                raise FastToProLimitError(str(exc)) from exc
+                raise FastToProLimitError(exc) from exc
             raise
         public_url = f"{config.PUBLIC_BASE}/videos/{Path(result['local_path']).name}"
         store.update(task_id, status="completed", video_url=public_url,
@@ -3231,13 +3510,7 @@ async def _resume_task(row: dict):
             if timings.pop("duration_confirmation_pending", None) is not None:
                 store.update(task_id, timings_json=_encode_task_timings(timings))
     except FastToProLimitError as e:
-        store.update(
-            task_id,
-            status="failed",
-            error=_fast_to_pro_limit_message(str(e)),
-            failure_code="LIMIT",
-            finished_at=time.time(),
-        )
+        fast_to_pro_profile_retry_detail = e
     except RenderStillProcessingError as e:
         keep_polling = _continue_video_polling(task_id, str(e))
         if not keep_polling:
@@ -3315,7 +3588,10 @@ async def _resume_task(row: dict):
             provider_rejection_detail = str(e)
     except PostSubmitCreditError as e:
         if str(task_timings.get("chat_mode_override") or "").casefold() == "fast":
-            fast_to_pro_fallback_detail = str(e)
+            if _is_pro_to_fast_fallback(task_timings):
+                post_submit_credit_detail = str(e)
+            else:
+                fast_to_pro_fallback_detail = str(e)
         else:
             # For older jobs or other modes, retain the existing profile-rotation
             # recovery behavior.
@@ -3365,6 +3641,13 @@ async def _resume_task(row: dict):
         if fast_to_pro_fallback_detail and task_id not in VIDEO_CANCELLED_TASKS:
             if not _schedule_fast_to_pro_fallback(row, fast_to_pro_fallback_detail):
                 _mark_fast_to_pro_limit(row, fast_to_pro_fallback_detail)
+        if fast_to_pro_profile_retry_detail and task_id not in VIDEO_CANCELLED_TASKS:
+            if not _schedule_fast_to_pro_profile_retry(
+                row, fast_to_pro_profile_retry_detail
+            ):
+                _mark_fast_to_pro_limit(
+                    row, str(fast_to_pro_profile_retry_detail)
+                )
         if content_policy_final_detail and task_id not in VIDEO_CANCELLED_TASKS:
             _fail_final_content_policy_refusal(row, content_policy_final_detail)
         if fast_mode_fallback_detail and task_id not in VIDEO_CANCELLED_TASKS:

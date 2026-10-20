@@ -1711,7 +1711,8 @@ class BrowserPool:
                                    on_account_rotation=None,
                                    excluded_accounts=None,
                                    chat_mode: str | None = None,
-                                   stop_on_credit: bool = False) -> dict:
+                                   stop_on_credit: bool = False,
+                                   on_account_attempt=None) -> dict:
         """Attempts one dispatch pass and releases the semaphore while waiting."""
         # A few lifecycle integrations construct a lightweight pool fixture
         # without running __init__. Keep this dispatch path compatible with
@@ -1794,6 +1795,13 @@ class BrowserPool:
                         if current and current["busy"]:
                             busy = True
                         continue
+                    if on_account_attempt:
+                        try:
+                            on_account_attempt(account)
+                        except Exception:
+                            # Per-task retry bookkeeping must not interrupt a
+                            # provider attempt if its callback fails.
+                            pass
                     dispatch_proxy_id = self._proxy_usage_id(current)
                     async with self._dispatch_selection_lock:
                         # The account lock prevents duplicate use of one
@@ -2253,6 +2261,8 @@ class BrowserPool:
 
             if isinstance(last_err, SessionExpiredError):
                 raise last_err
+            if isinstance(last_err, CreditInsufficientError):
+                raise last_err
             if isinstance(last_err, RateLimitError):
                 raise RateLimitError(
                     "Dola rate limit: đã thử các profile khả dụng nhưng chưa tìm được profile nhận yêu cầu."
@@ -2293,7 +2303,8 @@ class BrowserPool:
                              on_account_rotation=None, on_waiting=None,
                              excluded_accounts=None,
                              chat_mode: str | None = None,
-                             stop_on_credit: bool = False) -> dict:
+                             stop_on_credit: bool = False,
+                             on_account_attempt=None) -> dict:
         """Wait for an eligible profile; recovery may skip already-tried ones."""
         while True:
             try:
@@ -2314,6 +2325,7 @@ class BrowserPool:
                     excluded_accounts,
                     chat_mode,
                     stop_on_credit,
+                    on_account_attempt,
                 )
             except AccountsBusyError:
                 # Wake as soon as another task releases a profile. The
