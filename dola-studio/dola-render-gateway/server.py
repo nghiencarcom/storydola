@@ -1086,6 +1086,7 @@ def _normalize_allowed_durations(values) -> list[int]:
 
 class VideoGenRequest(BaseModel):
     model: str = "seedance-2.5"
+    chat_mode: str = "Fast"
     prompt: str = Field(..., min_length=1)
     # Admin-only profile pin used for controlled profile smoke tests.
     account: str | None = Field(default=None, min_length=1, max_length=128)
@@ -1119,6 +1120,7 @@ class VideoGenRequest(BaseModel):
 
 class VideoBatchRequest(BaseModel):
     model: str = "seedance-2.5"
+    chat_mode: str = "Fast"
     prompts: list[str] = Field(..., min_length=1, max_length=100)
     # Admin-only, one canonical profile/email per prompt. This remains
     # optional so existing clients continue to use normal pool scheduling.
@@ -1175,6 +1177,7 @@ class TaskResponse(BaseModel):
     id: str
     status: str
     model: str | None = None
+    chat_mode: str = "Fast"
     duration: int | None = None
     prompt: str | None = None
     # Logical Chromium/Dola profile that accepted the composer input. This is
@@ -1211,6 +1214,21 @@ def _normalize_reference_image_mode(value, prompt="") -> str:
     if SKETCH_COLOR_RESTORATION_MARKER.lower() in str(prompt or "").lower():
         return "sketch"
     return "none"
+
+
+def _normalize_chat_mode(value) -> str:
+    normalized = str(value or "Fast").strip().casefold()
+    if normalized not in {"fast", "pro"}:
+        raise ValueError("Chế độ tạo video phải là Fast hoặc Pro")
+    return "Pro" if normalized == "pro" else "Fast"
+
+
+def _task_chat_mode(timings: dict) -> str:
+    raw_mode = timings.get("chat_mode_override") or timings.get("chat_mode_default") or "Fast"
+    try:
+        return _normalize_chat_mode(raw_mode)
+    except ValueError:
+        return "Fast"
 
 
 def _validate_video_config(client: dict, model, prompt, duration, size=None, ratio=None):
@@ -1267,14 +1285,16 @@ def _decode_task_timings(raw) -> dict | None:
 
 
 def _task_response(row: dict) -> TaskResponse:
+    timings = _decode_task_timings(row.get("timings_json")) or {}
     return TaskResponse(
         id=row["id"], status=row["status"], model=row["model"],
+        chat_mode=_task_chat_mode(timings),
         duration=row.get("duration"), prompt=row["prompt"],
         account=row.get("account"),
         video_url=row.get("video_url"), error=row.get("error"),
         failure_code=row.get("failure_code"),
         video_metadata=_decode_video_metadata(row.get("video_metadata")),
-        timings=_decode_task_timings(row.get("timings_json")),
+        timings=timings or None,
         reference_image_names=_task_reference_image_names(row.get("reference_image_names")),
         reference_image_mode=_normalize_reference_image_mode(
             row.get("reference_image_mode"), row.get("prompt")
@@ -1286,17 +1306,19 @@ def _task_response(row: dict) -> TaskResponse:
 
 def _task_status_response(row: dict) -> dict:
     """Small payload for queue polling; prompts and references are sent once on list load."""
+    timings = _decode_task_timings(row.get("timings_json")) or {}
     return {
         "id": row["id"],
         "status": row["status"],
         "model": row.get("model"),
+        "chat_mode": _task_chat_mode(timings),
         "duration": row.get("duration"),
         "account": row.get("account"),
         "video_url": row.get("video_url"),
         "error": row.get("error"),
         "failure_code": row.get("failure_code"),
         "video_metadata": _decode_video_metadata(row.get("video_metadata")),
-        "timings": _decode_task_timings(row.get("timings_json")),
+        "timings": timings or None,
     }
 
 
@@ -1850,6 +1872,138 @@ def _mark_fast_mode_fallback_failed(row: dict, detail: str = "") -> None:
         failure_code="FAST_MODE_FALLBACK_FAILED",
         finished_at=time.time(),
     )
+
+
+class FastToProLimitError(RuntimeError):
+    """The one Pro retry after Fast credit exhaustion did not complete."""
+
+
+def _is_fast_to_pro_retry(timings: dict | None) -> bool:
+    timings = timings if isinstance(timings, dict) else {}
+    try:
+        fallback_count = int(timings.get("auto_fast_to_pro_fallback_count") or 0)
+    except (TypeError, ValueError):
+        fallback_count = 0
+    return (
+        fallback_count > 0
+        and str(timings.get("chat_mode_override") or "").strip().casefold() == "pro"
+    )
+
+
+def _fast_to_pro_limit_message(detail: str = "") -> str:
+    message = (
+        "Fast đã hết credit; hệ thống đã thử lại Seedance 2.5 ở chế độ Pro "
+        "nhưng vẫn thất bại. Limit: kiểm tra credit/lượt tạo video của tài khoản Dola."
+    )
+    detail = str(detail or "").strip()
+    if detail:
+        message += f" Chi tiết: {detail[:220]}"
+    return message[:500]
+
+
+def _mark_fast_to_pro_limit(row: dict, detail: str = "") -> None:
+    task_id = str(row.get("id") or "").strip()
+    current = store.get(task_id) if task_id else None
+    if (
+        not current
+        or current.get("status") not in {"submitting", "processing"}
+        or current.get("account") != row.get("account")
+        or current.get("conversation_id") != row.get("conversation_id")
+    ):
+        return
+    store.update(
+        task_id,
+        status="failed",
+        error=_fast_to_pro_limit_message(detail),
+        failure_code="LIMIT",
+        finished_at=time.time(),
+    )
+
+
+def _schedule_fast_to_pro_fallback(row: dict, detail: str = "") -> bool:
+    """Retry a Fast credit rejection once in Pro on the same profile/task."""
+    task_id = str(row.get("id") or "").strip()
+    if not task_id or task_id in VIDEO_CANCELLED_TASKS:
+        return False
+    current = store.get(task_id)
+    if not current or current.get("status") not in {"submitting", "processing"}:
+        return False
+    if (
+        current.get("account") != row.get("account")
+        or current.get("conversation_id") != row.get("conversation_id")
+    ):
+        return False
+
+    account = str(current.get("account") or "").strip()
+    timings = _decode_task_timings(current.get("timings_json")) or {}
+    if str(timings.get("chat_mode_override") or "").strip().casefold() != "fast":
+        return False
+    try:
+        fallback_count = max(
+            0, int(timings.get("auto_fast_to_pro_fallback_count") or 0)
+        )
+    except (TypeError, ValueError):
+        fallback_count = 0
+    if fallback_count >= 1 or (not account and current.get("conversation_id")):
+        return False
+
+    timings["auto_fast_to_pro_fallback_count"] = 1
+    timings["fast_to_pro_fallback_account"] = account or None
+    timings["chat_mode_override"] = "Pro"
+    timings["last_auto_retry_reason"] = "fast_credit_exhausted_pro_mode"
+    timings["last_auto_retry_at"] = time.time()
+    try:
+        total_retry_count = max(0, int(current.get("retry_count") or 0)) + 1
+    except (TypeError, ValueError):
+        total_retry_count = 1
+
+    ratio = current.get("ratio")
+    if ratio == "default":
+        ratio = None
+    references = _task_reference_images(current.get("reference_images"))
+    reference_names = _task_reference_image_names(
+        current.get("reference_image_names")
+    )
+    retry_message = (
+        "Dola báo Fast hết credit; đang thử lại cùng yêu cầu bằng Seedance 2.5 Pro."
+    )
+    store.update(
+        task_id,
+        status="submitting",
+        account=None,
+        conversation_id=None,
+        deadline_at=None,
+        last_poll_at=0,
+        video_url=None,
+        video_metadata=None,
+        error=retry_message,
+        failure_code=None,
+        started_at=None,
+        finished_at=None,
+        retry_count=total_retry_count,
+        last_retry_at=time.time(),
+        timings_json=_encode_task_timings(timings),
+    )
+    _track_video_task(
+        task_id,
+        _run_task(
+            task_id,
+            current.get("model") or "seedance-2.5",
+            current.get("prompt") or "",
+            ratio,
+            current.get("duration"),
+            references,
+            _task_client(current),
+            preferred_account=account or None,
+            reference_image_names=reference_names,
+        ),
+    )
+    print(
+        f"[pool] task={task_id} Fast credit exhausted; retrying once in Pro "
+        f"on {account or 'an available profile'}: {str(detail)[:180]}",
+        flush=True,
+    )
+    return True
 
 
 def _schedule_cannot_answer_retry(
@@ -2432,6 +2586,10 @@ async def _run_task(
         existing_row.get("timings_json") if existing_row else None
     ) or {}
     chat_mode_override = str(timings.get("chat_mode_override") or "").strip() or None
+    if not chat_mode_override and "2.5" in str(model or "").casefold():
+        chat_mode_override = "Fast"
+        timings["chat_mode_override"] = chat_mode_override
+        timings["chat_mode_default"] = chat_mode_override
     stored_exclusions = []
     for key in (
         "provider_busy_tried_accounts",
@@ -2465,6 +2623,8 @@ async def _run_task(
     provider_busy_retry_detail = None
     fast_mode_fallback_row = None
     fast_mode_fallback_detail = None
+    fast_to_pro_fallback_row = None
+    fast_to_pro_fallback_detail = None
     post_submit_account_limit_retry_row = None
     post_submit_account_limit_retry_detail = None
     post_submit_rate_limit_retry_row = None
@@ -2602,16 +2762,28 @@ async def _run_task(
                 else None
             )
         )
-        result = await render_pool.generate_video(
-            prompt, ratio, duration, model,
-            on_conversation_id=on_conversation_id, on_poll=on_poll,
-            reference_image_paths=reference_paths, on_timing=on_timing,
-            task_id=task_id, on_profile_bound=on_profile_bound,
-            on_account_rotation=on_account_rotation,
-            on_waiting=on_waiting,
-            preferred_account=preferred_generation_account,
-            excluded_accounts=excluded_accounts,
-            chat_mode=chat_mode_override)
+        try:
+            result = await render_pool.generate_video(
+                prompt, ratio, duration, model,
+                on_conversation_id=on_conversation_id, on_poll=on_poll,
+                reference_image_paths=reference_paths, on_timing=on_timing,
+                task_id=task_id, on_profile_bound=on_profile_bound,
+                on_account_rotation=on_account_rotation,
+                on_waiting=on_waiting,
+                preferred_account=preferred_generation_account,
+                excluded_accounts=excluded_accounts,
+                chat_mode=chat_mode_override,
+                stop_on_credit=(
+                    str(chat_mode_override or "").casefold() == "fast"
+                    or _is_fast_to_pro_retry(timings)
+                ),
+            )
+        except RenderStillProcessingError:
+            raise
+        except Exception as exc:
+            if _is_fast_to_pro_retry(timings):
+                raise FastToProLimitError(str(exc)) from exc
+            raise
         timings["generation_and_poll_ms"] = round(
             (time.monotonic() - generation_started) * 1000
         )
@@ -2620,6 +2792,14 @@ async def _run_task(
                      account=result.get("account"), last_poll_at=time.time(),
                      video_metadata=_encode_video_metadata(result),
                      error=None, failure_code=None, finished_at=time.time())
+    except FastToProLimitError as e:
+        store.update(
+            task_id,
+            status="failed",
+            error=_fast_to_pro_limit_message(str(e)),
+            failure_code="LIMIT",
+            finished_at=time.time(),
+        )
     except RenderStillProcessingError as e:
         keep_polling = _continue_video_polling(task_id, str(e))
         if not keep_polling:
@@ -2631,8 +2811,12 @@ async def _run_task(
         store.update(task_id, status="failed", error=str(e)[:500],
                      failure_code="DAILY_LIMIT", finished_at=time.time())
     except CreditInsufficientError as e:
-        store.update(task_id, status="failed", error=str(e)[:500],
-                     failure_code="CREDIT", finished_at=time.time())
+        if str(chat_mode_override or "").casefold() == "fast":
+            fast_to_pro_fallback_row = store.get(task_id)
+            fast_to_pro_fallback_detail = str(e)
+        else:
+            store.update(task_id, status="failed", error=str(e)[:500],
+                         failure_code="CREDIT", finished_at=time.time())
     except VideoDownloadError as e:
         store.update(task_id, status="failed", error=str(e)[:500],
                      failure_code="VIDEO_DOWNLOAD_FAILED", finished_at=time.time())
@@ -2713,8 +2897,12 @@ async def _run_task(
             provider_rejection_retry_row = store.get(task_id)
             provider_rejection_retry_detail = str(e)
     except PostSubmitCreditError as e:
-        store.update(task_id, status="failed", error=str(e)[:500],
-                     failure_code="CREDIT_DURING_RENDER", finished_at=time.time())
+        if str(chat_mode_override or "").casefold() == "fast":
+            fast_to_pro_fallback_row = store.get(task_id)
+            fast_to_pro_fallback_detail = str(e)
+        else:
+            store.update(task_id, status="failed", error=str(e)[:500],
+                         failure_code="CREDIT_DURING_RENDER", finished_at=time.time())
     except PostSubmitAccountLimitError as e:
         # The provider explicitly rejected this account's quota after ACK.
         # Defer profile rotation until the current browser/key reservations are
@@ -2775,6 +2963,17 @@ async def _run_task(
                 render_pool.release_poll_reservation(row["account"])
         if acquired:
             await key_limiter.release(api_key_hash)
+        if (
+            fast_to_pro_fallback_detail
+            and fast_to_pro_fallback_row
+            and task_id not in VIDEO_CANCELLED_TASKS
+        ):
+            if not _schedule_fast_to_pro_fallback(
+                fast_to_pro_fallback_row, fast_to_pro_fallback_detail
+            ):
+                _mark_fast_to_pro_limit(
+                    fast_to_pro_fallback_row, fast_to_pro_fallback_detail
+                )
         if (
             content_policy_final_detail
             and content_policy_final_row
@@ -2971,6 +3170,7 @@ async def _resume_task(row: dict):
     cannot_answer_sketch = False
     provider_busy_detail = None
     fast_mode_fallback_detail = None
+    fast_to_pro_fallback_detail = None
     content_policy_detail = None
     content_policy_final_detail = None
     provider_rejection_row = None
@@ -3002,17 +3202,24 @@ async def _resume_task(row: dict):
         remaining = max(0.0, deadline - time.time())
         if remaining <= 0:
             raise TimeoutError("Tổng thời gian chờ render đã hết trước khi poll conversation.")
-        result = await asyncio.wait_for(
-            render_pool.resume_video(
-                row["account"], row["conversation_id"], poll_window, on_poll=on_poll,
-                duration=row.get("duration"),
-                model=row.get("model"),
-                ratio=None if row.get("ratio") in (None, "default") else row.get("ratio"),
-                confirm_duration=confirm_duration_now,
-                prompt_text=row.get("prompt"),
-                task_id=task_id),
-            timeout=remaining,
-        )
+        try:
+            result = await asyncio.wait_for(
+                render_pool.resume_video(
+                    row["account"], row["conversation_id"], poll_window, on_poll=on_poll,
+                    duration=row.get("duration"),
+                    model=row.get("model"),
+                    ratio=None if row.get("ratio") in (None, "default") else row.get("ratio"),
+                    confirm_duration=confirm_duration_now,
+                    prompt_text=row.get("prompt"),
+                    task_id=task_id),
+                timeout=remaining,
+            )
+        except RenderStillProcessingError:
+            raise
+        except Exception as exc:
+            if _is_fast_to_pro_retry(task_timings):
+                raise FastToProLimitError(str(exc)) from exc
+            raise
         public_url = f"{config.PUBLIC_BASE}/videos/{Path(result['local_path']).name}"
         store.update(task_id, status="completed", video_url=public_url,
                      account=result.get("account"), last_poll_at=time.time(),
@@ -3023,6 +3230,14 @@ async def _resume_task(row: dict):
             timings = _decode_task_timings(latest.get("timings_json")) or {}
             if timings.pop("duration_confirmation_pending", None) is not None:
                 store.update(task_id, timings_json=_encode_task_timings(timings))
+    except FastToProLimitError as e:
+        store.update(
+            task_id,
+            status="failed",
+            error=_fast_to_pro_limit_message(str(e)),
+            failure_code="LIMIT",
+            finished_at=time.time(),
+        )
     except RenderStillProcessingError as e:
         keep_polling = _continue_video_polling(task_id, str(e))
         if not keep_polling:
@@ -3099,10 +3314,12 @@ async def _resume_task(row: dict):
             provider_rejection_row = store.get(task_id)
             provider_rejection_detail = str(e)
     except PostSubmitCreditError as e:
-        # resume_video already marked the old profile quota-blocked. After the
-        # poll window is released, start a fresh task attempt so the pool can
-        # select another profile instead of ending the task here.
-        post_submit_credit_detail = str(e)
+        if str(task_timings.get("chat_mode_override") or "").casefold() == "fast":
+            fast_to_pro_fallback_detail = str(e)
+        else:
+            # For older jobs or other modes, retain the existing profile-rotation
+            # recovery behavior.
+            post_submit_credit_detail = str(e)
     except PostSubmitAccountLimitError as e:
         # resume_video marks the limited profile before raising. After the old
         # poll reservation is released, start a fresh attempt on another one.
@@ -3145,6 +3362,9 @@ async def _resume_task(row: dict):
             render_pool.release_poll_reservation(row.get("account"))
         if acquired:
             await key_limiter.release(api_key_hash)
+        if fast_to_pro_fallback_detail and task_id not in VIDEO_CANCELLED_TASKS:
+            if not _schedule_fast_to_pro_fallback(row, fast_to_pro_fallback_detail):
+                _mark_fast_to_pro_limit(row, fast_to_pro_fallback_detail)
         if content_policy_final_detail and task_id not in VIDEO_CANCELLED_TASKS:
             _fail_final_content_policy_refusal(row, content_policy_final_detail)
         if fast_mode_fallback_detail and task_id not in VIDEO_CANCELLED_TASKS:
@@ -3509,6 +3729,10 @@ async def create_video(
 ):
     client = _auth(authorization, x_dola_owner, x_dola_internal_signature)
     owner_id = client.get("owner_id")
+    try:
+        chat_mode = _normalize_chat_mode(req.chat_mode)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     preferred_account = None
     if req.account:
         if str(x_dola_admin_request or "").strip() != "1":
@@ -3556,6 +3780,13 @@ async def create_video(
         raise HTTPException(429, str(exc)) from exc
     except PendingTaskLimitExceeded as exc:
         raise HTTPException(429, str(exc)) from exc
+    store.update(
+        task_id,
+        timings_json=_encode_task_timings({
+            "chat_mode_override": chat_mode,
+            "chat_mode_default": chat_mode,
+        }),
+    )
     _track_video_task(task_id, _run_task(
         task_id, model, prompt, ratio, duration, reference_images, client,
         preferred_account=preferred_account,
@@ -3565,6 +3796,7 @@ async def create_video(
         id=task_id,
         status="queued",
         model=model,
+        chat_mode=chat_mode,
         duration=duration,
         prompt=prompt,
         account=preferred_account,
@@ -3590,6 +3822,10 @@ async def create_video_batch(
     """
     client = _auth(authorization, x_dola_owner, x_dola_internal_signature)
     owner_id = client.get("owner_id")
+    try:
+        chat_mode = _normalize_chat_mode(req.chat_mode)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     prompts = [_truncate_prompt(value) for value in req.prompts]
     if not prompts or any(not value for value in prompts):
         raise HTTPException(422, "prompts không được chứa dòng trống")
@@ -3664,6 +3900,13 @@ async def create_video_batch(
         raise HTTPException(429, str(exc)) from exc
 
     for row in task_rows:
+        store.update(
+            row["id"],
+            timings_json=_encode_task_timings({
+                "chat_mode_override": chat_mode,
+                "chat_mode_default": chat_mode,
+            }),
+        )
         _track_video_task(row["id"], _run_task(
             row["id"], row["model"], row["prompt"],
             None if row["ratio"] == "default" else row["ratio"],
@@ -3674,6 +3917,7 @@ async def create_video_batch(
 
     jobs = [TaskResponse(
         id=row["id"], status="queued", model=row["model"],
+        chat_mode=chat_mode,
         duration=row["duration"], prompt=row["prompt"],
         account=row.get("account"),
         reference_image_names=reference_image_names,
@@ -3930,16 +4174,23 @@ async def retry_video(
     # Older failed tasks may predate the automatic single-video instruction.
     # Persist the normalized prompt so the task/API response and the browser
     # payload remain identical on retry.
+    retry_timings = {
+        "chat_mode_override": _normalize_chat_mode(
+            source_timings.get("chat_mode_override") or source_timings.get("chat_mode_default") or "Fast"
+        ),
+        "chat_mode_default": _normalize_chat_mode(
+            source_timings.get("chat_mode_override") or source_timings.get("chat_mode_default") or "Fast"
+        ),
+    }
+    if retry_exclusions:
+        retry_timings["manual_retry_excluded_accounts"] = retry_exclusions
     store.update(
         task_id,
         prompt=retry_prompt,
         reference_images=json.dumps(reference_images, ensure_ascii=False),
         reference_image_names=json.dumps(reference_image_names, ensure_ascii=False),
         reference_image_mode=reference_image_mode,
-        timings_json=_encode_task_timings(
-            {"manual_retry_excluded_accounts": retry_exclusions}
-            if retry_exclusions else {}
-        ),
+        timings_json=_encode_task_timings(retry_timings),
     )
 
     # The failed provider conversation is never reused. Requeueing only
@@ -3961,6 +4212,7 @@ async def retry_video(
         id=task_id,
         status="queued",
         model=model,
+        chat_mode=retry_timings["chat_mode_override"],
         duration=duration,
         prompt=retry_prompt,
         reference_image_names=reference_image_names,

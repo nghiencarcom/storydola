@@ -108,9 +108,10 @@ function isGatewayTimeout(error) {
     || error?.cause?.code === 23;
 }
 
-async function submitOne({ prompt, index, model, ratio, duration, references, referenceImageNames, referenceImageMode, ownerId }) {
+async function submitOne({ prompt, index, model, chatMode, ratio, duration, references, referenceImageNames, referenceImageMode, ownerId }) {
   const payload = {
     model,
+    chat_mode: chatMode,
     prompt,
     duration,
     reference_images: references,
@@ -145,6 +146,7 @@ async function submitOne({ prompt, index, model, ratio, duration, references, re
       id: String(data.id),
       status: data.status || "queued",
       model: data.model || model,
+      chatMode: data.chat_mode || data.chatMode || chatMode,
       duration: Number(data.duration || duration),
       prompt: data.prompt || prompt,
       referenceImageMode: data.reference_image_mode || referenceImageMode,
@@ -222,6 +224,8 @@ export async function POST(request) {
   }
   const provider = "gateway";
   const model = String(body?.model || "seedance-2.5").toLowerCase();
+  const rawChatMode = String(body?.chatMode ?? body?.chat_mode ?? "Fast").trim().toLowerCase();
+  const chatMode = rawChatMode === "fast" ? "Fast" : rawChatMode === "pro" ? "Pro" : "";
   const duration = Number(body?.duration || 15);
   const ratio = body?.ratio ? String(body.ratio) : "9:16";
   if (inputCount(body?.referenceImages ?? body?.references) > 30) {
@@ -229,6 +233,9 @@ export async function POST(request) {
   }
   if (!ALLOWED_MODELS.has(model)) {
     return NextResponse.json({ error: "Chỉ hỗ trợ Seedance 2.0 hoặc Seedance 2.5" }, { status: 422 });
+  }
+  if (!chatMode) {
+    return NextResponse.json({ error: "Chế độ tạo video phải là Fast hoặc Pro" }, { status: 422 });
   }
   if (!ALLOWED_DURATIONS.has(duration)) {
     return NextResponse.json({ error: "Thời lượng chỉ hỗ trợ 5s, 10s hoặc 15s" }, { status: 422 });
@@ -271,6 +278,7 @@ export async function POST(request) {
       batchId,
       prompts: prompts.length,
       model,
+      chatMode,
       duration,
       ratio,
       referenceImageMode,
@@ -291,6 +299,7 @@ export async function POST(request) {
       body: JSON.stringify({
         prompts,
         model,
+        chat_mode: chatMode,
         duration,
         ratio,
         reference_images: generationReferences,
@@ -313,6 +322,7 @@ export async function POST(request) {
           prompt,
           index,
           model,
+          chatMode,
           ratio,
           duration,
           references: generationReferences,
@@ -353,6 +363,7 @@ export async function POST(request) {
         id: String(job.id || ""),
         status: job.status || "queued",
         model: job.model || model,
+        chatMode: job.chat_mode || job.chatMode || chatMode,
         duration: Number(job.duration || duration),
         prompt: job.prompt || prompts[index],
         referenceImageMode: job.reference_image_mode || job.referenceImageMode || referenceImageMode,
@@ -392,6 +403,7 @@ export async function POST(request) {
     config: {
       provider,
       model,
+      chatMode,
       duration,
       ratio,
       referenceCount: generationReferences.length,

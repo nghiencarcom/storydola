@@ -204,7 +204,7 @@ function main() {
     "",
     "Cập nhật trong launcher: chọn Tải cập nhật để tải trực tiếp StoryDola-Windows-latest.zip từ GitHub Releases bằng trình duyệt mặc định; tải xong chọn Cài từ ZIP.",
     "Bộ cập nhật thay chương trình trong thư mục hiện tại; .env.local, data, database và profile trên máy được giữ nguyên.",
-    "Repository GitHub là riêng tư; người tải cần đăng nhập GitHub và có quyền đọc repository.",
+    "Repository GitHub công khai; bộ cập nhật được phát hành qua GitHub Releases.",
     "Không ghi đè hoặc chia sẻ .env.local, account_credentials.*, database hay profile Chromium giữa các máy.",
     "Phiên bản được xác định bởi trường version trong package.json và tên ZIP.",
     "",

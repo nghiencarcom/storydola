@@ -1710,7 +1710,8 @@ class BrowserPool:
                                    preferred_account: str | None = None,
                                    on_account_rotation=None,
                                    excluded_accounts=None,
-                                   chat_mode: str | None = None) -> dict:
+                                   chat_mode: str | None = None,
+                                   stop_on_credit: bool = False) -> dict:
         """Attempts one dispatch pass and releases the semaphore while waiting."""
         # A few lifecycle integrations construct a lightweight pool fixture
         # without running __init__. Keep this dispatch path compatible with
@@ -2102,6 +2103,11 @@ class BrowserPool:
                         # the one accepted-after-submit case that is safe to
                         # hand to the next profile. Each profile is visited at
                         # most once by this dispatch pass.
+                        if stop_on_credit:
+                            # The task scheduler owns a mode fallback for this
+                            # request. Preserve the account/conversation binding
+                            # so it can retry the same task on this profile.
+                            raise
                         print(
                             f"[pool] {account} Dola rejected this request's credit cost; "
                             f"profile remains available for another mode: {str(e)[:180]}",
@@ -2286,7 +2292,8 @@ class BrowserPool:
                              preferred_account: str | None = None,
                              on_account_rotation=None, on_waiting=None,
                              excluded_accounts=None,
-                             chat_mode: str | None = None) -> dict:
+                             chat_mode: str | None = None,
+                             stop_on_credit: bool = False) -> dict:
         """Wait for an eligible profile; recovery may skip already-tried ones."""
         while True:
             try:
@@ -2306,6 +2313,7 @@ class BrowserPool:
                     on_account_rotation,
                     excluded_accounts,
                     chat_mode,
+                    stop_on_credit,
                 )
             except AccountsBusyError:
                 # Wake as soon as another task releases a profile. The

@@ -914,6 +914,7 @@ function mergeGatewayJobs(currentJobs, gatewayJobs, { replaceGateway = false } =
     return previous?.id === job.id
       && previous?.status === job.status
       && previous?.model === job.model
+      && previous?.chatMode === job.chatMode
       && previous?.duration === job.duration
       && previous?.account === job.account
       && previous?.ratio === job.ratio
@@ -962,11 +963,15 @@ function normalizeQueueTask(row) {
   const referenceImageNames = parseQueueValue(row.referenceImageNames ?? row.reference_image_names, []);
   const timings = parseQueueValue(row.timings ?? row.timings_json, null);
   const videoMetadata = parseQueueValue(row.videoMetadata ?? row.video_metadata, null);
+  const rawChatMode = String(
+    row.chatMode || row.chat_mode || timings?.chat_mode_override || timings?.chat_mode_default || "Fast"
+  ).trim().toLowerCase();
   return {
     ...row,
     id: String(row.id || row.task_id || row.taskId || ""),
     status: String(row.status || "unknown"),
     model: row.model || null,
+    chatMode: rawChatMode === "pro" ? "Pro" : "Fast",
     duration: Number(row.duration || 0) || null,
     account: row.account || null,
     ratio: row.ratio && row.ratio !== "default" ? String(row.ratio) : null,
@@ -1099,6 +1104,7 @@ export default function StudioShell({ embedded = false, initialView = "overview"
   const [maivideoLogoutSubmitting, setMaivideoLogoutSubmitting] = useState(false);
   const [mediaDeletingId, setMediaDeletingId] = useState("");
   const [model, setModel] = useState(ENABLED_MODEL);
+  const [chatMode, setChatMode] = useState("Fast");
   const [duration, setDuration] = useState(15);
   useEffect(() => {
     if (!SUPPORTED_DURATIONS.includes(duration)) setDuration(15);
@@ -2091,9 +2097,9 @@ export default function StudioShell({ embedded = false, initialView = "overview"
     }
   }, [loadMediaImages, rememberUploadedMediaNames]);
 
-  async function resolveLocalReferenceManifest(manifest, actionLabel) {
+  async function resolveLocalReferenceManifest(manifest, actionLabel, options = {}) {
     const references = Array.isArray(manifest) ? manifest : [];
-    if (!references.length) return { urls: [], names: [] };
+    if (!references.length) return { urls: [], names: [], missing: [] };
 
     const localItems = await loadMediaImages({ throwOnError: true, applyPendingReferences: false });
     const resolved = references.map((reference) => {
@@ -2102,19 +2108,21 @@ export default function StudioShell({ embedded = false, initialView = "overview"
       return { reference, item, url };
     });
     const missing = resolved.filter(({ item, url }) => !item || !isLocalBatchReferenceUrl(url));
-    if (missing.length) {
-      const names = missing
-        .map(({ reference }, index) => reference.name || referenceFilenameFromUrl(reference.url, index))
-        .filter(Boolean);
+    const missingNames = missing
+      .map(({ reference }, index) => reference.name || referenceFilenameFromUrl(reference.url, index))
+      .filter(Boolean);
+    if (missing.length && options.allowMissing !== true) {
       throw new Error(
         actionLabel + " không thể tiếp tục vì thiếu bản ảnh local cho " + missing.length + " ảnh"
-        + (names.length ? " (" + names.join(", ") + ")" : "")
+        + (missingNames.length ? " (" + missingNames.join(", ") + ")" : "")
         + ". Hãy upload các ảnh này vào thư viện local rồi thử lại."
       );
     }
+    const available = resolved.filter(({ item, url }) => item && isLocalBatchReferenceUrl(url));
     return {
-      urls: resolved.map(({ url }) => url),
-      names: resolved.map(({ item, reference }) => getMediaItemName(item, mediaOriginalNames) || reference.name)
+      urls: available.map(({ url }) => url),
+      names: available.map(({ item, reference }) => getMediaItemName(item, mediaOriginalNames) || reference.name),
+      missing: missingNames
     };
   }
 
@@ -3523,7 +3531,36 @@ export default function StudioShell({ embedded = false, initialView = "overview"
     await deleteMediaImagesRequest([id]);
   }
 
+  function activeJobsUsingMediaImage(item) {
+    const imageId = String(item?.id || "").toLowerCase();
+    if (!/^[a-f0-9]{32}$/.test(imageId)) return [];
+    return jobs.filter((job) => isActiveJobStatus(job?.status)
+      && getJobReferenceManifest(job).some((reference) => {
+        if (!isLocalBatchReferenceUrl(reference.url)) return false;
+        try {
+          return new URL(reference.url, window.location.origin).pathname.toLowerCase().endsWith("/" + imageId);
+        } catch {
+          return false;
+        }
+      }));
+  }
+
+  function mediaImageInUseMessage(item, activeJobs) {
+    const label = getMediaItemName(item, mediaOriginalNames);
+    const jobIds = activeJobs.slice(0, 3).map((job) => String(job.id || "")).filter(Boolean);
+    const more = activeJobs.length > jobIds.length ? " và " + (activeJobs.length - jobIds.length) + " job khác" : "";
+    return "Chưa thể xoá ảnh \"" + label + "\": đang được " + activeJobs.length
+      + " job chưa hoàn tất sử dụng" + (jobIds.length ? " (" + jobIds.join(", ") + more + ")" : "")
+      + ". Hãy chờ job hoàn tất hoặc dừng job trước.";
+  }
+
   async function deleteMediaImage(item) {
+    const activeJobs = activeJobsUsingMediaImage(item);
+    if (activeJobs.length) {
+      setMediaError(mediaImageInUseMessage(item, activeJobs));
+      setMediaNotice("");
+      return;
+    }
     const label = getMediaItemName(item, mediaOriginalNames);
     if (!window.confirm("Xoá \"" + label + "\" khỏi thư viện ảnh trên máy?")) return;
     setMediaDeletingId(getMediaItemId(item));
@@ -3546,19 +3583,38 @@ export default function StudioShell({ embedded = false, initialView = "overview"
     const selectedIds = new Set(mediaBulkSelectedIds);
     const items = mediaImages.filter((item) => selectedIds.has(getMediaItemId(item)));
     if (!items.length || mediaBulkDeleting) return;
-    if (!window.confirm("Xoá " + items.length + " file đã chọn khỏi thư viện ảnh trên máy?")) return;
+    const protectedItems = items
+      .map((item) => ({ item, jobs: activeJobsUsingMediaImage(item) }))
+      .filter(({ jobs: activeJobs }) => activeJobs.length > 0);
+    const protectedIds = new Set(protectedItems.map(({ item }) => getMediaItemId(item)));
+    const deletableItems = items.filter((item) => !protectedIds.has(getMediaItemId(item)));
+    if (!deletableItems.length) {
+      const firstProtected = protectedItems[0];
+      setMediaError(firstProtected
+        ? mediaImageInUseMessage(firstProtected.item, firstProtected.jobs)
+        : "Không có ảnh hợp lệ để xoá.");
+      setMediaNotice("");
+      return;
+    }
+    const protectedSummary = protectedItems.length
+      ? " Giữ lại " + protectedItems.length + " ảnh đang được job chưa hoàn tất sử dụng."
+      : "";
+    if (!window.confirm("Xoá " + deletableItems.length + " ảnh khỏi thư viện trên máy?" + protectedSummary)) return;
 
     setMediaBulkDeleting(true);
     setMediaError("");
-    setMediaNotice("Đang xoá " + items.length + " file đã chọn...");
+    setMediaNotice("Đang xoá " + deletableItems.length + " file đã chọn...");
     try {
-      const ids = items.map(getMediaItemId).filter(Boolean);
+      const ids = deletableItems.map(getMediaItemId).filter(Boolean);
       const payload = await deleteMediaImagesRequest(ids);
       const deletedIds = new Set(Array.isArray(payload.deleted_ids) ? payload.deleted_ids : ids);
       setMediaImages((current) => current.filter((item) => !deletedIds.has(getMediaItemId(item))));
       setSelectedMediaIds((current) => current.filter((id) => !deletedIds.has(id)));
       setMediaBulkSelectedIds((current) => current.filter((id) => !deletedIds.has(id)));
-      setMediaNotice("Đã xoá " + deletedIds.size + " ảnh khỏi thư viện trên máy.");
+      setMediaNotice("Đã xoá " + deletedIds.size + " ảnh khỏi thư viện trên máy."
+        + (protectedItems.length
+          ? " Giữ lại " + protectedItems.length + " ảnh đang được job chưa hoàn tất sử dụng; có thể xoá sau khi job kết thúc hoặc bị dừng."
+          : ""));
     } catch (deleteError) {
       setMediaError(deleteError?.message || "Không thể xoá ảnh local.");
       setMediaNotice("");
@@ -3691,6 +3747,7 @@ export default function StudioShell({ embedded = false, initialView = "overview"
           referenceImageNames: combinedReferenceNames,
           provider: "gateway",
           model,
+          chatMode,
           duration,
           ratio,
           referenceImageMode,
@@ -3719,6 +3776,7 @@ export default function StudioShell({ embedded = false, initialView = "overview"
         batchId: payload.batchId,
         provider: job.provider || "gateway",
         model: job.model || model,
+        chatMode: job.chatMode || job.chat_mode || chatMode,
         duration: Number(job.duration || duration),
         ratio: job.ratio || ratio,
         referenceImages: submittedReferences,
@@ -3735,6 +3793,7 @@ export default function StudioShell({ embedded = false, initialView = "overview"
         failed: payload.summary?.failed || 0,
         provider: "gateway",
         model,
+        chatMode,
         duration,
         ratio,
         referenceImageMode: payload.config?.referenceImageMode || referenceImageMode,
@@ -3781,10 +3840,28 @@ export default function StudioShell({ embedded = false, initialView = "overview"
       const requestedRatio = String(job?.ratio || "").trim();
       const nextRatio = SUPPORTED_RATIOS.includes(requestedRatio) ? requestedRatio : "9:16";
       const requestedModel = String(job?.model || ENABLED_MODEL).trim();
+      const requestedChatMode = String(
+        job?.chatMode || job?.chat_mode || job?.timings?.chat_mode_override || job?.timings?.chat_mode_default || "Fast"
+      ).trim().toLowerCase();
       const referenceManifest = getJobReferenceManifest(job);
-      const localReferences = await resolveLocalReferenceManifest(referenceManifest, "Tạo tương tự");
+      const localReferences = await resolveLocalReferenceManifest(referenceManifest, "Tạo tương tự", { allowMissing: true });
       const references = localReferences.urls;
       const referenceNames = localReferences.names;
+      if (localReferences.missing.length) {
+        const remainingMessage = references.length
+          ? "Studio sẽ nạp " + references.length + " ảnh còn tìm thấy."
+          : "Studio sẽ nạp prompt mà không có ảnh tham chiếu.";
+        const missingList = localReferences.missing.slice(0, 8).join(", ");
+        const moreMissing = localReferences.missing.length > 8
+          ? " và " + (localReferences.missing.length - 8) + " ảnh khác"
+          : "";
+        if (!window.confirm(
+          "Không tìm thấy " + localReferences.missing.length + " ảnh tham chiếu local"
+          + (missingList ? " (" + missingList + moreMissing + ")" : "")
+          + ". " + remainingMessage
+          + " Hãy huỷ nếu muốn upload lại ảnh trước. Tiếp tục nạp task?"
+        )) return;
+      }
       const hasExistingSketchReferences = isSketchReferenceJob(job) && references.length > 0;
       const notes = [];
 
@@ -3799,6 +3876,7 @@ export default function StudioShell({ embedded = false, initialView = "overview"
       if (promptInputRef.current) promptInputRef.current.value = nextPrompt;
       setPromptText(nextPrompt);
       setModel(ENABLED_MODEL);
+      setChatMode(requestedChatMode === "pro" ? "Pro" : "Fast");
       setDuration(nextDuration);
       setRatio(nextRatio);
       // Stored task references already contain the exact images sent to
@@ -3822,7 +3900,10 @@ export default function StudioShell({ embedded = false, initialView = "overview"
       const actionLabel = mode === "edit" ? "Đã nạp task để chỉnh sửa" : "Đã nạp task để chỉnh sửa hoặc tạo video tương tự";
       if (hasExistingSketchReferences) notes.push("đã giữ lại ảnh chì đã tạo và sẽ dùng trực tiếp, không tạo ảnh chì lần nữa");
       const detail = notes.length ? " (" + notes.join("; ") + ")" : "";
-      setNotice(actionLabel + detail + ". Task cũ không bị thay đổi.");
+      setNotice(actionLabel + detail + ". Task cũ không bị thay đổi."
+        + (localReferences.missing.length
+          ? " Đã bỏ qua " + localReferences.missing.length + " ảnh tham chiếu local đã bị xoá."
+          : ""));
       selectView("batch");
     } catch (loadError) {
       setError(loadError?.message || "Không thể nạp task vào Studio.");
@@ -3899,6 +3980,10 @@ export default function StudioShell({ embedded = false, initialView = "overview"
     }
 
     const retryModel = ENABLED_MODEL;
+    const rawRetryChatMode = String(
+      job?.chatMode || job?.chat_mode || job?.timings?.chat_mode_override || job?.timings?.chat_mode_default || "Fast"
+    ).trim().toLowerCase();
+    const retryChatMode = rawRetryChatMode === "pro" ? "Pro" : "Fast";
     const rawRetryPrompt = String(job.prompt || "").trim();
     const normalizedRetryPrompt = getSinglePrompt(rawRetryPrompt);
     const durationValue = Number(job.duration);
@@ -3914,6 +3999,7 @@ export default function StudioShell({ embedded = false, initialView = "overview"
     const retryManifest = getJobReferenceManifest(job);
     let retryReferences = retryManifest.map((item) => item.url).slice(0, 30);
     let retryReferenceNames = retryManifest.map((item) => item.name).slice(0, 30);
+    let missingRetryReferenceNames = [];
     const sketchReferenceJob = isSketchReferenceJob(job);
     // A running legacy Gateway cannot clean the historical field order. Use
     // the already-normalized batch path for that one case; canonical prompts
@@ -3924,9 +4010,28 @@ export default function StudioShell({ embedded = false, initialView = "overview"
     setNotice("Đang tạo lại video lỗi...");
     try {
       if (retryManifest.length) {
-        const localReferences = await resolveLocalReferenceManifest(retryManifest, "Retry");
+        const localReferences = await resolveLocalReferenceManifest(retryManifest, "Retry", { allowMissing: true });
         retryReferences = localReferences.urls;
         retryReferenceNames = localReferences.names;
+        missingRetryReferenceNames = localReferences.missing || [];
+        if (missingRetryReferenceNames.length) {
+          const remainingMessage = retryReferences.length
+            ? "Job sẽ được đưa lại vào hàng đợi với " + retryReferences.length + " ảnh còn tìm thấy."
+            : "Không còn ảnh tham chiếu nào; job sẽ được đưa lại vào hàng đợi chỉ với prompt.";
+          const missingList = missingRetryReferenceNames.slice(0, 8).join(", ");
+          const moreMissing = missingRetryReferenceNames.length > 8
+            ? " và " + (missingRetryReferenceNames.length - 8) + " ảnh khác"
+            : "";
+          if (!window.confirm(
+            "Không tìm thấy " + missingRetryReferenceNames.length + " ảnh tham chiếu local đã dùng cho job"
+            + (missingList ? " (" + missingList + moreMissing + ")" : "")
+            + ". " + remainingMessage
+            + " Ảnh đã xoá không thể khôi phục từ hàng đợi. Bạn muốn tiếp tục?"
+          )) {
+            setNotice("Đã huỷ retry; job cũ chưa bị thay đổi.");
+            return;
+          }
+        }
       }
       const retryReferenceOverride = retryManifest.length
         ? { reference_images: retryReferences, reference_image_names: retryReferenceNames }
@@ -3938,6 +4043,7 @@ export default function StudioShell({ embedded = false, initialView = "overview"
         referenceImageNames: retryReferenceNames,
         provider: "gateway",
         model: retryModel,
+        chatMode: retryChatMode,
         duration: retryDuration,
         ratio: retryRatio,
         // The retry manifest already contains the exact images that were sent
@@ -4001,6 +4107,7 @@ export default function StudioShell({ embedded = false, initialView = "overview"
         batchId: payload.batchId || recreated.batchId || "retry_" + Date.now(),
         provider: recreated.provider || "gateway",
         model: recreated.model || retryModel,
+        chatMode: recreated.chatMode || recreated.chat_mode || retryChatMode,
         duration: Number(recreated.duration || retryDuration),
         ratio: recreated.ratio || retryRatio,
         referenceImageMode: recreated.reference_image_mode || recreated.referenceImageMode || (job.referenceImageMode === "sketch" ? "sketch" : "none"),
@@ -4029,7 +4136,10 @@ export default function StudioShell({ embedded = false, initialView = "overview"
       const retryPlacement = recreatedId === sourceId
         ? "trên chính job lỗi"
         : "bằng một task retry mới và đã ẩn task lỗi cũ";
-      setNotice("Đã đưa lại video " + nextJob.duration + "s vào hàng đợi " + retryPlacement + ". Gateway sẽ tạo conversation mới cho lần thử này.");
+      setNotice("Đã đưa lại video " + nextJob.duration + "s vào hàng đợi " + retryPlacement + ". Gateway sẽ tạo conversation mới cho lần thử này."
+        + (missingRetryReferenceNames.length
+          ? " Đã bỏ qua " + missingRetryReferenceNames.length + " ảnh tham chiếu local đã bị xoá."
+          : ""));
     } catch (retryError) {
       setError(retryError?.message || "Không thể tạo lại video.");
       setNotice("");
@@ -4776,15 +4886,38 @@ export default function StudioShell({ embedded = false, initialView = "overview"
           <div className="provider-options">
               <div className="provider-option provider-selected provider-static" role="status" aria-label="Nguồn render Dola Gateway">
                 <span className="provider-radio"><span /></span>
-                <span className="provider-copy"><strong>Dola Gateway · cổng {gatewayPort}</strong><small>Chat Pro · SeedancePro · thời lượng {duration}s</small></span>
+                <span className="provider-copy"><strong>Dola Gateway · cổng {gatewayPort}</strong><small>Chat {chatMode}{chatMode === "Fast" ? " · thử Pro một lần nếu hết credit" : " · chế độ do bạn chọn"} · thời lượng {duration}s</small></span>
               </div>
+            </div>
+          </div>
+          <div className="option-group">
+            <label className="option-label">Chế độ Seedance 2.5</label>
+            <div className="segmented-control chat-mode-control" role="group" aria-label="Chế độ tạo video">
+              {["Fast", "Pro"].map((value) => (
+                <button
+                  type="button"
+                  key={value}
+                  className={chatMode === value ? "segment-selected" : ""}
+                  onClick={() => setChatMode(value)}
+                  aria-pressed={chatMode === value}
+                  data-chat-mode={value.toLowerCase()}
+                >
+                  {value}{value === "Fast" ? <span className="recommended-dot" /> : null}
+                </button>
+              ))}
+            </div>
+            <div className="inline-note">
+              <Zap size={13} />
+              {chatMode === "Fast"
+                ? "Fast là mặc định; nếu Dola báo hết credit, Gateway tự thử lại một lần bằng Pro."
+                : "Tác vụ mới sẽ gửi trực tiếp bằng Pro; không tự chuyển chế độ."}
             </div>
           </div>
           <div className="option-group">
             <label className="option-label">Model</label>
             <div className="model-options">
               {[
-                { value: ENABLED_MODEL, title: "Seedance 2.5", note: "Chat Pro · yêu cầu model trong prompt" }
+                { value: ENABLED_MODEL, title: "Seedance 2.5", note: "Chọn chế độ Fast hoặc Pro bên dưới" }
               ].map((option) => (
                 <button type="button" key={option.value} className={"model-option" + (model === option.value ? " model-selected" : "")} onClick={() => setModel(option.value)} aria-pressed={model === option.value} data-model={option.value}>
                   <span className="model-radio"><span /></span><span className="model-copy"><strong>{option.title}</strong><small>{option.note}</small></span>
@@ -5566,7 +5699,7 @@ export default function StudioShell({ embedded = false, initialView = "overview"
             <p>Gửi prompt Seedance hàng loạt, theo dõi hàng đợi và quản lý media trong một workspace dùng chung tài khoản MaiVideo.</p>
             <div className="auth-points">
               <span><ShieldCheck size={16} /> Phiên được xác thực bởi MaiVideo</span>
-              <span><Layers3 size={16} /> Dola Gateway tạo video qua chat Pro · 15s</span>
+              <span><Layers3 size={16} /> Dola Gateway · Seedance 2.5 Fast / Pro · 15s</span>
               <span><CheckCircle2 size={16} /> Mỗi tài khoản một workspace</span>
             </div>
           </div>

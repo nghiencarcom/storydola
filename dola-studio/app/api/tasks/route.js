@@ -115,6 +115,10 @@ function normalizeTask(row, includeOwnerId = false) {
     : row?.error || null;
   const explicitFailureCode = row?.failure_code || row?.failureCode || null;
   const retryCount = Math.max(0, Number(row?.retry_count || row?.retryCount || 0) || 0);
+  const timings = decodeMetadata(row?.timings_json || row?.timings);
+  const rawChatMode = String(
+    row?.chat_mode || row?.chatMode || timings?.chat_mode_override || timings?.chat_mode_default || "Fast"
+  ).trim().toLowerCase();
   const rawReferenceMode = String(row?.reference_image_mode || row?.referenceImageMode || "").trim().toLowerCase();
   const referenceImageMode = rawReferenceMode === "sketch"
     || String(row?.prompt || "").toLowerCase().includes("[color restoration]")
@@ -124,6 +128,7 @@ function normalizeTask(row, includeOwnerId = false) {
     id: String(row?.id || ""),
     status,
     model: row?.model || null,
+    chatMode: rawChatMode === "pro" ? "Pro" : "Fast",
     duration: Number(row?.duration || 0) || null,
     account: row?.account || null,
     ratio: ratio && ratio !== "default" ? ratio : null,
@@ -140,7 +145,7 @@ function normalizeTask(row, includeOwnerId = false) {
     failureCode: explicitFailureCode || (typeof error === "string" && /No video generated within/i.test(error)
       ? "RENDER_TIMEOUT"
       : null),
-    timings: decodeMetadata(row?.timings_json || row?.timings),
+    timings,
     retryOf: row?.retry_of || row?.retryOf || null,
     retryCount,
     videoMetadata: decodeMetadata(row?.video_metadata || row?.videoMetadata),
