@@ -15,7 +15,7 @@ Gói này chạy StoryAI bằng Docker. Project, ảnh, video và file render đ
 2. Windows: mở `Start StoryAI.bat`.
 3. macOS: mở `Start StoryAI.command`. Nếu macOS chặn lần đầu, nhấp phải file và chọn **Open**.
 4. Linux: chạy `./scripts/start-storyai.sh` trong thư mục đã giải nén.
-5. Lần đầu chạy sẽ tạo file `.env` và sinh khóa mã hóa riêng cho máy. Gói phát hành đã điền sẵn image; nếu bạn nhận được gói cấu hình mẫu, hãy đặt `STORYAI_IMAGE` trong `.env` theo hướng dẫn của người phát hành.
+5. Lần đầu chạy sẽ tạo file `.env` và sinh khóa mã hóa riêng cho máy. Cấu hình đã trỏ tới image StoryAI công khai; bạn chỉ cần sửa `STORYAI_IMAGE` trong `.env` nếu người phát hành cung cấp registry khác.
 6. Launcher tải image mới nhất, khởi động ứng dụng và mở trình duyệt tại `http://localhost:3011`.
 
 Nếu image nằm trong GHCR riêng tư, đăng nhập một lần bằng `docker login ghcr.io` trước khi chạy launcher. Để người dùng không cần tài khoản GitHub, người phát hành cần đặt package container ở chế độ public.
