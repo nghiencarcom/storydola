@@ -71,6 +71,6 @@ export function ProjectsView({ presetFilter }: { presetFilter?: StoryPresetId | 
         </div>
       </section>
     </div>}
-    <section className="projects-info panel-card"><div className="info-icon"><Icon name="spark" size={17} /></div><div><strong>Project slug là nơi lưu toàn bộ dữ liệu</strong><p>Mỗi dự án có URL riêng để mở lại, chỉnh preset, chạy chunk và theo dõi tiến độ.</p></div><span className="info-example">/projects/ten-du-an</span></section>
+    <section className="projects-info panel-card"><div className="info-icon"><Icon name="spark" size={17} /></div><div><strong>Project slug là nơi lưu toàn bộ dữ liệu</strong><p>Mỗi dự án có URL riêng để mở lại, chỉnh preset, nhập JSON riêng cho từng tập và theo dõi tiến độ.</p></div><span className="info-example">/projects/ten-du-an</span></section>
   </>;
 }

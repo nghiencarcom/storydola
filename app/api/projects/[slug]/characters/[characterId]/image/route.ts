@@ -2,7 +2,8 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
 import { generateMaiVideoProfileImage } from "../../../../../../lib/media-provider";
-import { resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
+import { isFlowImageModel, isMuseImageModel, resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
+import { readMaiVideoAuthCookie } from "../../../../../../lib/maivideo-auth-shared";
 import { now, readData, updateData } from "../../../../../../lib/server-store";
 import type { MediaGenerationSettings } from "../../../../../../lib/project-types";
 
@@ -48,7 +49,11 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   if (!prompt) return NextResponse.json({ message: "Nhân vật cần có prompt tạo ảnh." }, { status: 400 });
   try {
     const mediaGeneration = resolveMediaGenerationSettings({ ...project.mediaGeneration, ...body.mediaGeneration });
-    const image = await generateMaiVideoProfileImage({ projectSlug: slug, profileKind: "characters", profileId: characterId, prompt, mediaGeneration, contentGenre: project.contentGenre, secondaryGenres: project.secondaryGenres, storySetting: project.storySetting, settingNotes: project.settingNotes, visualStyle: project.visualStyle, imageStyle: project.imageStyle });
+    const providerAuthToken = isMuseImageModel(mediaGeneration.imageModel) || isFlowImageModel(mediaGeneration.imageModel) ? readMaiVideoAuthCookie(request.headers.get("cookie")) : "";
+    if ((isMuseImageModel(mediaGeneration.imageModel) || isFlowImageModel(mediaGeneration.imageModel)) && !providerAuthToken) {
+      return NextResponse.json({ code: "PROVIDER_SESSION_REQUIRED", message: "Hãy đăng nhập MaiVideo để dùng API ảnh Muse.ai hoặc Flow." }, { status: 401 });
+    }
+    const image = await generateMaiVideoProfileImage({ projectSlug: slug, profileKind: "characters", profileId: characterId, prompt, mediaGeneration, providerAuthToken, contentGenre: project.contentGenre, secondaryGenres: project.secondaryGenres, storySetting: project.storySetting, settingNotes: project.settingNotes, visualStyle: project.visualStyle, imageStyle: project.imageStyle });
     const updated = await updateData((current) => {
       const profile = current.projects.find((item) => item.slug === slug)?.characters?.find((item) => item.id === characterId);
       if (!profile) throw new Error("CHARACTER_NOT_FOUND");

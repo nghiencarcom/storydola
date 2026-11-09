@@ -7,8 +7,11 @@ export type MaiVideoAuthUser = {
 
 export const MAIVIDEO_AUTH_COOKIE = process.env.MAIVIDEO_AUTH_COOKIE?.trim() || "maivideo_auth";
 
-const LOCAL_AUTH_BASE_URL = (process.env.MAIVIDEO_AUTH_LOCAL_BASE_URL?.trim() || "http://127.0.0.1:3005").replace(/\/$/, "");
 const REMOTE_AUTH_BASE_URL = (process.env.MAIVIDEO_AUTH_BASE_URL?.trim() || "https://maivideo.top").replace(/\/$/, "");
+// Local StoryAI should authenticate against the same production MaiVideo
+// identity that owns public Seedance API keys. Set this explicitly to a local
+// MaiVideo URL only when developing against a separate local account store.
+const LOCAL_AUTH_BASE_URL = (process.env.MAIVIDEO_AUTH_LOCAL_BASE_URL?.trim() || REMOTE_AUTH_BASE_URL).replace(/\/$/, "");
 const AUTH_TIMEOUT_MS = Math.max(2_000, Number(process.env.MAIVIDEO_AUTH_TIMEOUT_MS) || 10_000);
 const AUTH_CACHE_TTL_MS = Math.max(0, Number(process.env.MAIVIDEO_AUTH_CACHE_TTL_MS) || 30_000);
 const authUserCache = new Map<string, { user: MaiVideoAuthUser | null; expiresAt: number }>();
@@ -73,7 +76,11 @@ export async function verifyMaiVideoAuthToken(token: string, baseUrl: string): P
   try {
     const response = await fetch(`${baseUrl}/api/auth/me`, {
       method: "GET",
-      headers: { Accept: "application/json", "X-Auth-Token": rawToken },
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${rawToken}`,
+        "X-Auth-Token": rawToken,
+      },
       cache: "no-store",
       signal: controller.signal,
     });

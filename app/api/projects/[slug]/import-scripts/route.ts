@@ -6,7 +6,6 @@ import { isProjectRenderActive, claimProjectRender, releaseProjectRender } from 
 import { readProjectScenes } from "../../../../lib/scene-store";
 import { continuityContextFromOutput } from "../../../../lib/story-context";
 import { claimProjectTts, isProjectTtsActive, releaseProjectTts } from "../../../../lib/tts-lock";
-import { hasExplicitDialogueSegments, readDialogueSegments } from "../../../../lib/dialogue-segments";
 import { makeActivity, markRenderStale, now, readChunkOutput, readData, saveChunkOutput, updateData } from "../../../../lib/server-store";
 import type { ProjectChunk, StoryProject, ProjectVideoPublishingPackage, VideoPublishingSet } from "../../../../lib/project-types";
 import { normalizeProjectStyleSettings } from "../../../../lib/visual-styles";
@@ -28,6 +27,21 @@ function errorResponse(message: string, status = 400, extra: JsonRecord = {}) {
   return NextResponse.json({ message, ...extra }, { status });
 }
 
+function normalizedSceneId(scene: JsonRecord) {
+  const candidates = [scene.id, scene.scene_id, scene.sceneId, scene.scene_number, scene.sceneNumber]
+    .filter((value) => value !== undefined && value !== null && String(value).trim() !== "");
+  for (const candidate of candidates) {
+    const value = String(candidate).trim().toUpperCase();
+    const match = value.match(/^(?:A\d{2,}[-_:])?S\s*(\d+)$/)
+      || value.match(/^SCENE[\s_-]*(\d+)$/)
+      || value.match(/^(\d+)$/);
+    if (!match) continue;
+    const number = Number(match[1]);
+    if (Number.isSafeInteger(number) && number > 0) return { number, id: `S${String(number).padStart(3, "0")}` };
+  }
+  return undefined;
+}
+
 function validateEpisode(value: unknown, requireDiscreteDramaDurations = false): { episode?: ImportEpisode; message?: string } {
   const payload = asRecord(value);
   if (!payload || payload.schema !== "scene-script.v1") return { message: "Mỗi phần tử episodes phải có schema scene-script.v1." };
@@ -43,10 +57,15 @@ function validateEpisode(value: unknown, requireDiscreteDramaDurations = false):
   for (let index = 0; index < payload.scenes.length; index += 1) {
     const scene = asRecord(payload.scenes[index]);
     if (!scene) return { message: `${chunkId}: cảnh thứ ${index + 1} không phải object.` };
-    const id = String(scene.id || "").trim().toUpperCase();
-    const match = id.match(/^S(\d{3,})$/);
-    if (!match) return { message: `${chunkId}: scene ${index + 1} cần ID dạng S001, S002…` };
-    const sceneNumber = Number(match[1]);
+    const normalizedId = normalizedSceneId(scene);
+    if (!normalizedId) {
+      const suppliedId = [scene.id, scene.scene_id, scene.sceneId, scene.scene_number, scene.sceneNumber]
+        .find((value) => value !== undefined && value !== null && String(value).trim() !== "");
+      const detail = suppliedId === undefined ? "" : ` (đã nhận ${JSON.stringify(String(suppliedId).trim())})`;
+      return { message: `${chunkId}: cảnh ${index + 1} cần ID hợp lệ trong trường id hoặc scene_id, ví dụ S001${detail}. Có thể dùng S001, A01-S001, Scene 1 hoặc số 1.` };
+    }
+    const id = normalizedId.id;
+    const sceneNumber = normalizedId.number;
     numbers.push(sceneNumber);
     if (typeof scene.start_sec !== "number" || !Number.isFinite(scene.start_sec) || scene.start_sec < 0) return { message: `${id}: start_sec phải là số không âm.` };
     if (typeof scene.end_sec !== "number" || !Number.isFinite(scene.end_sec) || scene.end_sec <= scene.start_sec) return { message: `${id}: end_sec phải lớn hơn start_sec.` };
@@ -218,6 +237,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   if (!source) return errorResponse("Không đọc được JSON.");
 
   const bundle = source.schema === "scene-series.v1";
+  if (bundle) return errorResponse("Mỗi lần chỉ được nhập một tập bằng schema scene-script.v1. Hãy tách scene-series.v1 thành từng tập riêng.", 409, { code: "SINGLE_EPISODE_IMPORT_ONLY" });
   let rawEpisodes: unknown[];
   if (bundle) {
     if (!Array.isArray(source.episodes) || source.episodes.length === 0) return errorResponse("scene-series.v1 cần có mảng episodes không rỗng.");
@@ -312,7 +332,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   }
 
   if (busyProject(existing) || isProjectChunkRunActive(slug) || isProjectRenderActive(slug) || isProjectTtsActive(slug)) {
-    return errorResponse("Project đang chạy tác vụ. Hãy đợi tạo kịch bản, TTS, render hoặc queue video hoàn tất rồi nhập JSON.", 409, { code: "PROJECT_BUSY" });
+    return errorResponse("Project đang có tác vụ TTS, render hoặc queue video. Hãy đợi hoàn tất rồi nhập JSON.", 409, { code: "PROJECT_BUSY" });
   }
   if (!claimProjectChunkRun(slug)) return errorResponse("Project đang chạy một tác vụ khác.", 409, { code: "PROJECT_BUSY" });
   if (!claimProjectRender(slug)) {
@@ -352,14 +372,8 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
         const oldChunk = project.chunks.find((item) => item.id === episode.chunkId);
         if (oldChunk?.render) chunk.render = markRenderStale(oldChunk.render);
         else chunk.render = undefined;
-        const ttsTotal = aiReview.scenes.reduce((total, scene) => {
-          if (project.presetId === "ai-drama" && hasExplicitDialogueSegments(scene)) {
-            return total + readDialogueSegments(scene, project.characters || []).length;
-          }
-          return total + (String(scene.dialogue_or_voiceover || "").trim() ? 1 : 0);
-        }, 0);
-        chunk.tts = ttsTotal
-          ? { status: "idle", completed: 0, total: ttsTotal, failed: 0, updatedAt: timestamp }
+        chunk.tts = aiReview.scenes.some((scene) => String(scene.dialogue_or_voiceover || "").trim())
+          ? { status: "idle", completed: 0, total: aiReview.scenes.filter((scene) => String(scene.dialogue_or_voiceover || "").trim()).length, failed: 0, updatedAt: timestamp }
           : { status: "not_needed", completed: 0, total: 0, failed: 0, updatedAt: timestamp };
         importedChunkRecords.push(chunk);
       }

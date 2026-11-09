@@ -25,9 +25,10 @@ export function slugify(value: string) {
 export type ProjectStatus = "draft" | "processing" | "ready" | "needs_review" | "failed";
 export type ChunkStatus = "queued" | "processing" | "completed" | "needs_review" | "failed";
 export type MediaSource = "stock-mixed" | "stock-image" | "stock-video" | "maivideo-image" | "maivideo-video";
-export const IMAGE_DETAIL_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export const IMAGE_DETAIL_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ImageDetailLevel = (typeof IMAGE_DETAIL_LEVELS)[number];
 export const IMAGE_DETAIL_LEVEL_LABELS: Record<ImageDetailLevel, string> = {
+  minimal: "Tối thiểu · Minimal",
   low: "Thấp · Low",
   medium: "Trung bình · Medium",
   high: "Cao · High",
@@ -35,9 +36,11 @@ export const IMAGE_DETAIL_LEVEL_LABELS: Record<ImageDetailLevel, string> = {
   max: "Tối đa · Max",
 };
 export type MediaGenerationSettings = {
-  videoProvider: "maivideo" | "seedance";
+  videoProvider: "maivideo" | "higgsfield" | "seedance" | "muse" | "flow";
   /** Optional account profile; empty means use the workspace default. */
   seedanceAccountId?: string;
+  /** Dola Seedance chat mode sent as chat_mode. */
+  seedanceChatMode: "Fast" | "Pro";
   imageModel: string;
   imageQuality: string;
   imageDetailLevel: ImageDetailLevel;
@@ -52,15 +55,18 @@ export type MediaGenerationSettings = {
   videoUseCharacterReferences: boolean;
   videoUseLocationReferences: boolean;
   videoUseSceneImageReference: boolean;
+  /** Flow reference composition. AI Story and Audio Story always resolve to ingredients. */
+  flowReferenceMode: "ingredients" | "frames";
 };
 
 export const DEFAULT_MEDIA_GENERATION_SETTINGS: MediaGenerationSettings = {
-  videoProvider: "seedance",
-  imageModel: "gpt-image-2.5-flare",
+  videoProvider: "maivideo",
+  seedanceChatMode: "Fast",
+  imageModel: "gemini-nano-banana-2.1",
   imageQuality: "1440p",
   imageDetailLevel: "medium",
-  videoModel: "seedance-2.5",
-  videoQuality: "profile",
+  videoModel: "v6",
+  videoQuality: "1080p",
   videoDurationMode: "scene",
   videoDurationSec: 5,
   videoMultiShot: false,
@@ -70,6 +76,7 @@ export const DEFAULT_MEDIA_GENERATION_SETTINGS: MediaGenerationSettings = {
   videoUseCharacterReferences: true,
   videoUseLocationReferences: true,
   videoUseSceneImageReference: true,
+  flowReferenceMode: "ingredients",
 };
 
 export type ImageGenerationModelOption = {
@@ -84,7 +91,7 @@ export type ImageGenerationModelOption = {
 export type VideoGenerationModelOption = {
   id: string;
   label: string;
-  provider?: "maivideo" | "seedance";
+  provider?: "maivideo" | "higgsfield" | "seedance" | "muse" | "flow";
   qualities: string[];
   aspectRatios?: string[];
   minDurationSec: number;
@@ -165,7 +172,7 @@ export type ContinuityQaReport = {
 
 export type VideoGenerationJobStatus = "queued" | "running" | "completed" | "failed" | "paused";
 
-export type VideoGenerationFailureStage = "seedance_create" | "seedance_poll" | "seedance_download" | "seedance_checkpoint";
+export type VideoGenerationFailureStage = "seedance_create" | "seedance_poll" | "seedance_download" | "seedance_checkpoint" | "higgsfield_create" | "higgsfield_poll" | "higgsfield_checkpoint" | "flow_create" | "flow_poll" | "flow_download" | "flow_checkpoint";
 export type VideoGenerationRetryStrategy = "same_task" | "new_task";
 
 export type SceneMediaJobStatus = "queued" | "running" | "completed" | "failed";
@@ -196,6 +203,8 @@ export type SceneMediaJob = {
   seedanceTaskCreatedAt?: string;
   /** MaiVideo checkpoint so polling can resume instead of creating a duplicate job. */
   maiVideoJobId?: string;
+  /** Higgsfield job checkpoint so a poll resumes the existing job. */
+  higgsfieldJobId?: string;
   stage?: VideoGenerationFailureStage;
 };
 
@@ -215,6 +224,10 @@ export type VideoGenerationJob = {
   provider?: string;
   /** Persisted Seedance task checkpoint. Never contains credentials. */
   seedanceTaskId?: string;
+  /** Persisted Higgsfield job checkpoint. Never contains credentials. */
+  higgsfieldJobId?: string;
+  /** Persisted Flow job checkpoint so a poll resumes without creating a duplicate. */
+  maiVideoJobId?: string;
   /** Provider creation time anchors the Seedance 30-minute polling deadline. */
   seedanceTaskCreatedAt?: string;
   /** The current Seedance step, used to recover interrupted jobs safely. */

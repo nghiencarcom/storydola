@@ -1,0 +1,15 @@
+.git
+.next
+node_modules
+data
+logs
+backups
+briefs
+deliverables
+plugin-source
+deliverables
+.env
+.env.local
+.env.*.local
+*.tsbuildinfo
+npm-debug.log*

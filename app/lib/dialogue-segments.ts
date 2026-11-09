@@ -54,6 +54,15 @@ export function hasExplicitDialogueSegments(scene: JsonRecord) {
   return Array.isArray(scene.dialogueSegments) || Array.isArray(scene.dialogue_segments);
 }
 
+/** Reject unedited sample instructions before they can be treated as spoken dialogue. */
+export function isTemplateDialogueText(value: unknown) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) return false;
+  return /^\s*\[\s*(?:cảnh\s+\d+\s*s?\s*:|tên nhân vật\s*\]|lời thoại\b|canonical character name\b|replace with\b|placeholder\b)/i.test(text)
+    || /^\s*\[[^\]]*\]\s*:\s*\[/i.test(text)
+    || /^\s*\[[^\]]*(?:tối thiểu|mục tiêu|voiceover instruction|dialogue instruction|replace this)/i.test(text);
+}
+
 /** Read the new cue list, or expose a legacy scene-level line as one editable cue. */
 export function readDialogueSegments(scene: JsonRecord, characters: ProjectCharacter[] = []): DialogueSegment[] {
   const raw = Array.isArray(scene.dialogueSegments) ? scene.dialogueSegments : Array.isArray(scene.dialogue_segments) ? scene.dialogue_segments : undefined;
@@ -77,11 +86,11 @@ export function readDialogueSegments(scene: JsonRecord, characters: ProjectChara
         ...(translations ? { translations } : {}),
         ...(translatedAudio ? { translatedAudio } : {}),
       };
-    }).filter((segment) => segment.text);
+    }).filter((segment) => segment.text && !isTemplateDialogueText(segment.text));
   }
 
   const text = firstText(scene, "dialogue_or_voiceover", "dialogueOrVoiceover", "voiceText", "voiceover", "ttsVoice", "tts_voice");
-  if (!text) return [];
+  if (!text || isTemplateDialogueText(text)) return [];
   const speakerId = speakerCharacterId(scene, characters);
   const speakerName = firstText(scene, "speaker_character", "speakerCharacter", "speaker_name", "speakerName", "speaker") || undefined;
   const audio = asRecord(scene.audio);

@@ -1,19 +1,14 @@
 {
-  "name": "storyai-dola-local",
-  "version": "0.1.9",
+  "name": "storyai",
+  "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "node scripts/dev-local.cjs",
-    "start": "node scripts/dev-local.cjs",
-    "dev:storyai": "node scripts/prepare-local-config.cjs && next dev -p 3021",
-    "dev:dola": "node scripts/dev-dola.cjs",
-    "setup:local": "node scripts/setup-local.cjs",
-    "package:portable": "node scripts/package-portable.cjs",
-    "build:windows-app": "node scripts/build-windows-app.cjs",
+    "dev": "next dev -p 3011",
     "build": "next build",
-    "start:server": "next start -p 3021",
+    "start": "./scripts/start-supervised.sh",
+    "start:server": "node scripts/start-next-server.js",
     "start:supervised": "./scripts/start-supervised.sh",
-    "lint": "node dola-studio/node_modules/eslint/bin/eslint.js --config dola-studio/eslint.config.mjs --rule \"react-hooks/set-state-in-effect: warn\" --rule \"react-hooks/preserve-manual-memoization: warn\" app"
+    "lint": "next lint"
   },
   "dependencies": {
     "next": "16.2.12",

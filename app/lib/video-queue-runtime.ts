@@ -34,14 +34,16 @@ export function recoverInterruptedVideoQueue(queue: VideoQueueState, timestamp: 
   let recovered = 0;
   for (const job of queue.jobs) {
     if (job.status !== "running" || isVideoQueueJobActive(job.id)) continue;
-    const canResume = Boolean(job.seedanceTaskId && job.stage !== "seedance_create");
+    const canResume = Boolean(job.seedanceTaskId && job.stage !== "seedance_create")
+      || Boolean(job.higgsfieldJobId && job.stage !== "higgsfield_create")
+      || Boolean(job.maiVideoJobId && job.provider === "flow" && job.stage !== "flow_create");
     job.status = canResume ? (queue.status === "paused" ? "paused" : "queued") : "failed";
     job.failureStage = job.stage;
-    job.retryStrategy = canResume ? "same_task" : job.seedanceTaskId ? "new_task" : undefined;
+    job.retryStrategy = canResume ? "same_task" : job.seedanceTaskId || job.higgsfieldJobId || job.provider === "flow" ? "new_task" : undefined;
     job.error = canResume
-      ? "Máy chủ đã khởi động lại; tiếp tục poll task Seedance đã lưu."
+      ? job.maiVideoJobId && job.provider === "flow" ? "Máy chủ đã khởi động lại; tiếp tục poll job Flow đã lưu." : job.higgsfieldJobId && !job.seedanceTaskId ? "Máy chủ đã khởi động lại; tiếp tục poll job Higgsfield đã lưu." : "Máy chủ đã khởi động lại; tiếp tục poll task Seedance đã lưu."
       : "Máy chủ đã khởi động lại khi job chưa có task ID để tiếp tục. Hãy kiểm tra lịch sử nhà cung cấp trước khi retry để tránh tạo trùng.";
-    job.stage = canResume ? "seedance_poll" : undefined;
+    job.stage = canResume ? job.maiVideoJobId && job.provider === "flow" ? "flow_poll" : job.higgsfieldJobId && !job.seedanceTaskId ? "higgsfield_poll" : "seedance_poll" : undefined;
     job.updatedAt = timestamp;
     if (!canResume) job.finishedAt = timestamp;
     recovered += 1;
@@ -59,5 +61,7 @@ export function recoverInterruptedVideoQueue(queue: VideoQueueState, timestamp: 
 }
 
 export function canResumeVideoQueueJob(job: VideoGenerationJob) {
-  return Boolean(job.seedanceTaskId && job.stage !== "seedance_create");
+  return Boolean(job.seedanceTaskId && job.stage !== "seedance_create")
+    || Boolean(job.higgsfieldJobId && job.stage !== "higgsfield_create")
+    || Boolean(job.maiVideoJobId && job.provider === "flow" && job.stage !== "flow_create");
 }

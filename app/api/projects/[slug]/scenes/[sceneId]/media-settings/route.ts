@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { MediaGenerationSettings } from "../../../../../../lib/project-types";
 import { resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
+import { isFlowStoryOnlyPreset } from "../../../../../../lib/story-presets";
 import { readProjectScenes } from "../../../../../../lib/scene-store";
 import { getProjectOrThrow, makeActivity, now, readChunkOutput, saveChunkOutput, updateData } from "../../../../../../lib/server-store";
 
@@ -25,11 +26,14 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       if (!chunk?.outputPath) throw new Error("CHUNK_OUTPUT_NOT_FOUND");
       if (chunk.status === "processing") throw new Error("CHUNK_IS_PROCESSING");
 
-      const settings = resolveMediaGenerationSettings(requestedSettings);
+      const settings = resolveMediaGenerationSettings({
+        ...requestedSettings,
+        ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
+      });
       const currentSettings = resolveMediaGenerationSettings({ ...project.mediaGeneration, ...(asRecord(scene.mediaGeneration || scene.media_generation) || {}) });
       const imageSettingsChanged = ["imageModel", "imageQuality", "imageDetailLevel", "imageUseCharacterReferences"]
         .some((key) => currentSettings[key as keyof MediaGenerationSettings] !== settings[key as keyof MediaGenerationSettings]);
-      const videoSettingsChanged = ["videoProvider", "seedanceAccountId", "videoModel", "videoQuality", "videoDurationMode", "videoDurationSec", "videoMultiShot", "videoAudio", "videoOffPeak", "videoUseCharacterReferences", "videoUseLocationReferences", "videoUseSceneImageReference"]
+      const videoSettingsChanged = ["videoProvider", "seedanceAccountId", "seedanceChatMode", "videoModel", "videoQuality", "videoDurationMode", "videoDurationSec", "videoMultiShot", "videoAudio", "videoOffPeak", "videoUseCharacterReferences", "videoUseLocationReferences", "videoUseSceneImageReference", "flowReferenceMode"]
         .some((key) => currentSettings[key as keyof MediaGenerationSettings] !== settings[key as keyof MediaGenerationSettings]);
       const payload = asRecord(await readChunkOutput(chunk));
       const rawScenes = payload && Array.isArray(payload.scenes) ? payload.scenes : [];

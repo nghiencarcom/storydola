@@ -116,12 +116,8 @@ export async function listMaiVideoApiKeyStatus() {
 }
 
 export async function verifyMaiVideoApiKey(apiKey: string) {
-  const endpoints = [
-    "/api/v1/image-generation/models",
-    "/api/v1/video-generation/models",
-    "/api/v1/voices?provider=omnivoice",
-  ];
-  const responses = await Promise.all(endpoints.map((endpoint) => fetch(`${API_BASE_URL}${endpoint}`, {
+  const endpoints = ["image-generation", "video-generation"];
+  const responses = await Promise.all(endpoints.map((endpoint) => fetch(`${API_BASE_URL}/api/v1/${endpoint}/models`, {
     headers: { Accept: "application/json", "X-API-Key": apiKey },
     cache: "no-store",
     signal: AbortSignal.timeout(15_000),

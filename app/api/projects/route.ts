@@ -3,7 +3,7 @@ import { getProviderConfig } from "../../lib/script-provider";
 import { makeActivity, readData, updateData } from "../../lib/server-store";
 import type { WorkspacePayload } from "../../lib/project-types";
 import { getCurrentUserId } from "../../lib/auth-server";
-import { isRecoverableSeedancePendingJob, startSceneMediaQueue } from "../../lib/scene-media-queue";
+import { isRecoverableHiggsfieldPendingJob, isRecoverableSeedancePendingJob, startSceneMediaQueue } from "../../lib/scene-media-queue";
 import { isProjectChunkRunActive } from "../../lib/chunk-generation-lock";
 import { isVideoQueueJobActive, recoverInterruptedVideoQueue } from "../../lib/video-queue-runtime";
 import { createProjectResponse } from "../../lib/project-creation";
@@ -46,11 +46,11 @@ export async function GET() {
     data = await readData();
   }
   for (const project of data.projects) {
-    if (project.sceneMediaJobs?.some((job) => job.status === "queued" || job.status === "running" || isRecoverableSeedancePendingJob(job))) {
+    if (project.sceneMediaJobs?.some((job) => job.status === "queued" || job.status === "running" || isRecoverableSeedancePendingJob(job) || isRecoverableHiggsfieldPendingJob(job))) {
       startSceneMediaQueue(userId, project.slug);
     }
   }
-  const config = await getProviderConfig();
+  const config = getProviderConfig();
   const payload: WorkspacePayload = {
     projects: data.projects,
     activities: data.activities.slice(0, 80),

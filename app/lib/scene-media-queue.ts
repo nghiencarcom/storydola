@@ -1,14 +1,19 @@
 import { randomUUID } from "node:crypto";
 import type { SceneMediaJob, SceneMediaJobStatus, SceneMediaAsset, StoryProject } from "./project-types";
 import { generateMaiVideoImageForScene, generateMaiVideoVideoForScene, isSeedancePendingStatusMessage, MediaProviderJobPendingError, SeedanceGenerationError } from "./media-provider";
-import { resolveMediaGenerationSettings, shouldUseVideoLocationReference } from "./media-generation-settings";
+import { isFlowImageModel, isMuseImageModel, resolveMediaGenerationSettings, shouldUseVideoLocationReference } from "./media-generation-settings";
+import { isFlowStoryOnlyPreset } from "./story-presets";
+import { deleteHiggsfieldSessionToken, getHiggsfieldSessionToken } from "./higgsfield-session-store";
+import { deleteProviderSessionToken, getProviderSessionToken } from "./provider-session-store";
 import { chunkForScene, previousSceneContinuityReference, readProjectScenes, sceneReferenceImage } from "./scene-store";
 import { saveGeneratedSceneMedia } from "./scene-media-output";
 import { seedancePublicBaseUrlErrorMessage, seedancePublicBaseUrlIssue } from "./seedance-reference-links";
 import { makeActivity, now, readDataForUser, updateDataForUser } from "./server-store";
 import { sceneReferenceCharacterIds, sceneReferenceLocationId } from "./scene-reference-assignments";
-import { getRunConcurrencyLimit } from "./user-settings";
 
+const CONCURRENCY = 20;
+export const INTERRUPTED_PROVIDER_JOB_LEGACY_ERROR = "Máy chủ đã khởi động lại trước khi nhận được kết quả. Bấm tạo lại để chạy job mới.";
+export const INTERRUPTED_PROVIDER_JOB_ERROR = "Máy chủ đã khởi động lại trước khi ứng dụng nhận được mã tác vụ từ provider; chưa thể tự kiểm tra trạng thái job này.";
 type SceneMediaQueueEntry = {
   userId: string;
   slug: string;
@@ -50,10 +55,35 @@ function jobById(project: StoryProject, jobId: string) {
 export function isRecoverableSeedancePendingJob(job: SceneMediaJob) {
   return job.status === "failed"
     && job.kind === "video"
-    && job.provider === "seedance"
+    && (job.provider === "seedance" || job.provider === "muse")
     && job.stage === "seedance_poll"
     && Boolean(job.seedanceTaskId)
-    && isSeedancePendingStatusMessage(job.error);
+    && (isSeedancePendingStatusMessage(job.error) || Boolean(job.error?.startsWith("Muse.ai chưa trả trạng thái cuối; sẽ tiếp tục theo dõi job ")));
+}
+
+export function isRecoverableHiggsfieldPendingJob(job: SceneMediaJob) {
+  return job.status === "failed"
+    && job.kind === "video"
+    && job.provider === "higgsfield"
+    && job.stage === "higgsfield_poll"
+    && Boolean(job.higgsfieldJobId)
+    && Boolean(job.error?.startsWith("Higgsfield chưa trả trạng thái cuối; sẽ tiếp tục theo dõi job "));
+}
+
+export function canReattachInterruptedProviderJob(job: SceneMediaJob) {
+  return job.status === "failed"
+    && (job.kind === "image" && (job.provider === "maivideo-image" || job.provider === "flow-image")
+      || job.kind === "video" && (job.provider === "maivideo-video" || job.provider === "seedance" || job.provider === "muse" || job.provider === "higgsfield" || job.provider === "flow"))
+    && !job.maiVideoJobId
+    && !job.higgsfieldJobId
+    && !job.seedanceTaskId
+    && (job.error === INTERRUPTED_PROVIDER_JOB_ERROR
+      || job.error === INTERRUPTED_PROVIDER_JOB_LEGACY_ERROR
+      || job.provider === "seedance" && Boolean(job.error?.startsWith("Seedance chưa xác nhận task ID; yêu cầu có thể đã được nhận"))
+      || job.provider === "muse" && Boolean(job.error?.startsWith("Muse.ai chưa xác nhận task ID; yêu cầu có thể đã được nhận"))
+      || (job.provider === "flow" || job.provider === "flow-image") && Boolean(job.error?.startsWith("Flow chưa xác nhận job ID; yêu cầu có thể đã được nhận"))
+      || job.provider === "higgsfield" && Boolean(job.error?.startsWith("Higgsfield chưa xác nhận job ID; yêu cầu có thể đã được nhận"))
+      || job.provider !== "seedance" && job.provider !== "muse" && job.provider !== "higgsfield" && Boolean(job.error?.startsWith("MaiVideo chưa xác nhận job ID; yêu cầu có thể đã được nhận")));
 }
 
 export function isSceneMediaJobSupersededBySavedVideo(
@@ -132,9 +162,66 @@ async function updateJob(userId: string, slug: string, jobId: string, update: (j
   });
 }
 
+/** Persist provider IDs independently of the worker lease. A create response is the
+ * only copy of the provider ID we may ever receive, so a lease change must not
+ * silently discard it before the first status poll. */
+async function checkpointProviderJobId(
+  userId: string,
+  slug: string,
+  jobId: string,
+  providerId: string,
+  provider: "maivideo" | "higgsfield" | "seedance" | "muse" | "flow",
+  providerCreatedAt?: string,
+) {
+  const localWorkerStillActive = queueRuntime.activeJobs.has(jobId);
+  const checkpointed = await updateDataForUser(userId, (data) => {
+    const project = data.projects.find((item) => item.slug === slug);
+    const job = project && jobById(project, jobId);
+    if (!project || !job || job.status === "completed") return false;
+
+    const isMaiVideoJob = job.provider === "maivideo-image" || job.provider === "maivideo-video";
+    if ((provider === "maivideo" && !isMaiVideoJob) || (provider === "higgsfield" && job.provider !== "higgsfield") || (provider === "seedance" && job.provider !== "seedance") || (provider === "muse" && job.provider !== "muse") || (provider === "flow" && job.provider !== "flow" && job.provider !== "flow-image")) return false;
+    const savedId = provider === "maivideo" || provider === "flow" ? job.maiVideoJobId : provider === "higgsfield" ? job.higgsfieldJobId : job.seedanceTaskId;
+    if (savedId && savedId !== providerId) return false;
+    const interruptedWithoutProviderId = canReattachInterruptedProviderJob(job);
+
+    if (provider === "maivideo" || provider === "flow") job.maiVideoJobId = providerId;
+    if (provider === "flow") job.stage = "flow_poll";
+    else if (provider === "higgsfield") {
+      job.higgsfieldJobId = providerId;
+      job.stage = "higgsfield_poll";
+    } else {
+      job.seedanceTaskId = providerId;
+      job.seedanceTaskCreatedAt ||= providerCreatedAt || job.startedAt || job.createdAt;
+      job.stage = "seedance_poll";
+    }
+
+    // A response can arrive after another worker recovered the interrupted local
+    // job. Restore it to this worker so the same task keeps polling immediately.
+    if (job.status === "failed" && interruptedWithoutProviderId) {
+      job.status = localWorkerStillActive ? "running" : "queued";
+      job.error = undefined;
+      job.finishedAt = undefined;
+      job.workerId = localWorkerStillActive ? WORKER_ID : undefined;
+    } else if (localWorkerStillActive && (job.status === "running" || job.status === "queued")) {
+      job.status = "running";
+      job.workerId = WORKER_ID;
+      job.error = undefined;
+      job.finishedAt = undefined;
+    }
+
+    job.updatedAt = now();
+    project.updatedAt = now();
+    return true;
+  });
+
+  if (!checkpointed) throw new Error("SCENE_MEDIA_JOB_SUPERSEDED");
+  if (!localWorkerStillActive) startSceneMediaQueue(userId, slug);
+}
+
 async function recoverInterruptedJobs(userId: string, slug: string) {
   const snapshot = await projectForUser(userId, slug);
-  const needsRecovery = snapshot?.sceneMediaJobs?.some((job) => isRecoverableSeedancePendingJob(job)
+  const needsRecovery = snapshot?.sceneMediaJobs?.some((job) => isRecoverableSeedancePendingJob(job) || isRecoverableHiggsfieldPendingJob(job)
     || job.status === "running" && job.workerId !== WORKER_ID);
   if (!needsRecovery) return;
 
@@ -144,7 +231,7 @@ async function recoverInterruptedJobs(userId: string, slug: string) {
     const resumedScenes: string[] = [];
     let changed = false;
     for (const job of project.sceneMediaJobs || []) {
-      if (isRecoverableSeedancePendingJob(job)) {
+      if (isRecoverableSeedancePendingJob(job) || isRecoverableHiggsfieldPendingJob(job)) {
         job.status = "queued";
         job.error = undefined;
         job.workerId = undefined;
@@ -155,18 +242,20 @@ async function recoverInterruptedJobs(userId: string, slug: string) {
         continue;
       }
       if (job.status !== "running" || job.workerId === WORKER_ID) continue;
-      const canResumeProviderPoll = job.kind === "video" && job.provider === "seedance" && Boolean(job.seedanceTaskId) && job.stage !== "seedance_create"
-        || Boolean(job.maiVideoJobId && (job.provider === "maivideo-image" || job.provider === "maivideo-video"));
+      const canResumeProviderPoll = job.kind === "video" && job.provider === "higgsfield" && Boolean(job.higgsfieldJobId) && job.stage !== "higgsfield_create"
+        || job.kind === "video" && (job.provider === "seedance" || job.provider === "muse") && Boolean(job.seedanceTaskId) && job.stage !== "seedance_create"
+        || Boolean(job.maiVideoJobId && (job.provider === "maivideo-image" || job.provider === "maivideo-video" || job.provider === "flow-image" || job.provider === "flow"));
       if (canResumeProviderPoll) {
         job.status = "queued";
         job.error = undefined;
         job.workerId = undefined;
+        if ((job.provider === "flow" || job.provider === "flow-image") && job.maiVideoJobId) job.stage = "flow_poll";
         job.updatedAt = now();
         changed = true;
         continue;
       }
       job.status = "failed";
-      job.error = "Máy chủ đã khởi động lại trước khi nhận được kết quả. Bấm tạo lại để chạy job mới.";
+      job.error = INTERRUPTED_PROVIDER_JOB_ERROR;
       job.finishedAt = now();
       job.updatedAt = now();
       job.workerId = undefined;
@@ -190,6 +279,7 @@ async function claimNextJob(userId: string, slug: string): Promise<{ job: SceneM
     const project = data.projects.find((item) => item.slug === slug);
     if (!project) return undefined;
     project.sceneMediaJobs ||= [];
+    if (project.sceneMediaJobs.filter((job) => job.status === "running" && job.workerId === WORKER_ID).length >= CONCURRENCY) return undefined;
     const job = project.sceneMediaJobs.find((item) => item.status === "queued");
     if (!job) return undefined;
     job.status = "running";
@@ -199,7 +289,7 @@ async function claimNextJob(userId: string, slug: string): Promise<{ job: SceneM
     job.workerId = WORKER_ID;
     job.finishedAt = undefined;
     job.error = undefined;
-    job.stage = job.seedanceTaskId ? "seedance_poll" : undefined;
+    job.stage = job.maiVideoJobId && (job.provider === "flow" || job.provider === "flow-image") ? "flow_poll" : job.seedanceTaskId ? "seedance_poll" : undefined;
     project.updatedAt = now();
     return { job: structuredClone(job), project: structuredClone(project) };
   });
@@ -210,11 +300,15 @@ function userFacingError(value: unknown) {
   if (code === "MAIVIDEO_IMAGE_API_KEY_REQUIRED") return "Hãy thêm API key tạo ảnh MaiVideo trong Cài đặt.";
   if (code === "MAIVIDEO_VIDEO_API_KEY_REQUIRED" || code === "MAIVIDEO_API_KEY_REQUIRED") return "Hãy thêm API key tạo video MaiVideo trong Cài đặt.";
   if (code === "MAIVIDEO_CREDENTIALS_ENCRYPTION_KEY_REQUIRED") return "Máy chủ chưa cấu hình khóa mã hóa API key MaiVideo.";
-  if (code === "SEEDANCE_ACCOUNT_REQUIRED") return "Chưa kết nối API key Seedance. Hãy thêm tài khoản trong Cài đặt.";
-  if (code === "SEEDANCE_ACCOUNT_NOT_FOUND") return "Tài khoản Seedance đã chọn không còn tồn tại. Hãy chọn lại tài khoản.";
-  if (code === "SEEDANCE_ENCRYPTION_KEY_REQUIRED") return "Máy chủ chưa cấu hình khóa mã hóa tài khoản Seedance.";
+  if (code === "SEEDANCE_ACCOUNT_REQUIRED") return "Chưa kết nối API key Seedance / MaiVideo. Hãy thêm tài khoản trong Cài đặt.";
+  if (code === "SEEDANCE_ACCOUNT_NOT_FOUND") return "Tài khoản API đã chọn không còn tồn tại. Hãy chọn lại tài khoản.";
+  if (code === "SEEDANCE_ENCRYPTION_KEY_REQUIRED") return "Máy chủ chưa cấu hình khóa mã hóa tài khoản API.";
+  if (code === "HIGGSFIELD_SESSION_REQUIRED") return "Phiên đăng nhập MaiVideo đã hết hạn. Hãy đăng nhập lại trước khi tạo video Higgsfield.";
+  if (code === "HIGGSFIELD_SESSION_ENCRYPTION_KEY_REQUIRED") return "Máy chủ chưa cấu hình khóa mã hóa để tiếp tục job Higgsfield sau khi khởi động lại.";
+  if (code === "PROVIDER_SESSION_REQUIRED") return "Phiên đăng nhập MaiVideo đã hết hạn. Hãy đăng nhập lại trước khi tạo ảnh/video Muse.ai hoặc Flow.";
+  if (code === "PROVIDER_SESSION_ENCRYPTION_KEY_REQUIRED") return "Máy chủ chưa cấu hình khóa mã hóa để tiếp tục job Muse.ai/Flow sau khi khởi động lại.";
   if (value instanceof SeedanceGenerationError && value.stage === "seedance_create" && (value.message.includes("Hết thời gian kết nối") || [502, 503, 504].includes(value.statusCode || 0))) {
-    return "Seedance chưa xác nhận task ID; yêu cầu có thể đã được nhận. Hãy kiểm tra lịch sử Seedance trước khi gửi lại để tránh tạo trùng.";
+    return `${value.providerLabel} chưa xác nhận task ID; yêu cầu có thể đã được nhận. Hãy kiểm tra lịch sử ${value.providerLabel} trước khi gửi lại để tránh tạo trùng.`;
   }
   const publicBaseUrlMessage = seedancePublicBaseUrlErrorMessage(code);
   if (publicBaseUrlMessage) return publicBaseUrlMessage;
@@ -236,19 +330,36 @@ async function runJob(userId: string, slug: string, job: SceneMediaJob, signal: 
       ...project.mediaGeneration,
       ...record(scene.mediaGeneration || scene.media_generation),
       ...job.mediaGeneration,
+      ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
     });
-    if (job.kind === "video" && settings.videoProvider === "seedance") {
+    const higgsfieldAuthToken = job.kind === "video" && settings.videoProvider === "higgsfield"
+      ? await getHiggsfieldSessionToken(userId, job.id)
+      : "";
+    const usesGateway = job.kind === "image"
+      ? isMuseImageModel(settings.imageModel) || isFlowImageModel(settings.imageModel)
+      : settings.videoProvider === "muse" || settings.videoProvider === "flow";
+    const providerAuthToken = usesGateway ? await getProviderSessionToken(userId, job.id) : "";
+    if (usesGateway && !providerAuthToken) throw new Error("PROVIDER_SESSION_REQUIRED");
+    if (job.kind === "video" && settings.videoProvider === "higgsfield" && !higgsfieldAuthToken) throw new Error("HIGGSFIELD_SESSION_REQUIRED");
+    if (job.kind === "video" && (settings.videoProvider === "seedance" || settings.videoProvider === "muse" || settings.videoProvider === "flow")) {
       const videoReferenceCharacterIds = sceneReferenceCharacterIds(scene, "video");
       const sceneImage = sceneReferenceImage(scene);
       const hasCharacterReferenceImage = videoReferenceCharacterIds
         .some((id) => (project.characters || []).some((character) => character.id === id && Boolean(character.referenceImagePath)));
       const locationId = sceneReferenceLocationId(scene, "video");
       const hasLocationReferenceImage = Boolean((project.locations || []).find((location) => location.id === locationId)?.referenceImagePath);
-      const needsReference = Boolean(settings.videoUseSceneImageReference && sceneImage)
+      const flowFramesMode = settings.videoProvider === "flow" && settings.flowReferenceMode === "frames";
+      const flowFrameEndSceneId = String(scene.flowFrameEndSceneId || scene.flow_frame_end_scene_id || "").trim();
+      const flowFrameEndScene = scenes.find((item) => item.id === flowFrameEndSceneId);
+      const flowFrameEndImage = flowFrameEndScene ? sceneReferenceImage(flowFrameEndScene) : undefined;
+      if (flowFramesMode && (flowFrameEndSceneId === scene.id || sceneImage?.kind !== "image" || sceneImage.status !== "ready" || sceneImage.stale === true || flowFrameEndImage?.kind !== "image" || flowFrameEndImage.status !== "ready" || flowFrameEndImage.stale === true)) {
+        throw new Error(`Flow Frames cần ảnh khung đầu và ảnh khung cuối sẵn sàng cho ${scene.id}.`);
+      }
+      const needsReference = flowFramesMode || Boolean(settings.videoUseSceneImageReference && sceneImage)
         || Boolean(settings.videoUseCharacterReferences && hasCharacterReferenceImage)
         || Boolean(shouldUseVideoLocationReference(settings, project.presetId === "ai-drama") && hasLocationReferenceImage)
         || Boolean(previousSceneContinuityReference(scenes, scene));
-      if (settings.videoUseSceneImageReference && sceneImage?.status !== "ready") throw new Error("Hãy tạo và kiểm tra ảnh cảnh trước khi tạo video.");
+      if (!flowFramesMode && settings.videoUseSceneImageReference && sceneImage?.status !== "ready") throw new Error("Hãy tạo và kiểm tra ảnh cảnh trước khi tạo video.");
       const publicBaseUrlIssue = needsReference ? seedancePublicBaseUrlIssue() : undefined;
       if (publicBaseUrlIssue) throw new Error(publicBaseUrlIssue);
     }
@@ -264,6 +375,7 @@ async function runJob(userId: string, slug: string, job: SceneMediaJob, signal: 
         sceneIndex: scene.sceneIndex,
         aspectRatio: project.aspectRatio,
         mediaGeneration: settings,
+        providerAuthToken,
         presetId: project.presetId,
         contentGenre: project.contentGenre,
         secondaryGenres: project.secondaryGenres,
@@ -275,7 +387,7 @@ async function runJob(userId: string, slug: string, job: SceneMediaJob, signal: 
         userId,
         maiVideoJobId: job.maiVideoJobId,
         onMaiVideoJobCreated: async (jobId) => {
-          await updateJob(userId, slug, job.id, (current) => { current.maiVideoJobId = jobId; });
+          await checkpointProviderJobId(userId, slug, job.id, jobId, isFlowImageModel(settings.imageModel) ? "flow" : "maivideo");
         },
       });
     } else {
@@ -283,11 +395,13 @@ async function runJob(userId: string, slug: string, job: SceneMediaJob, signal: 
         projectSlug: slug,
         chunkId: chunk.id,
         scene,
+        projectScenes: scenes,
         characters: project.characters || [],
         locations: project.locations || [],
         sceneIndex: scene.sceneIndex,
         aspectRatio: project.aspectRatio,
         mediaGeneration: settings,
+        providerAuthToken,
         presetId: project.presetId,
         contentGenre: project.contentGenre,
         secondaryGenres: project.secondaryGenres,
@@ -302,7 +416,15 @@ async function runJob(userId: string, slug: string, job: SceneMediaJob, signal: 
         projectVoiceLanguage: project.voiceLanguage,
         maiVideoJobId: job.maiVideoJobId,
         onMaiVideoJobCreated: async (jobId) => {
-          if (!await updateJob(userId, slug, job.id, (current) => { current.maiVideoJobId = jobId; })) throw new Error("SCENE_MEDIA_JOB_SUPERSEDED");
+          await checkpointProviderJobId(userId, slug, job.id, jobId, settings.videoProvider === "flow" ? "flow" : "maivideo");
+        },
+        higgsfieldAuthToken,
+        higgsfieldJobId: job.higgsfieldJobId,
+        onHiggsfieldCreateStarted: async () => {
+          if (!await updateJob(userId, slug, job.id, (current) => { current.stage = "higgsfield_create"; })) throw new Error("SCENE_MEDIA_JOB_SUPERSEDED");
+        },
+        onHiggsfieldJobCreated: async (providerJobId) => {
+          await checkpointProviderJobId(userId, slug, job.id, providerJobId, "higgsfield");
         },
         onPromptComposed: async (prompt) => {
           if (!await updateJob(userId, slug, job.id, (current) => { current.submittedPrompt = prompt; })) throw new Error("SCENE_MEDIA_JOB_SUPERSEDED");
@@ -312,16 +434,18 @@ async function runJob(userId: string, slug: string, job: SceneMediaJob, signal: 
         signal,
         userId,
         onSeedanceCreateStarted: async () => {
-          if (!await updateJob(userId, slug, job.id, (current) => { current.stage = "seedance_create"; })) throw new Error("SCENE_MEDIA_JOB_SUPERSEDED");
+          if (!await updateJob(userId, slug, job.id, (current) => { current.stage = settings.videoProvider === "flow" ? "flow_create" : "seedance_create"; })) throw new Error("SCENE_MEDIA_JOB_SUPERSEDED");
         },
         onSeedanceTaskCreated: async (taskId, createdAt) => {
-          if (!await updateJob(userId, slug, job.id, (current) => { current.seedanceTaskId = taskId; current.seedanceTaskCreatedAt = createdAt; current.stage = "seedance_poll"; })) throw new Error("SCENE_MEDIA_JOB_SUPERSEDED");
+          await checkpointProviderJobId(userId, slug, job.id, taskId, settings.videoProvider === "muse" ? "muse" : settings.videoProvider === "flow" ? "flow" : "seedance", createdAt);
         },
       });
     }
     if (signal.aborted) return;
     const saved = await saveGeneratedSceneMedia({ projectSlug: slug, sceneId: job.sceneId, media, mediaGeneration: settings, userId, jobId: job.id, jobCreatedAt: job.createdAt });
     if (signal.aborted) return;
+    if (settings.videoProvider === "higgsfield") await deleteHiggsfieldSessionToken(userId, job.id).catch(() => undefined);
+    if (usesGateway) await deleteProviderSessionToken(userId, job.id).catch(() => undefined);
     const completed = await updateJob(userId, slug, job.id, (current) => {
       current.status = "completed";
       current.finishedAt = now();
@@ -344,7 +468,7 @@ async function runJob(userId: string, slug: string, job: SceneMediaJob, signal: 
     const message = userFacingError(cause);
     const pendingProviderId = cause instanceof MediaProviderJobPendingError
       ? cause.providerJobId
-      : cause instanceof SeedanceGenerationError && cause.stage === "seedance_poll" && cause.retryStrategy === "same_task"
+      : cause instanceof SeedanceGenerationError && (cause.stage === "seedance_poll" || cause.stage === "seedance_download" || cause.stage === "flow_poll" || cause.stage === "flow_download") && cause.retryStrategy === "same_task"
         ? cause.taskId
         : undefined;
     if (pendingProviderId) {
@@ -353,8 +477,19 @@ async function runJob(userId: string, slug: string, job: SceneMediaJob, signal: 
         current.finishedAt = undefined;
         current.error = message;
         current.workerId = undefined;
-        if (cause instanceof MediaProviderJobPendingError && cause.provider === "maivideo") current.maiVideoJobId = pendingProviderId;
-        if (cause instanceof SeedanceGenerationError || cause instanceof MediaProviderJobPendingError && cause.provider === "seedance") {
+        if (cause instanceof MediaProviderJobPendingError && (cause.provider === "maivideo" || cause.provider === "muse-image" || cause.provider === "flow-image" || cause.provider === "flow-video")) {
+          current.maiVideoJobId = pendingProviderId;
+          if (cause.provider === "flow-image" || cause.provider === "flow-video") current.stage = "flow_poll";
+        }
+        if (cause instanceof SeedanceGenerationError && pendingProviderId && (job.provider === "flow" || job.provider === "flow-image")) {
+          current.maiVideoJobId = pendingProviderId;
+          current.stage = "flow_poll";
+        }
+        if (cause instanceof MediaProviderJobPendingError && cause.provider === "higgsfield") {
+          current.higgsfieldJobId = pendingProviderId;
+          current.stage = "higgsfield_poll";
+        }
+        if (cause instanceof SeedanceGenerationError && job.provider !== "flow" && job.provider !== "flow-image" || cause instanceof MediaProviderJobPendingError && (cause.provider === "seedance" || cause.provider === "muse")) {
           current.seedanceTaskId = cause instanceof SeedanceGenerationError ? cause.taskId || current.seedanceTaskId : pendingProviderId;
           current.seedanceTaskCreatedAt ||= current.startedAt || current.createdAt;
           current.stage = "seedance_poll";
@@ -372,12 +507,15 @@ async function runJob(userId: string, slug: string, job: SceneMediaJob, signal: 
       current.error = message;
       current.workerId = undefined;
       if (cause instanceof SeedanceGenerationError) {
-        current.stage = cause.stage;
-        current.seedanceTaskId = cause.taskId || current.seedanceTaskId;
+        const flowProvider = job.provider === "flow" || job.provider === "flow-image";
+        current.stage = flowProvider && cause.stage.startsWith("seedance_") ? cause.stage.replace("seedance_", "flow_") as SceneMediaJob["stage"] : cause.stage;
+        if (flowProvider) current.maiVideoJobId = cause.taskId || current.maiVideoJobId;
+        else current.seedanceTaskId = cause.taskId || current.seedanceTaskId;
         if (current.seedanceTaskId) current.seedanceTaskCreatedAt ||= current.startedAt || current.createdAt;
       }
     }).catch(() => undefined);
     if (!updated) return;
+    if (job.provider === "higgsfield") await deleteHiggsfieldSessionToken(userId, job.id).catch(() => undefined);
     await updateDataForUser(userId, (data) => {
       data.activities.unshift(makeActivity({ projectSlug: slug, kind: "chunk", title: `${job.sceneId} tạo ${job.kind === "image" ? "ảnh" : "video"} thất bại`, detail: message, status: "error" }));
     }).catch(() => undefined);
@@ -409,7 +547,7 @@ async function pumpUserQueue(userId: string) {
   }
   queueRuntime.pumpingUsers.add(userId);
   try {
-    while (activeJobCount(userId) < await getRunConcurrencyLimit(userId)) {
+    while (activeJobCount(userId) < CONCURRENCY) {
       const candidates = Array.from(queueRuntime.queues.entries())
         .filter(([, entry]) => entry.userId === userId && entry.ready)
         .sort((left, right) => left[1].lastClaimedAt - right[1].lastClaimedAt);
@@ -418,7 +556,6 @@ async function pumpUserQueue(userId: string) {
       let claimedNext = false;
       for (const [key, entry] of candidates) {
         const revision = entry.revision;
-        if (activeJobCount(userId) >= await getRunConcurrencyLimit(userId)) break;
         const claimed = await claimNextJob(entry.userId, entry.slug);
         if (!claimed) {
           if (queueRuntime.queues.get(key) === entry && entry.revision === revision) queueRuntime.queues.delete(key);
@@ -464,10 +601,6 @@ export function startSceneMediaQueue(userId: string, slug: string) {
   }
 }
 
-export function refreshUserSceneMediaConcurrency(userId: string) {
-  requestUserQueuePump(userId);
-}
-
 export function createSceneMediaJob(input: {
   sceneId: string;
   chunkId: string;
@@ -486,7 +619,7 @@ export function createSceneMediaJob(input: {
     maxAttempts: 3,
     createdAt: now(),
     updatedAt: now(),
-    provider: input.kind === "image" ? "maivideo-image" : input.settings.videoProvider === "seedance" ? "seedance" : "maivideo-video",
+    provider: input.kind === "image" ? isFlowImageModel(input.settings.imageModel) ? "flow-image" : "maivideo-image" : input.settings.videoProvider === "higgsfield" || input.settings.videoProvider === "seedance" || input.settings.videoProvider === "muse" || input.settings.videoProvider === "flow" ? input.settings.videoProvider : "maivideo-video",
     mediaGeneration: input.settings,
   };
 }

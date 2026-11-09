@@ -1,12 +1,11 @@
 import { NextResponse } from "next/server";
 import type { VideoQueueState } from "../../../../../lib/project-types";
 import { getProjectOrThrow, makeActivity, now, readData, updateData } from "../../../../../lib/server-store";
-import { DEFAULT_RUN_CONCURRENCY } from "../../../../../lib/run-concurrency-config";
 
 export const runtime = "nodejs";
 
 function emptyQueue(): VideoQueueState {
-  return { status: "idle", concurrency: DEFAULT_RUN_CONCURRENCY, jobs: [], updatedAt: now() };
+  return { status: "idle", concurrency: 20, jobs: [], updatedAt: now() };
 }
 
 export async function POST(request: Request, context: { params: Promise<{ slug: string }> }) {
@@ -28,8 +27,12 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
         if (job.status === "failed") {
           job.status = "queued";
           job.attempt = 0;
-          if (job.retryStrategy === "new_task") job.seedanceTaskId = undefined;
-          job.stage = job.seedanceTaskId ? "seedance_poll" : undefined;
+          if (job.retryStrategy === "new_task") {
+            job.seedanceTaskId = undefined;
+            job.higgsfieldJobId = undefined;
+            job.maiVideoJobId = undefined;
+          }
+          job.stage = job.maiVideoJobId ? "flow_poll" : job.seedanceTaskId ? "seedance_poll" : job.higgsfieldJobId ? "higgsfield_poll" : undefined;
           job.error = undefined;
           job.failureStage = undefined;
           job.retryStrategy = undefined;

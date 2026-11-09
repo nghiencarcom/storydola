@@ -4,11 +4,11 @@ import path from "node:path";
 import { headers } from "next/headers";
 import { MAX_SCENE_DURATION_SEC, normalizeProjectChunkSize, type Activity, type CreateProjectInput, type DurationMode, type ProjectChunk, type RenderState, type ScriptFormat, type ScriptMode, type StoryAIData, type StoryProject, type UpdateProjectInput } from "./project-types";
 import { resolveMediaGenerationSettings } from "./media-generation-settings";
+import { isFlowStoryOnlyPreset } from "./story-presets";
 import { getManualScriptMetrics } from "./script-utils";
 import { continuityContextFromOutput } from "./story-context";
 import { DEFAULT_IMAGE_STYLE, DEFAULT_VISUAL_STYLE, normalizeProjectStyleSettings } from "./visual-styles";
 import { DEFAULT_CONTENT_GENRE, DEFAULT_STORY_SETTING, normalizeContentGenre, normalizeSecondaryGenres, normalizeStorySetting } from "./content-genres";
-import { DEFAULT_RUN_CONCURRENCY } from "./run-concurrency-config";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const DATA_FILE = path.join(DATA_DIR, "storyai.json");
@@ -44,7 +44,10 @@ function normalizeWorkspaceData(value: unknown): StoryAIData {
         settingNotes: typeof project.settingNotes === "string" ? project.settingNotes : "",
         ...styles,
         imageStyle: legacyAnime && (!project.imageStyle || project.imageStyle === DEFAULT_IMAGE_STYLE) ? "2D anime" : styles.imageStyle,
-        mediaGeneration: resolveMediaGenerationSettings(project.mediaGeneration),
+        mediaGeneration: resolveMediaGenerationSettings({
+          ...project.mediaGeneration,
+          ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
+        }),
       };
     }),
     activities: Array.isArray(parsed.activities) ? parsed.activities : [],
@@ -237,7 +240,10 @@ export function makeProject(input: CreateProjectInput, slug: string): StoryProje
     sceneDurationSec: MAX_SCENE_DURATION_SEC,
     chunkSize,
     mediaSource: input.presetId === "ai-drama" ? "maivideo-video" : input.mediaSource || "stock-mixed",
-    mediaGeneration: resolveMediaGenerationSettings(input.mediaGeneration),
+    mediaGeneration: resolveMediaGenerationSettings({
+      ...input.mediaGeneration,
+      ...(isFlowStoryOnlyPreset(input.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
+    }),
     voiceProvider: input.voiceProvider || "omnivoice",
     voiceId: input.voiceId || "",
     voiceName: input.voiceName || "",
@@ -257,7 +263,7 @@ export function makeProject(input: CreateProjectInput, slug: string): StoryProje
     completedChunks: 0,
     reviewCount: 0,
     aiReviewCount: 0,
-    videoQueue: { status: "idle", concurrency: DEFAULT_RUN_CONCURRENCY, jobs: [], updatedAt: now() },
+    videoQueue: { status: "idle", concurrency: 20, jobs: [], updatedAt: now() },
     render: { status: "idle", updatedAt: now() },
     chunks: createChunks(timing.totalScenes, chunkSize),
     characters: [],
@@ -275,7 +281,11 @@ export function updateProjectRecord(project: StoryProject, patch: UpdateProjectI
     presetId: project.presetId,
     ...(shouldForceDramaVideoSource ? { mediaSource: "maivideo-video" as const } : {}),
     ...(patch.mediaGeneration ? {
-      mediaGeneration: resolveMediaGenerationSettings({ ...project.mediaGeneration, ...patch.mediaGeneration }),
+      mediaGeneration: resolveMediaGenerationSettings({
+        ...project.mediaGeneration,
+        ...patch.mediaGeneration,
+        ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
+      }),
     } : {}),
   };
   const durationChanged = patch.durationMinutes !== undefined && patch.durationMinutes !== project.durationMinutes;
@@ -338,7 +348,7 @@ export function updateProjectRecord(project: StoryProject, patch: UpdateProjectI
     next.reviewCount = 0;
     next.aiReviewCount = 0;
     next.continuityQa = undefined;
-    next.videoQueue = { status: "idle", concurrency: DEFAULT_RUN_CONCURRENCY, jobs: [], updatedAt: now() };
+    next.videoQueue = { status: "idle", concurrency: 20, jobs: [], updatedAt: now() };
     next.render = { status: "idle", updatedAt: now() };
     next.chunks = createChunks(totalScenes, chunkSize);
     next.status = "draft";

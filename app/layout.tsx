@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import "../dola-studio/app/globals.css";
 import "./globals.css";
 import { ProjectProvider } from "./lib/project-store";
 

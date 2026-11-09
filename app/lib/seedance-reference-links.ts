@@ -1,7 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { usesDolaRenderGateway } from "./media-generation-settings";
 
-export type SeedanceReferenceType = "character" | "scene" | "location";
+export type SeedanceReferenceType = "character" | "scene" | "location" | "timelapse";
 
 export type SeedancePublicBaseUrlError =
   | "SEEDANCE_PUBLIC_BASE_URL_REQUIRED"
@@ -10,7 +9,6 @@ export type SeedancePublicBaseUrlError =
   | "STORYAI_PUBLIC_BASE_URL_PUBLIC";
 
 export function seedancePublicBaseUrlIssue(): SeedancePublicBaseUrlError | undefined {
-  if (usesDolaRenderGateway()) return undefined;
   const configured = process.env.STORYAI_PUBLIC_BASE_URL?.trim();
   if (!configured) return "SEEDANCE_PUBLIC_BASE_URL_REQUIRED";
 
@@ -65,25 +63,22 @@ export function createSeedanceLocationReferenceUrl(projectSlug: string, location
   return createReferenceUrl(projectSlug, locationId, userId, "location");
 }
 
+export function createSeedanceTimelapseReferenceUrl(workflowId: string, imageId: string, userId: string) {
+  return createReferenceUrl(workflowId, imageId, userId, "timelapse");
+}
+
 function createReferenceUrl(projectSlug: string, referenceId: string, userId: string, type: SeedanceReferenceType) {
   const issue = seedancePublicBaseUrlIssue();
   if (issue) throw new Error(issue);
-  const base = usesDolaRenderGateway()
-    ? (process.env.STORYAI_LOCAL_BASE_URL?.trim() || "http://127.0.0.1:3021")
-    : process.env.STORYAI_PUBLIC_BASE_URL!.trim();
+  const base = process.env.STORYAI_PUBLIC_BASE_URL!.trim();
   let url: URL;
   try {
-    url = new URL(`/api/seedance/references/${encodeURIComponent(projectSlug)}/${encodeURIComponent(referenceId)}`, base);
+    const route = type === "timelapse" ? "/api/timelapse/references" : "/api/seedance/references";
+    url = new URL(`${route}/${encodeURIComponent(projectSlug)}/${encodeURIComponent(referenceId)}`, base);
   } catch {
     throw new Error("STORYAI_PUBLIC_BASE_URL_INVALID");
   }
-  if (usesDolaRenderGateway()) {
-    if (url.protocol !== "http:" || !["localhost", "127.0.0.1", "::1"].includes(url.hostname) || url.username || url.password) {
-      throw new Error("STORYAI_LOCAL_BASE_URL_INVALID");
-    }
-  } else if (url.protocol !== "https:" || url.username || url.password) {
-    throw new Error("STORYAI_PUBLIC_BASE_URL_HTTPS");
-  }
+  if (url.protocol !== "https:" || url.username || url.password) throw new Error("STORYAI_PUBLIC_BASE_URL_HTTPS");
   if (type !== "character") url.searchParams.set("type", type);
   const expires = Math.floor(Date.now() / 1000) + 60 * 60;
   url.searchParams.set("owner", userId);

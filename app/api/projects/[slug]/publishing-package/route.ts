@@ -113,7 +113,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     chunks = [chunk];
   }
 
-  const config = await getProviderConfig();
+  const config = getProviderConfig();
   if (!config.keyConfigured) return NextResponse.json({ message: "Chưa cấu hình Script LLM server-side để tạo gợi ý." }, { status: 503 });
 
   try {

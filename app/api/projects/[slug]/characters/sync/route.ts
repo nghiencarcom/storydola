@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { characterReferencePrompt, locationReferencePrompt } from "../../../../../lib/ai-drama-reference-prompts";
-import { normalizeEntityName } from "../../../../../lib/entity-name";
+import { isTemplateEntityName, normalizeEntityName } from "../../../../../lib/entity-name";
 import type { ProjectCharacter, ProjectLocation } from "../../../../../lib/project-types";
 import { sanitizeDramaVisualPrompt } from "../../../../../lib/visual-prompt-safety";
 import { makeActivity, markRenderStale, now, readChunkOutput, readData, saveChunkOutput, updateData } from "../../../../../lib/server-store";
@@ -26,6 +26,52 @@ function listOfRecords(value: unknown): JsonRecord[] {
   return Array.isArray(value) ? value.map(asRecord).filter((item): item is JsonRecord => Boolean(item)) : [];
 }
 
+function sourceBibleEntries(sourceText: string, kind: "character" | "location") {
+  const startPattern = kind === "character"
+    ? /^#{0,3}\s*character bible\s*:?\s*$/im
+    : /^#{0,3}\s*location bible\s*:?\s*$/im;
+  const start = startPattern.exec(sourceText);
+  if (!start) return [];
+  const contentStart = start.index + start[0].length;
+  const remainder = sourceText.slice(contentStart);
+  const endPattern = kind === "character"
+    ? /^#{0,3}\s*location bible\s*:?\s*$/im
+    : /^#{0,3}\s*(?:chapter plan|continuity rules)\b/im;
+  const end = endPattern.exec(remainder);
+  const section = end ? remainder.slice(0, end.index) : remainder;
+  const entries: Array<{ name: string; description: string; imagePrompt: string }> = [];
+  let current: { name: string; description: string; imagePrompt: string } | undefined;
+  const save = () => {
+    if (current && !isTemplateEntityName(current.name)) entries.push(current);
+  };
+
+  for (const line of section.split(/\r?\n/)) {
+    const entryLine = line.trim().match(/^-\s+(.+)$/);
+    if (entryLine) {
+      save();
+      current = undefined;
+      const content = entryLine[1];
+      const colon = content.indexOf(":");
+      if (colon < 0) continue;
+      const label = content.slice(0, colon).trim();
+      const name = kind === "character"
+        ? label.replace(/,\s*(?:apparent\s+)?age\b.*$/i, "").trim()
+        : label;
+      const description = content.slice(colon + 1).trim();
+      if (name) current = { name, description, imagePrompt: "" };
+      continue;
+    }
+    if (!current) continue;
+    const field = line.match(/^\s+(description|image_prompt)\s*:\s*(.*)$/i);
+    if (field) {
+      if (field[1].toLowerCase() === "description") current.description = field[2].trim();
+      else current.imagePrompt = field[2].trim();
+    }
+  }
+  save();
+  return entries;
+}
+
 function cleanLocationName(value: string) {
   return value
     .replace(/\s+(?:as|while|where|when|during|before|after|at the moment)\b[\s\S]*$/i, "")
@@ -41,7 +87,8 @@ function locationMention(scene: JsonRecord) {
   if (explicit) return explicit;
   const prompt = valueText(scene, "image_prompt", "imagePrompt");
   const match = prompt.match(/^\s*(?:one|a|an)\s+(?:[\w-]+\s+){0,3}(?:frame|shot|image)\s+(?:in|at|on|inside|aboard)\s+([^:;!?]+)/i);
-  return match ? cleanLocationName(match[1]) : "";
+  const inferred = match ? cleanLocationName(match[1]) : "";
+  return /^\d+(?:\.\d+)?\s*(?:s|sec|secs|second|seconds)?$/i.test(inferred) ? "" : inferred;
 }
 
 function sceneLocationImagePrompt(scene: JsonRecord) {
@@ -111,7 +158,7 @@ export async function POST(_request: Request, context: { params: Promise<{ slug:
   const addName = (name: string, description = "") => {
     const clean = name.trim().slice(0, 80);
     const normalized = normalizeEntityName(clean);
-    if (!clean || !normalized || ["narrator", "voiceover", "none", "n a"].includes(normalized)) return;
+    if (isTemplateEntityName(clean) || !normalized || ["narrator", "voiceover", "none", "n a"].includes(normalized)) return;
     if (!names.has(normalized)) names.set(normalized, clean);
     if (description.trim() && !descriptions.has(normalized)) descriptions.set(normalized, description.trim().slice(0, 1_200));
   };
@@ -125,7 +172,7 @@ export async function POST(_request: Request, context: { params: Promise<{ slug:
   const addLocation = (name: string, imagePrompt = "", description = "", aliases: string[] = []) => {
     const clean = name.trim().slice(0, 100);
     const normalized = normalizeEntityName(clean);
-    if (!clean || !normalized) return;
+    if (isTemplateEntityName(clean) || !normalized) return;
     const clusterKey = [...locationNames].find(([, knownName]) =>
       normalizeEntityName(knownName) === normalized || locationClusterMatch(knownName, clean),
     )?.[0] || normalized;
@@ -200,9 +247,24 @@ export async function POST(_request: Request, context: { params: Promise<{ slug:
     );
   }
 
-  const existingByName = new Map((project.characters || []).map((character) => [normalizeEntityName(character.name), character]));
+  const retainedCharacters = (project.characters || []).filter((character) => !isTemplateEntityName(character.name)
+    || Boolean(character.referenceImagePath || character.referenceImageName || character.voiceId || character.voiceName));
+  const retainedLocations = (project.locations || []).filter((location) => !isTemplateEntityName(location.name)
+    || Boolean(location.referenceImagePath || location.referenceImageName));
+  if (!names.size) {
+    for (const entry of sourceBibleEntries(project.sourceText || "", "character")) {
+      addNameWithPrompt(entry.name, entry.description, entry.imagePrompt);
+    }
+  }
+  if (!locationNames.size) {
+    for (const entry of sourceBibleEntries(project.sourceText || "", "location")) {
+      addLocation(entry.name, entry.imagePrompt, entry.description);
+    }
+  }
+
+  const existingByName = new Map(retainedCharacters.map((character) => [normalizeEntityName(character.name), character]));
   const timestamp = now();
-  const mergedCharacters: ProjectCharacter[] = [...(project.characters || [])];
+  const mergedCharacters: ProjectCharacter[] = [...retainedCharacters];
   const created: ProjectCharacter[] = [];
   for (const [normalized, name] of names) {
     const existing = existingByName.get(normalized);
@@ -230,13 +292,13 @@ export async function POST(_request: Request, context: { params: Promise<{ slug:
 
   const profileByName = existingByName;
   const existingLocations = new Map<string, ProjectLocation>();
-  for (const location of project.locations || []) {
+  for (const location of retainedLocations) {
     for (const name of [location.name, ...(location.aliases || [])]) {
       const normalized = normalizeEntityName(name);
       if (normalized) existingLocations.set(normalized, location);
     }
   }
-  const mergedLocations: ProjectLocation[] = [...(project.locations || [])];
+  const mergedLocations: ProjectLocation[] = [...retainedLocations];
   const createdLocations: ProjectLocation[] = [];
   for (const [clusterKey, name] of locationNames) {
     const aliases = [...(locationAliases.get(clusterKey) || [])].filter((alias) => normalizeEntityName(alias) !== normalizeEntityName(name));
@@ -264,12 +326,29 @@ export async function POST(_request: Request, context: { params: Promise<{ slug:
     let changed = false;
     const updatedScenes = stored.scenes.map((scene) => {
       let sceneChanged = false;
-      const characterIds = sceneNames(scene).map((name) => profileByName.get(normalizeEntityName(name))?.id).filter((id): id is string => Boolean(id));
+      const rawSceneNames = sceneNames(scene);
+      const hasPlaceholderCharacter = rawSceneNames.some(isTemplateEntityName);
+      const characterIds = rawSceneNames.filter((name) => !isTemplateEntityName(name))
+        .map((name) => profileByName.get(normalizeEntityName(name))?.id).filter((id): id is string => Boolean(id));
       const speakerName = valueText(scene, "speaker_character", "speakerCharacter", "speaker_name", "speakerName", "speaker");
       const speakerCharacterId = profileByName.get(normalizeEntityName(speakerName))?.id;
       const next: JsonRecord = { ...scene };
-      if (characterIds.length && JSON.stringify(scene.characterIds || []) !== JSON.stringify([...new Set(characterIds)])) {
-        next.characterIds = [...new Set(characterIds)];
+      const uniqueCharacterIds = [...new Set(characterIds)];
+      if (Array.isArray(scene.characters)) {
+        const cleanedNames = scene.characters.filter((value) => {
+          const name = typeof value === "string" ? value : valueText(asRecord(value), "name", "character_name", "characterName");
+          return !isTemplateEntityName(name);
+        });
+        if (cleanedNames.length !== scene.characters.length) {
+          next.characters = cleanedNames;
+          changed = true; sceneChanged = true;
+        }
+      }
+      if ((uniqueCharacterIds.length || hasPlaceholderCharacter)
+        && (JSON.stringify(scene.characterIds || []) !== JSON.stringify(uniqueCharacterIds)
+          || JSON.stringify(scene.character_ids || []) !== JSON.stringify(uniqueCharacterIds))) {
+        next.characterIds = uniqueCharacterIds;
+        next.character_ids = uniqueCharacterIds;
         changed = true; sceneChanged = true;
       }
       if (speakerCharacterId && scene.speakerCharacterId !== speakerCharacterId) {
@@ -277,10 +356,18 @@ export async function POST(_request: Request, context: { params: Promise<{ slug:
         changed = true; sceneChanged = true;
       }
       const locationName = locationMention(scene);
-      const matchedLocation = findLocationByName(existingLocations, locationName);
+      const placeholderLocation = Boolean(locationName) && isTemplateEntityName(locationName);
+      const matchedLocation = placeholderLocation ? undefined : findLocationByName(existingLocations, locationName);
       const locationId = matchedLocation?.id;
       if (locationId && scene.locationId !== locationId && scene.location_id !== locationId) {
         next.locationId = locationId;
+        changed = true; sceneChanged = true;
+      }
+      if (placeholderLocation && (scene.locationId || scene.location_id || scene.location_name || scene.locationName)) {
+        delete next.locationId;
+        delete next.location_id;
+        next.location_name = "";
+        next.location_description = "";
         changed = true; sceneChanged = true;
       }
       if (matchedLocation && !valueText(scene, "location_name", "locationName")) {

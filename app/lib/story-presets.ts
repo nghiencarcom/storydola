@@ -7,6 +7,11 @@ import { AI_DRAMA_VIDEO_PROMPT_GUIDANCE } from "./ai-drama-video-prompt-guidance
 
 export type StoryPresetId = "ai-story" | "audio-story" | "ai-drama";
 
+/** Narrator-led story formats use Flow Ingredients/References, never Frames. */
+export function isFlowStoryOnlyPreset(presetId?: StoryPresetId) {
+  return presetId === "ai-story" || presetId === "audio-story";
+}
+
 export type StoryPreset = {
   id: StoryPresetId;
   label: string;

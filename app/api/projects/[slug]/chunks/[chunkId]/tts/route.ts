@@ -9,7 +9,7 @@ import { getProjectOrThrow, makeActivity, markRenderStale, now, readData, update
 import { claimProjectTts, releaseProjectTts } from "../../../../../../lib/tts-lock";
 import { withProjectTtsSlot } from "../../../../../../lib/tts-concurrency";
 import { resolveProjectDialogueVoice, resolveProjectSceneVoice } from "../../../../../../lib/project-tts-voice";
-import { hasExplicitDialogueSegments, readDialogueSegments } from "../../../../../../lib/dialogue-segments";
+import { hasExplicitDialogueSegments, isTemplateDialogueText, readDialogueSegments } from "../../../../../../lib/dialogue-segments";
 import { wavDurationMs } from "../../../../../../lib/wav-duration";
 import type { DialogueSegment, StoryProject } from "../../../../../../lib/project-types";
 
@@ -33,7 +33,7 @@ function asRecord(value: unknown): JsonRecord {
 function sceneVoiceText(scene: JsonRecord) {
   for (const key of ["dialogue_or_voiceover", "voiceText", "voiceover", "ttsVoice", "tts_voice"]) {
     const value = scene[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
+      if (typeof value === "string" && value.trim() && !isTemplateDialogueText(value)) return value.trim();
   }
   return "";
 }

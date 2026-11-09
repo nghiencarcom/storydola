@@ -1,0 +1,32 @@
+name: storyai
+
+services:
+  storyai:
+    image: ${STORYAI_IMAGE:?Set STORYAI_IMAGE in .env}
+    pull_policy: missing
+    user: "${STORYAI_UID:-1000}:${STORYAI_GID:-1000}"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      HOSTNAME: 0.0.0.0
+      PORT: 3011
+      MAIVIDEO_HTMLVIDEO_BASE_URL: ${STORYAI_HTMLVIDEO_BASE_URL:-http://host.docker.internal:3000}
+      MAIVIDEO_OMNIVOICE_API_BASE_URL: ${STORYAI_OMNIVOICE_BASE_URL:-http://host.docker.internal:8000}
+    ports:
+      - "${STORYAI_BIND_HOST:-127.0.0.1}:${STORYAI_PORT:-3011}:3011"
+    volumes:
+      - ./data:/app/data
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3011/login').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s

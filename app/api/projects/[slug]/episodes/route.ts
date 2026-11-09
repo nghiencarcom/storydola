@@ -29,7 +29,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     return NextResponse.json({ code: "MANUAL_SCRIPT_CANNOT_EXTEND", message: "Project dùng kịch bản thủ công nên chưa thể tự sinh tập tiếp. Cập nhật toàn bộ kịch bản hiện có thể làm mới tiến độ của project." }, { status: 409 });
   }
   if (busyProject(existing) || isProjectChunkRunActive(slug)) {
-    return NextResponse.json({ code: "PROJECT_BUSY", message: "Project đang chạy tác vụ. Hãy đợi tạo kịch bản, TTS, render hoặc queue video hoàn tất rồi thêm tập." }, { status: 409 });
+    return NextResponse.json({ code: "PROJECT_BUSY", message: "Project đang có tác vụ TTS, render hoặc queue video. Hãy đợi hoàn tất rồi thêm tập." }, { status: 409 });
   }
 
   // Reserve the three project pipelines during the short append operation so

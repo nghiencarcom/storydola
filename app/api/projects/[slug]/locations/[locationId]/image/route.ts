@@ -2,7 +2,8 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
 import { generateMaiVideoProfileImage } from "../../../../../../lib/media-provider";
-import { resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
+import { isFlowImageModel, isMuseImageModel, resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
+import { readMaiVideoAuthCookie } from "../../../../../../lib/maivideo-auth-shared";
 import type { MediaGenerationSettings } from "../../../../../../lib/project-types";
 import { markRenderStale, now, readChunkOutput, readData, saveChunkOutput, updateData } from "../../../../../../lib/server-store";
 import { sceneReferenceLocationId } from "../../../../../../lib/scene-reference-assignments";
@@ -53,7 +54,11 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   if (!prompt) return NextResponse.json({ message: "Bối cảnh cần có prompt tạo ảnh." }, { status: 400 });
   try {
     const mediaGeneration = resolveMediaGenerationSettings({ ...project.mediaGeneration, ...body.mediaGeneration });
-    const image = await generateMaiVideoProfileImage({ projectSlug: slug, profileKind: "locations", profileId: locationId, prompt, mediaGeneration, contentGenre: project.contentGenre, secondaryGenres: project.secondaryGenres, storySetting: project.storySetting, settingNotes: project.settingNotes, visualStyle: project.visualStyle, imageStyle: project.imageStyle });
+    const providerAuthToken = isMuseImageModel(mediaGeneration.imageModel) || isFlowImageModel(mediaGeneration.imageModel) ? readMaiVideoAuthCookie(request.headers.get("cookie")) : "";
+    if ((isMuseImageModel(mediaGeneration.imageModel) || isFlowImageModel(mediaGeneration.imageModel)) && !providerAuthToken) {
+      return NextResponse.json({ code: "PROVIDER_SESSION_REQUIRED", message: "Hãy đăng nhập MaiVideo để dùng API ảnh Muse.ai hoặc Flow." }, { status: 401 });
+    }
+    const image = await generateMaiVideoProfileImage({ projectSlug: slug, profileKind: "locations", profileId: locationId, prompt, mediaGeneration, providerAuthToken, contentGenre: project.contentGenre, secondaryGenres: project.secondaryGenres, storySetting: project.storySetting, settingNotes: project.settingNotes, visualStyle: project.visualStyle, imageStyle: project.imageStyle });
     const updated = await updateData(async (current) => {
       const project = current.projects.find((item) => item.slug === slug);
       const profile = project?.locations?.find((item) => item.id === locationId);

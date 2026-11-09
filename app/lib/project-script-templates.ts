@@ -1,5 +1,10 @@
 import { AI_DRAMA_CAMERA_COMBO_GUIDANCE } from "./ai-drama-video-prompt-guidance";
 
+const AI_DRAMA_CAMERA_COMBO_GUIDANCE_LINES = AI_DRAMA_CAMERA_COMBO_GUIDANCE
+  .split(/\r?\n/)
+  .map((line) => line.trim())
+  .filter(Boolean);
+
 export const AI_DRAMA_SOURCE_SCRIPT_TEMPLATE = `PROJECT: [Project name]
 VIDEO TITLE: [Short, curiosity-driven title]
 TARGET DURATION: [Project duration in minutes]
@@ -41,8 +46,9 @@ End hook: [A specific unresolved consequence that leads into A03.]
 
 CONTINUITY RULES:
 - Preserve canonical names, ages, faces, costumes, relationships, locations, and prop ownership.
+- Use only the names in this project's source and bibles; preserve their spelling exactly and never copy sample names into a new project.
 - Connect every scene and episode by cause and effect; carry forward time, place, knowledge, and emotional state.
-- Every scene must be exactly 5, 10, or 15 seconds. For dialogue-led scenes, the dialogue must contain at least 10 words at 5 seconds, 20 words at 10 seconds, or 30 words at 15 seconds; target 10–15, 20–30, or 30–45 words respectively, with no more than 3 words per second combined. Split exchanges into 2–4 timed turns when appropriate. Intentional visual-led or silent scenes are exempt and must not receive filler dialogue.
+- Every scene must be exactly 5, 10, or 15 seconds. For dialogue-led scenes, the dialogue must contain at least 10 words at 5 seconds, 20 words at 10 seconds, or 30 words at 15 seconds; target 10–15, 20–30, or 30–45 words respectively, with no more than 3 words per second combined. Split exchanges into 2–4 timed turns when appropriate. Intentional visual-led or silent scenes are exempt and must not receive filler dialogue; leave dialogue_or_voiceover empty, dialogue_segments empty, and voiceover_target_sec at 0. Never put instructions in dialogue fields.
 - Each image_prompt is one finished scene image: the exact opening frame at 0 seconds, not a character/location sheet or collage. Use canonical names, describe only the visible blocking/action, composition, required props, project style and selected aspect ratio; the separate bibles define stable appearance and set design.
 - Each video_prompt must continue from that exact opening frame, hold the full composition and visible character positions for the first 0.5 seconds, then cover the entire scene with the exact camera time grid: 5s = 0–2.5 / 2.5–5; 10s = 0–2.5 / 2.5–5 / 5–7.5 / 7.5–10; 15s = 0–3 / 3–6 / 6–9 / 9–12 / 12–15. Every range states shot/angle, timed action or reaction, motivated camera path, diegetic SFX, and VFX (write “none” unless the story explicitly requires an effect). Keep exact spoken words only in dialogue_segments; video_prompt names the on-camera speaker and cue time without repeating dialogue.
 - Choose one named primary camera combo that fits the scene's beat and blocking; put its name plus the actual start framing, camera path/direction/speed, subject tracking, and end framing in camera_movement. Use the JSON sample's camera_combo_guidance as a menu, never a checklist. A secondary move is optional only when a real beat change motivates it and duration allows.
@@ -53,44 +59,30 @@ CONTINUITY RULES:
 export const AI_DRAMA_JSON_TEMPLATE = JSON.stringify({
   schema: "scene-script.v1",
   chunk_id: "A01",
-  episode_title: "Who Opened the Locked Archive?",
+  episode_title: "[Episode title]",
   prompt_guidance: {
     character_image_prompt: "English base visual description only; the app appends the required 1:1 three-view character sheet (front, back, portrait). Do not ask for a scene or add sheet layout instructions.",
     location_image_prompt: "English base environment description only; the app appends the required 1:1 four-direction location sheet (north, east, south, west). Do not include people or scene-specific action.",
-    scene_image_prompt: "Exactly one finished frame at 0 seconds, with canonical characters, visible blocking, props, composition, project style, and selected aspect ratio. Never make a reference sheet or collage.",
-    video_prompt: "Select ONE primary camera combo, prioritizing #2, #3, #4, #6, #11, #12, #16, #18, #20, or #22 when it fits; otherwise choose a suitable fallback. Name it and describe its physical path in camera_movement. The combo list is a menu, never a checklist. Follow the exact 5s/10s/15s camera grid, preserve the opening frame and visible positions for 0.5s, and give every range shot, action, camera, SFX, and VFX. Keep exact dialogue in dialogue_segments only.",
+    scene_image_prompt: "Exactly one finished frame at 0 seconds, with only the canonical characters and location actually present in this scene. Never make a reference sheet or collage.",
+    video_prompt: "Select ONE primary camera combo that fits; name it and describe its physical path in camera_movement. Preserve the opening frame and follow the exact duration-specific camera grid. Keep spoken words only in dialogue_segments. Add speaker cues only when dialogue_segments contains a real line; if it is empty, keep the scene silent with no speech or narration.",
+    dialogue: "Dialogue is optional. For a silent or visual_led scene, use dialogue_mode=visual_led, dialogue_or_voiceover=\"\", and dialogue_segments=[]. Never put instructions, placeholders, or narration in dialogue fields. Do not invent speech to fill silence.",
   },
-  camera_combo_guidance: AI_DRAMA_CAMERA_COMBO_GUIDANCE,
-  character_bible: [
-    {
-      name: "Mina",
-      description: "32-year-old Vietnamese woman, observant archivist, straight black bob, warm brown eyes, slim build, charcoal cardigan over a cream blouse, dark trousers; same face and costume in every reference view.",
-      image_prompt: "Photorealistic cinematic appearance reference for Mina: a 32-year-old Vietnamese woman with a straight black bob, warm brown eyes, slim build, charcoal cardigan over a cream blouse, and dark trousers. Natural proportions, calm neutral expression, understated everyday styling.",
-    },
-    {
-      name: "Eli",
-      description: "34-year-old Vietnamese man, archive technician, short wavy black hair, lean build, navy work jacket and dark shirt; same face and costume in every reference view.",
-      image_prompt: "Photorealistic cinematic appearance reference for Eli: a 34-year-old Vietnamese man with short wavy black hair, lean build, navy work jacket, and dark shirt. Natural proportions, calm neutral expression, understated everyday styling.",
-    },
-  ],
-  location_bible: [{
-    name: "Old City Archive",
-    description: "A narrow ground-floor archive entrance with a dark oak door, brass lock, stone floor, amber wall lamp, and a long shadowed corridor; late evening.",
-    image_prompt: "Photorealistic cinematic environment reference for the Old City Archive entrance: narrow stone corridor, dark oak door with brass lock, one amber wall lamp, worn stone floor, and a shadowed corridor beyond. Preserve this exact layout and fixed landmarks across views.",
-  }],
+  camera_combo_guidance: AI_DRAMA_CAMERA_COMBO_GUIDANCE_LINES,
+  character_bible: [],
+  location_bible: [],
   episode_hooks: {
-    opening_hook: "Mina finds fresh scratches around a door that should still be locked.",
-    turning_point: "The only key is in Mina's hand, so the break-in must involve someone inside.",
-    end_hook: "A second set of wet footprints appears behind Mina, leading deeper into the archive.",
+    opening_hook: "[A concrete action, visual reveal, or question in the first five seconds.]",
+    turning_point: "[The decision or discovery that changes the episode's direction.]",
+    end_hook: "[An earned consequence that leads directly into the next episode.]",
   },
-  chunk_summary: "Mina finds evidence that someone entered the locked archive before her.",
+  chunk_summary: "[Beginning, escalation, turning point, and outcome of this episode.]",
   continuity_state: {
-    story_so_far: "Mina and Eli arrive at the locked archive and find fresh scratches around its door.",
-    active_characters: [{ name: "Mina", appearance: "32-year-old Vietnamese archivist; straight black bob; charcoal cardigan and cream blouse.", costume: "Charcoal cardigan, cream blouse, dark trousers.", goal: "Find out who entered the archive.", emotional_state: "Alert, turning suspicious.", location: "Old City Archive entrance." }],
-    active_locations: [{ name: "Old City Archive", description: "Narrow stone corridor, oak door, brass lock, amber wall lamp; late evening." }],
-    important_props: [{ name: "Brass key", owner: "Mina", status: "In Mina's right hand." }],
-    open_threads: ["Who opened the archive from inside?"],
-    next_chunk_plan: "Continue at the same door immediately after Mina confronts Eli; resolve his reaction without resetting the scene.",
+    story_so_far: "[What has happened so far, without recapping it in the next episode.]",
+    active_characters: [],
+    active_locations: [],
+    important_props: [],
+    open_threads: [],
+    next_chunk_plan: "[Continue directly from this episode's final consequence.]",
   },
   scenes: [{
     id: "S001",
@@ -98,33 +90,28 @@ export const AI_DRAMA_JSON_TEMPLATE = JSON.stringify({
     end_sec: 5,
     duration_sec: 5,
     act: "Opening hook",
-    purpose: "Reveal the break-in and force Mina to question her only ally.",
-    beat_summary: "Mina notices fresh scratches around the locked door and challenges Eli.",
-    dialogue_mode: "dialogue_led",
-    dialogue_or_voiceover: "Mina: Who had the second key? You promised nobody else knew this door.",
-    dialogue_segments: [{
-      speaker_character: "Mina",
-      text: "Who had the second key? You promised nobody else knew this door.",
-      start_sec: 0.5,
-      end_sec: 4.7
-    }],
-    voiceover_target_sec: 4.2,
+    purpose: "A small visual surprise creates a clear comic question.",
+    beat_summary: "A paper boat circles back to its starting point just as the rain begins.",
+    dialogue_mode: "visual_led",
+    dialogue_or_voiceover: "",
+    dialogue_segments: [],
+    voiceover_target_sec: 0,
     media_type: "video",
-    characters: ["Mina", "Eli"],
-    location_name: "Old City Archive",
-    location_description: "Narrow stone corridor, dark oak door, brass lock, amber wall lamp; late evening.",
-    image_keyword: "woman finds scratched archive door",
-    video_keyword: "detective confronts ally at archive",
-    image_prompt: "One finished cinematic medium two-shot at the Old City Archive entrance, the literal opening frame at 0 seconds: Mina stands beside the scratched oak door with the brass key in her right hand; Eli is one step behind her, both fully visible. Amber wall lamp, narrow stone corridor, late-evening shadows, balanced photorealistic film lighting. Compose for the project's selected aspect ratio. Show only this single scene frame, not a reference sheet or collage.",
-    video_prompt: "0.0–2.5s: Shot: medium two-shot, eye level, Mina nearest the scratched door and Eli one step behind. Action: preserve this complete opening composition and both positions for 0.0–0.5s; Mina then studies the scratches while Eli watches her. Camera: execute combo 11, a slow 35mm push toward Mina after the hold, keeping Eli and the door in frame. SFX: quiet archive corridor room tone, continuous. VFX: none. 2.5–5.0s: Shot: reverse over Eli's shoulder toward Mina, preserving the 180-degree axis. Action: Mina turns to confront Eli and tightens her right hand around the brass key; Eli avoids her eyes. Mina's on-camera dialogue cue runs 0.5–4.7s; natural mouth movement only during that cue, with exact words supplied by dialogue_segments. Camera: motivated cut, then a subtle rack focus from the key to Mina's eyes, ending on her resolved expression. SFX: faint key ring tick as Mina tightens her grip. VFX: none. Preserve identities, positions, door, key ownership, and cause-and-effect; do not add speech or props.",
-    acting_beat: "Mina shifts from concern to suspicion; Eli tries to hide his unease.",
-    blocking: "Mina stands beside the door with the key in her right hand; Eli remains one step behind and to her left.",
-    shot_size: "Medium two-shot",
-    camera_movement: "11 Static Hold → Slow Push-In; preserve the supplied frame for exactly 0.5s, then make a restrained 35mm push toward Mina while keeping Eli and the door in frame; end with a motivated reverse OTS cut across the same axis.",
-    eye_line_action: "Mina studies the scratches, then fixes her gaze on Eli; Eli looks away.",
-    continuity_in: "Mina and Eli have just arrived at the locked archive entrance. Mina holds the brass key.",
-    continuity_out: "Mina suspects Eli knows who entered; the door remains locked and the key stays with Mina.",
-    source_basis: "A01 opening hook in the supplied story outline.",
+    characters: [],
+    location_name: "",
+    location_description: "",
+    image_keyword: "paper boat circles in a rain puddle",
+    video_keyword: "paper boat drifts in a small loop",
+    image_prompt: "One finished opening frame at 0 seconds: a small paper boat sits in a rain puddle beside a curb, a single circular ripple beginning to turn it back toward its starting point. Clear readable composition, playful family-friendly comedy, polished cinematic animation, selected project aspect ratio. No text or collage.",
+    video_prompt: "0.0–2.5s: Shot: low close-up at puddle level. Action: hold the opening frame for 0.5s, then let the paper boat drift in a tiny circle. Camera: slow lateral track following the boat. SFX: soft rain and a light water trickle. VFX: none. 2.5–5.0s: Shot: same close-up, slightly wider. Action: the boat returns to its starting point as one larger raindrop nudges it around again. Camera: settle into a gentle static hold. SFX: one soft plip from the raindrop. VFX: none. Silent visual gag; no speech or narration.",
+    acting_beat: "A visual gag builds through a simple repeated motion.",
+    blocking: "The paper boat remains within the puddle and returns to the same curb-side position.",
+    shot_size: "Low close-up",
+    camera_movement: "Gentle lateral track with the paper boat, then settle into a static close-up at its starting point.",
+    eye_line_action: "No visible character; direct attention to the boat's circular path.",
+    continuity_in: "The paper boat rests in the puddle as rain begins.",
+    continuity_out: "The boat returns to its starting point as the puddle continues to ripple.",
+    source_basis: "Illustrative silent visual scene used only to show the JSON fields.",
     risk_flags: []
   }]
 }, null, 2);
@@ -140,7 +127,7 @@ export function createEpisodeScriptTemplate(chunkId: string, sceneStart: number,
     videoBeat("6.0", "9.0", "show the next cause-and-effect action and reaction"),
     videoBeat("9.0", "12.0", "escalate the stakes with a visible change"),
     videoBeat("12.0", "15.0", "end on a consequential turn that motivates the next beat"),
-    "Use one named primary camera combo from camera_combo_guidance for the entire scene; a secondary move is optional only if the story beat changes. Keep exact dialogue only in dialogue_segments; here name each on-camera speaker and cue time without repeating their lines. State continuous ambience once. No extra speech, unsupported sounds, or props.",
+    "Use one named primary camera combo from camera_combo_guidance for the entire scene; a secondary move is optional only if the story beat changes. Keep exact dialogue only in dialogue_segments. Add on-camera speaker cues here only for actual non-empty dialogue segments; when dialogue_segments is empty, show the scene silently with no speech or narration. Never put instructions or placeholders in dialogue fields. State continuous ambience once. No unsupported sounds or props.",
   ].join(" ");
   const ongoingVideoPrompt = [
     videoBeat("0.0", "3.0", "continue directly from the previous scene and preserve its established state", true),
@@ -148,7 +135,7 @@ export function createEpisodeScriptTemplate(chunkId: string, sceneStart: number,
     videoBeat("6.0", "9.0", "reveal information or complicate the current goal"),
     videoBeat("9.0", "12.0", "escalate toward the scene turn"),
     videoBeat("12.0", "15.0", "end with a change that motivates the next scene"),
-    "Use one named primary camera combo from camera_combo_guidance for the entire scene; a secondary move is optional only if the story beat changes. Keep exact dialogue only in dialogue_segments; here name each on-camera speaker and cue time without repeating their lines. State continuous ambience once. No extra speech, unsupported sounds, or props.",
+    "Use one named primary camera combo from camera_combo_guidance for the entire scene; a secondary move is optional only if the story beat changes. Keep exact dialogue only in dialogue_segments. Add on-camera speaker cues here only for actual non-empty dialogue segments; when dialogue_segments is empty, show the scene silently with no speech or narration. Never put instructions or placeholders in dialogue fields. State continuous ambience once. No unsupported sounds or props.",
   ].join(" ");
   const endingVideoPrompt = [
     videoBeat("0.0", "3.0", "continue directly from the previous scene and preserve its established state", true),
@@ -156,7 +143,7 @@ export function createEpisodeScriptTemplate(chunkId: string, sceneStart: number,
     videoBeat("6.0", "9.0", "reveal or complicate the central question"),
     videoBeat("9.0", "12.0", "build toward the episode's end hook"),
     videoBeat("12.0", "15.0", "show an earned discovery or consequence that leads directly into the next episode"),
-    "Use one named primary camera combo from camera_combo_guidance for the entire scene; a secondary move is optional only if the story beat changes. Keep exact dialogue only in dialogue_segments; here name each on-camera speaker and cue time without repeating their lines. State continuous ambience once. No extra speech, unsupported sounds, or props.",
+    "Use one named primary camera combo from camera_combo_guidance for the entire scene; a secondary move is optional only if the story beat changes. Keep exact dialogue only in dialogue_segments. Add on-camera speaker cues here only for actual non-empty dialogue segments; when dialogue_segments is empty, show the scene silently with no speech or narration. Never put instructions or placeholders in dialogue fields. State continuous ambience once. No unsupported sounds or props.",
   ].join(" ");
   const scenes = Array.from({ length: Math.max(1, sceneEnd - sceneStart + 1) }, (_, index) => {
     const sceneNumber = sceneStart + index;
@@ -179,19 +166,14 @@ export function createEpisodeScriptTemplate(chunkId: string, sceneStart: number,
         : index === sceneEnd - sceneStart
           ? "[Mô tả hệ quả hoặc phát hiện cuối tập; gieo end hook có căn cứ trong diễn biến.]"
           : "[Mô tả hành động, phản ứng và kết quả theo quan hệ nhân quả]",
-      dialogue_mode: "dialogue_led",
-      dialogue_or_voiceover: "[Tên nhân vật]: [Lời thoại đúng ngôn ngữ video. dialogue_led tối thiểu 10 từ/5s, 20 từ/10s, 30 từ/15s; mục tiêu lần lượt 10–15, 20–30, 30–45 từ.]",
-      dialogue_segments: [{
-        speaker_character: "[Tên nhân vật theo Character Bible]",
-        text: "[Cảnh 15s: tối thiểu 30, mục tiêu 30–45 từ. Cảnh 10s: tối thiểu 20, mục tiêu 20–30 từ. Cảnh 5s: tối thiểu 10, mục tiêu 10–15 từ. Chỉ tính lời thoại, không tính tên người nói.]",
-        start_sec: 0.5,
-        end_sec: 14.5,
-      }],
-      voiceover_target_sec: 15,
+      dialogue_mode: "visual_led",
+      dialogue_or_voiceover: "",
+      dialogue_segments: [],
+      voiceover_target_sec: 0,
       media_type: "video",
-      characters: ["[Tên nhân vật đúng Character Bible]"],
-      location_name: "[Tên bối cảnh đúng Location Bible]",
-      location_description: "[Bố cục/đặc điểm nhận diện ổn định của địa điểm này]",
+      characters: [],
+      location_name: "",
+      location_description: "",
       image_keyword: "[Từ khóa hình ảnh chính]",
       video_keyword: "[Từ khóa hành động/chuyển động chính]",
       image_prompt: "[English: describe exactly ONE finished 0-second opening frame; use canonical character names, frame-specific action/expression/blocking, shot size/angle, foreground/midground/background, required props, project style, and selected aspect ratio. Let separate Character/Location Bible references define stable appearance and set design. Never request a reference sheet, grid, collage, or multiple moments here.]",
@@ -220,19 +202,12 @@ export function createEpisodeScriptTemplate(chunkId: string, sceneStart: number,
       scene_image_prompt: "Exactly one finished opening frame at 0 seconds. Stable appearance and location layout belong in the separate bibles, not repeated as a contact sheet.",
       character_image_prompt: "English base character appearance only; the app appends the 1:1 front/back/portrait reference sheet.",
       location_image_prompt: "English base environment only; the app appends the 1:1 north/east/south/west reference sheet.",
-      video_prompt: "Select ONE primary named camera combo, prioritizing #2, #3, #4, #6, #11, #12, #16, #18, #20, or #22 when it fits the story beat; otherwise use a suitable fallback. Describe its actual physical path in camera_movement. Preserve the opening frame/positions for 0.5s and follow exact grids: 5s = 0–2.5/2.5–5; 10s = 0–2.5/2.5–5/5–7.5/7.5–10; 15s = 0–3/3–6/6–9/9–12/12–15. Every beat names shot, action/reaction, camera, SFX, and VFX. Exact dialogue belongs only in dialogue_segments.",
+      video_prompt: "Select ONE primary named camera combo that fits the story beat and describe its path in camera_movement. Preserve the opening frame for 0.5s and follow the duration-specific grid: 5s = 0–2.5/2.5–5; 10s = 0–2.5/2.5–5/5–7.5/7.5–10; 15s = 0–3/3–6/6–9/9–12/12–15. Every beat names shot, action/reaction, camera, SFX, and VFX. Exact dialogue belongs only in dialogue_segments. Add speaker cues only for actual lines; if dialogue_segments is empty, do not add speech or narration.",
+      dialogue: "Dialogue is optional. Silent visual_led scenes use dialogue_or_voiceover=\"\" and dialogue_segments=[]. Never put instructions or placeholders in dialogue fields. Do not invent speech to fill silence.",
     },
-    camera_combo_guidance: AI_DRAMA_CAMERA_COMBO_GUIDANCE,
-    character_bible: [{
-      name: "[Tên nhân vật chuẩn]",
-      description: "[Tuổi, diện mạo cố định, tóc, vóc dáng, trang phục và dấu hiệu nhận diện bằng tiếng Anh]",
-      image_prompt: "[English base appearance prompt only; the app automatically adds a 1:1 front/back/portrait reference sheet. No scene action, layout directions, or other characters.]",
-    }],
-    location_bible: [{
-      name: "[Tên bối cảnh chuẩn]",
-      description: "[Thời đại, sơ đồ không gian, mốc kiến trúc, vật liệu, ánh sáng/thời tiết và đạo cụ cố định bằng tiếng Anh]",
-      image_prompt: "[English base environment prompt only; the app automatically adds a 1:1 north/east/south/west reference sheet. No people or scene-specific action.]",
-    }],
+    camera_combo_guidance: AI_DRAMA_CAMERA_COMBO_GUIDANCE_LINES,
+    character_bible: [],
+    location_bible: [],
     episode_hooks: {
       opening_hook: "[Hook cụ thể phải thể hiện trong 0–5 giây của cảnh mở tập; bắt đầu bằng hành động/manh mối/xung đột/câu hỏi phù hợp, không recap.]",
       turning_point: "[Bước ngoặt làm đổi mục tiêu, thông tin hoặc thế chủ động.]",
@@ -241,10 +216,10 @@ export function createEpisodeScriptTemplate(chunkId: string, sceneStart: number,
     chunk_summary: "[Tóm tắt tập: mở đầu, diễn biến, bước ngoặt và kết quả; nối tiếp tập trước]",
     continuity_state: {
       story_so_far: "[Tóm tắt sự kiện đã xảy ra, không recap trong tập sau]",
-      active_characters: [{ name: "[Tên nhân vật]", appearance: "[Nhận diện cố định]", costume: "[Trang phục hiện tại]", goal: "[Mục tiêu]", emotional_state: "[Cảm xúc cuối tập]", location: "[Vị trí cuối tập]" }],
-      active_locations: [{ name: "[Tên bối cảnh]", description: "[Trạng thái thời gian/không gian cuối tập]" }],
-      important_props: [{ name: "[Đạo cụ]", owner: "[Người đang giữ]", status: "[Vị trí/trạng thái cuối tập]" }],
-      open_threads: ["[Câu hỏi hoặc tình huống dẫn sang tập sau]"],
+      active_characters: [],
+      active_locations: [],
+      important_props: [],
+      open_threads: [],
       next_chunk_plan: "[Cảnh đầu tập tiếp nối trực tiếp hệ quả này]",
     },
       scenes,

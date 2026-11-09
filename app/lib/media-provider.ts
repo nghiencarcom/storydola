@@ -16,13 +16,13 @@ import type {
   VideoGenerationModelOption,
 } from "./project-types";
 import { IMAGE_DETAIL_LEVELS } from "./project-types";
-import type { StoryPresetId } from "./story-presets";
+import { isFlowStoryOnlyPreset, type StoryPresetId } from "./story-presets";
 import { characterReferencePrompt, locationReferencePrompt, PROFILE_REFERENCE_ASPECT_RATIO } from "./ai-drama-reference-prompts";
 import { normalizeEntityName } from "./entity-name";
 import { normalizeAiDramaSceneDuration } from "./ai-drama-scene-timing";
-import { availableImageModels, defaultMediaGenerationSettings, isMaiVideoSeedanceModel, isVideoOffPeakRequired, normalizeVideoDuration, resolveMediaGenerationSettings, SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES, shouldUseVideoLocationReference, usesDolaRenderGateway } from "./media-generation-settings";
-import { createSeedanceCharacterReferenceUrl, createSeedanceLocationReferenceUrl, createSeedanceSceneReferenceUrl } from "./seedance-reference-links";
-import { getSeedanceApiKey } from "./seedance-accounts";
+import { availableImageModels, defaultMediaGenerationSettings, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, filterPixverseVideoQualities, FLOW_IMAGE_MODEL_OPTIONS, FLOW_VIDEO_MODEL_OPTION, HIGGSFIELD_SEEDANCE_MODEL_ID, isFlowImageModel, isKlingVideoModel, isMaiVideoPixverseV56Model, isMaiVideoSeedanceModel, isMuseImageModel, isPixverseVideoSettings, isVideoOffPeakRequired, MUSE_IMAGE_MODEL_OPTION, normalizeVideoDuration, PIXVERSE_SEEDANCE_2_FAST_MODEL_ID, resolveMediaGenerationSettings, SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES, shouldUseVideoLocationReference } from "./media-generation-settings";
+import { createSeedanceCharacterReferenceUrl, createSeedanceLocationReferenceUrl, createSeedanceSceneReferenceUrl, seedancePublicBaseUrlIssue } from "./seedance-reference-links";
+import { getSeedanceApiKey, getSeedanceApiSessionToken } from "./seedance-accounts";
 import { getMaiVideoApiKey } from "./maivideo-api-keys";
 import { getCurrentUserId } from "./auth-server";
 import { estimateDialogueDurationMs, readDialogueSegments } from "./dialogue-segments";
@@ -39,8 +39,14 @@ export type VideoPromptReferenceImage = { name: string; url: string };
 const SEEDANCE_PROVIDER_VIDEO_TIMEOUT_MAX_MS = 29 * 60 * 1000;
 const SEEDANCE_VIDEO_RESPONSE_GRACE_MS = 60 * 1000;
 const SEEDANCE_VIDEO_TIMEOUT_MAX_MS = SEEDANCE_PROVIDER_VIDEO_TIMEOUT_MAX_MS + SEEDANCE_VIDEO_RESPONSE_GRACE_MS;
+const MAIVIDEO_IMAGE_TIMEOUT_MAX_MS = 24 * 60 * 60 * 1000;
+const MUSE_IMAGE_TIMEOUT_MAX_MS = 24 * 60 * 60 * 1000;
+const MUSE_VIDEO_TIMEOUT_MAX_MS = 24 * 60 * 60 * 1000;
+const FLOW_MEDIA_TIMEOUT_MAX_MS = 24 * 60 * 60 * 1000;
+const HIGGSFIELD_VIDEO_TIMEOUT_MAX_MS = 24 * 60 * 60 * 1000;
 const MAIVIDEO_VIDEO_PROMPT_DEFAULT_MAX_CHARS = 5_000;
 const SEEDANCE_DIRECT_VIDEO_PROMPT_MAX_CHARS = 10_000;
+const HIGGSFIELD_SEEDANCE_VIDEO_PROMPT_MAX_CHARS = 10_000;
 
 function requireVideoPromptWithinLimit(prompt: string, providerName: string, maxChars: number) {
   if (prompt.length > maxChars) {
@@ -107,10 +113,11 @@ function seedanceVideoTimeoutError(taskId: string) {
 
 export class MediaProviderJobPendingError extends Error {
   readonly providerJobId: string;
-  readonly provider: "maivideo" | "seedance";
+  readonly provider: "maivideo" | "higgsfield" | "seedance" | "muse" | "muse-image" | "flow-image" | "flow-video";
 
-  constructor(provider: "maivideo" | "seedance", providerJobId: string) {
-    super(`${provider === "seedance" ? "Seedance" : "MaiVideo"} chưa trả trạng thái cuối; sẽ tiếp tục theo dõi job ${providerJobId}.`);
+  constructor(provider: "maivideo" | "higgsfield" | "seedance" | "muse" | "muse-image" | "flow-image" | "flow-video", providerJobId: string) {
+    const name = provider === "higgsfield" ? "Higgsfield" : provider === "seedance" ? "Seedance" : provider === "muse" || provider === "muse-image" ? "Muse.ai" : provider === "flow-image" || provider === "flow-video" ? "Flow" : "MaiVideo";
+    super(`${name} chưa trả trạng thái cuối; sẽ tiếp tục theo dõi job ${providerJobId}.`);
     this.name = "MediaProviderJobPendingError";
     this.provider = provider;
     this.providerJobId = providerJobId;
@@ -124,6 +131,7 @@ export class SeedanceGenerationError extends Error {
   readonly statusCode?: number;
   readonly requestId?: string;
   readonly taskId?: string;
+  readonly providerLabel: string;
 
   constructor(options: {
     stage: VideoGenerationFailureStage;
@@ -133,16 +141,18 @@ export class SeedanceGenerationError extends Error {
     statusCode?: number;
     requestId?: string;
     taskId?: string;
+    providerLabel?: string;
   }) {
-    const stageLabel = options.stage === "seedance_create"
+    const stageLabel = options.stage === "seedance_create" || options.stage === "flow_create"
       ? "tạo task"
-      : options.stage === "seedance_poll"
+      : options.stage === "seedance_poll" || options.stage === "flow_poll"
         ? "theo dõi task"
-        : options.stage === "seedance_download"
+        : options.stage === "seedance_download" || options.stage === "flow_download"
           ? "tải video"
           : "lưu task ID";
     const status = options.statusCode ? ` · HTTP ${options.statusCode}` : "";
-    super(`Seedance ${stageLabel} thất bại${status}: ${options.detail}`);
+    const providerLabel = options.providerLabel || "Seedance";
+    super(`${providerLabel} ${stageLabel} thất bại${status}: ${options.detail}`);
     this.name = "SeedanceGenerationError";
     this.stage = options.stage;
     this.retryStrategy = options.retryStrategy;
@@ -150,6 +160,7 @@ export class SeedanceGenerationError extends Error {
     this.statusCode = options.statusCode;
     this.requestId = options.requestId;
     this.taskId = options.taskId;
+    this.providerLabel = providerLabel;
   }
 }
 
@@ -167,8 +178,31 @@ function safeProviderDetail(value: unknown, fallback: string) {
 
 function responseErrorDetail(record: JsonRecord) {
   const error = record.error && typeof record.error === "object" ? record.error as JsonRecord : undefined;
-  return [record.detail, record.message, typeof record.error === "string" ? record.error : undefined, error?.message, error?.detail]
+  const itemError = Array.isArray(record.items)
+    ? record.items.map((item) => {
+        const row = asJsonRecord(item);
+        const nested = row.error && typeof row.error === "object" ? asJsonRecord(row.error) : undefined;
+        return typeof row.error === "string" ? row.error : nested?.message || nested?.detail;
+      }).find((value): value is string => typeof value === "string" && Boolean(value.trim()))
+    : undefined;
+  return [record.detail, record.message, typeof record.error === "string" ? record.error : undefined, error?.message, error?.detail, itemError]
     .find((value): value is string => typeof value === "string" && Boolean(value.trim()));
+}
+
+function isMaiVideoSessionKeyMismatch(detail: string) {
+  const normalized = detail.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  return /phien(?: maivideo)? khong thuoc (?:chu )?api key/.test(normalized)
+    || /token phien.*khong thuoc.*api key/.test(normalized)
+    || /session.*(?:does not belong|not belong).*(?:api key|key owner)/.test(normalized);
+}
+
+function retryAfterDelayMs(headers: Headers) {
+  const value = headers.get("retry-after")?.trim();
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;
+  const retryAt = Date.parse(value);
+  return Number.isFinite(retryAt) ? Math.max(0, retryAt - Date.now()) : undefined;
 }
 
 function requestIdFromHeaders(headers: Headers) {
@@ -182,15 +216,16 @@ function requestIdFromHeaders(headers: Headers) {
 type SeedanceRequestContext = {
   stage: "seedance_create" | "seedance_poll";
   taskId?: string;
+  providerLabel?: string;
 };
 
 function isTemporaryHttpFailure(statusCode: number) {
   return statusCode === 408 || statusCode === 425 || statusCode === 429 || statusCode >= 500;
 }
 
-function uncertainSubmissionError(provider: "MaiVideo", cause: unknown) {
+function uncertainSubmissionError(provider: "MaiVideo" | "Muse.ai" | "Flow", cause: unknown) {
   const message = cause instanceof Error ? cause.message : String(cause || "");
-  const statusCode = Number(/^(\d{3}):/.exec(message)?.[1] || 0);
+  const statusCode = Number((cause instanceof SeedanceGenerationError ? cause.statusCode : 0) || /^(\d{3}):/.exec(message)?.[1] || 0);
   const uncertain = cause instanceof Error && (cause.name === "TimeoutError" || cause.name === "AbortError" || cause instanceof TypeError)
     || [502, 503, 504].includes(statusCode);
   return uncertain
@@ -210,6 +245,7 @@ function seedanceRequestError(context: SeedanceRequestContext, detail: string, o
     statusCode: options.statusCode,
     requestId: options.requestId,
     taskId: context.taskId,
+    providerLabel: context.providerLabel,
     retryStrategy: isPoll ? "same_task" : "new_task",
     automaticRetry: isPoll && (options.networkFailure || (options.statusCode !== undefined && isTemporaryHttpFailure(options.statusCode))),
   });
@@ -217,16 +253,6 @@ function seedanceRequestError(context: SeedanceRequestContext, detail: string, o
 
 const MEDIA_DIR = path.join(process.cwd(), "data", "media");
 const SEEDANCE_BASE_URL = "https://seedance.maivideo.top";
-
-function seedanceServiceBaseUrl() {
-  if (!usesDolaRenderGateway()) return (process.env.SEEDANCE_API_BASE_URL?.trim() || SEEDANCE_BASE_URL).replace(/\/+$/, "");
-  return (process.env.STORYAI_SEEDANCE_GATEWAY_URL?.trim() || process.env.DOLA_GATEWAY_URL?.trim() || "http://127.0.0.1:8210").replace(/\/+$/, "");
-}
-
-function seedanceServiceHeaders(apiKey?: string): Record<string, string> {
-  const key = (usesDolaRenderGateway() ? process.env.DOLA_GATEWAY_API_KEY : apiKey)?.trim();
-  return key ? { Authorization: `Bearer ${key}` } : {};
-}
 const SEEDANCE_VIDEO_MODELS: VideoGenerationModelOption[] = [
   {
     id: "seedance-2.0",
@@ -259,6 +285,61 @@ const SEEDANCE_VIDEO_MODELS: VideoGenerationModelOption[] = [
     promptMaxLength: SEEDANCE_DIRECT_VIDEO_PROMPT_MAX_CHARS,
   },
 ];
+
+const MUSE_VIDEO_MODELS: VideoGenerationModelOption[] = [{
+  id: DEFAULT_MUSE_VIDEO_MODEL_ID,
+  label: "Muse.ai",
+  provider: "muse",
+  qualities: [],
+  aspectRatios: ["9:16", "16:9", "1:1", "4:3", "3:4"],
+  minDurationSec: 5,
+  maxDurationSec: 10,
+  supportedDurationsSec: [5, 10],
+  supportsMultiShot: false,
+  supportsAudio: false,
+  supportsOffPeak: false,
+  maxReferenceImages: SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES,
+  promptMaxLength: 12_000,
+}];
+
+const FLOW_VIDEO_MODELS: VideoGenerationModelOption[] = [FLOW_VIDEO_MODEL_OPTION];
+
+// The PixVerse endpoint exposes Seedance 2.0 Fast as a regular model in its
+// public catalog. Keep it selectable when the catalog cannot be loaded.
+const PIXVERSE_SEEDANCE_VIDEO_MODELS: VideoGenerationModelOption[] = [{
+  id: PIXVERSE_SEEDANCE_2_FAST_MODEL_ID,
+  label: "Seedance 2.0 · PixVerse",
+  provider: "maivideo",
+  qualities: ["720p"],
+  aspectRatios: ["16:9", "9:16", "4:3", "3:4", "1:1"],
+  minDurationSec: 5,
+  maxDurationSec: 15,
+  supportedDurationsSec: [5, 10, 15],
+  supportsMultiShot: false,
+  supportsAudio: true,
+  supportsOffPeak: false,
+  maxReferenceImages: 9,
+  maxCount: 1,
+  promptMaxLength: MAIVIDEO_VIDEO_PROMPT_DEFAULT_MAX_CHARS,
+}];
+
+// The separate Higgsfield tab uses a session-authenticated multipart API.
+const HIGGSFIELD_SEEDANCE_VIDEO_MODELS: VideoGenerationModelOption[] = [{
+  id: HIGGSFIELD_SEEDANCE_MODEL_ID,
+  label: "Seedance 2.0 · Higgsfield",
+  provider: "higgsfield",
+  qualities: ["720p"],
+  aspectRatios: ["16:9", "9:16", "4:3", "3:4", "1:1", "21:9"],
+  minDurationSec: 5,
+  maxDurationSec: 15,
+  supportedDurationsSec: [5, 10, 15],
+  supportsMultiShot: false,
+  supportsAudio: true,
+  supportsOffPeak: false,
+  maxReferenceImages: 9,
+  maxCount: 1,
+  promptMaxLength: HIGGSFIELD_SEEDANCE_VIDEO_PROMPT_MAX_CHARS,
+}];
 
 function sleep(milliseconds: number, signal?: AbortSignal) {
   if (signal?.aborted) return Promise.reject(signal.reason || new Error("Operation aborted"));
@@ -348,19 +429,35 @@ async function requestJson(url: string, init: RequestInit = {}, timeoutMs = 60_0
   if (!response.ok) {
     const record = payload && typeof payload === "object" ? payload as JsonRecord : {};
     const fallback = "Dịch vụ trả về lỗi.";
-    const detail = safeProviderDetail(responseErrorDetail(record), fallback);
+    const providerDetail = responseErrorDetail(record) || "";
+    const sessionKeyMismatch = seedanceContext?.stage === "seedance_create"
+      && response.status === 403
+      && isMaiVideoSessionKeyMismatch(providerDetail);
+    const detail = safeProviderDetail(
+      sessionKeyMismatch
+        ? "Phiên MaiVideo không khớp chủ API key. Job chưa tạo, chưa trừ credit. Kiểm tra API key đang dùng; nếu key đúng, đặt cùng một DOLA_TASK_OWNER_SECRET trong Dola Studio (.env.local) và Gateway (dola-render-gateway/.env), rồi khởi động lại Gateway."
+        : providerDetail,
+      fallback,
+    );
     if (seedanceContext) {
       throw seedanceRequestError(seedanceContext, detail, {
         statusCode: response.status,
         requestId: requestIdFromHeaders(response.headers),
       });
     }
-    throw new Error(`${response.status}: ${detail}`);
+    const retryAfterMs = retryAfterDelayMs(response.headers);
+    const retryNote = response.status === 429 && retryAfterMs !== undefined && retryAfterMs > 0
+      ? ` Hãy thử lại sau ${Math.ceil(retryAfterMs / 1_000)} giây.`
+      : "";
+    const error = new Error(`${response.status}: ${detail}${retryNote}`) as Error & { statusCode: number; retryAfterMs?: number };
+    error.statusCode = response.status;
+    error.retryAfterMs = retryAfterMs;
+    throw error;
   }
   return payload && typeof payload === "object" ? payload as JsonRecord : {};
 }
 
-async function downloadAsset(url: string, outputPath: string, kind: "image" | "video", extraHeaders: Record<string, string> = {}, seedanceTaskId?: string, signal?: AbortSignal) {
+async function downloadAsset(url: string, outputPath: string, kind: "image" | "video", extraHeaders: Record<string, string> = {}, seedanceTaskId?: string, signal?: AbortSignal, providerLabel = "Seedance") {
   let response: Response;
   try {
     response = await fetch(url, {
@@ -381,6 +478,7 @@ async function downloadAsset(url: string, outputPath: string, kind: "image" | "v
       taskId: seedanceTaskId,
       retryStrategy: "same_task",
       automaticRetry: true,
+      providerLabel,
     });
   }
   if (!response.ok) {
@@ -393,6 +491,7 @@ async function downloadAsset(url: string, outputPath: string, kind: "image" | "v
         taskId: seedanceTaskId,
         retryStrategy: "same_task",
         automaticRetry: isTemporaryHttpFailure(response.status),
+        providerLabel,
       });
     }
     throw new Error(`Tải ${kind} thất bại: HTTP ${response.status}`);
@@ -402,7 +501,7 @@ async function downloadAsset(url: string, outputPath: string, kind: "image" | "v
     || (kind === "video" && contentType && !contentType.startsWith("video/") && !contentType.includes("octet-stream"));
   if (invalidContentType) {
     const detail = `Nguồn không phải ${kind === "image" ? "ảnh" : "video"} (${contentType.slice(0, 100)})`;
-    if (seedanceTaskId) throw new SeedanceGenerationError({ stage: "seedance_download", detail, taskId: seedanceTaskId, retryStrategy: "same_task" });
+    if (seedanceTaskId) throw new SeedanceGenerationError({ stage: "seedance_download", detail, taskId: seedanceTaskId, retryStrategy: "same_task", providerLabel });
     throw new Error(detail);
   }
   let bytes: Buffer;
@@ -416,16 +515,27 @@ async function downloadAsset(url: string, outputPath: string, kind: "image" | "v
       taskId: seedanceTaskId,
       retryStrategy: "same_task",
       automaticRetry: true,
+      providerLabel,
     });
   }
   const minimumBytes = kind === "image" ? 2048 : 32_768;
   if (bytes.length < minimumBytes) {
     const detail = `${kind === "image" ? "Ảnh" : "Video"} tải về quá nhỏ`;
-    if (seedanceTaskId) throw new SeedanceGenerationError({ stage: "seedance_download", detail, taskId: seedanceTaskId, retryStrategy: "same_task" });
+    if (seedanceTaskId) throw new SeedanceGenerationError({ stage: "seedance_download", detail, taskId: seedanceTaskId, retryStrategy: "same_task", providerLabel });
     throw new Error(detail);
   }
-  await mkdir(path.dirname(outputPath), { recursive: true });
-  await writeFile(outputPath, bytes);
+  const mediaType = contentType.split(";")[0].trim().toLowerCase();
+  const imageExtension = mediaType === "image/jpeg" || mediaType === "image/jpg" ? ".jpg"
+    : mediaType === "image/webp" ? ".webp"
+      : mediaType === "image/png" ? ".png"
+        : "";
+  const currentExtension = path.extname(outputPath).toLowerCase();
+  const finalOutputPath = kind === "image" && imageExtension && currentExtension !== imageExtension
+    ? outputPath.replace(/\.(?:png|jpe?g|webp)$/i, imageExtension)
+    : outputPath;
+  await mkdir(path.dirname(finalOutputPath), { recursive: true });
+  await writeFile(finalOutputPath, bytes);
+  return finalOutputPath;
 }
 
 function relativePath(absolutePath: string) {
@@ -570,8 +680,26 @@ function asJsonRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {};
 }
 
+function modelEntries(value: unknown): Array<[string, unknown]> {
+  if (Array.isArray(value)) {
+    return value.flatMap((item): Array<[string, unknown]> => {
+      if (typeof item === "string") return [[item, item]];
+      const model = asJsonRecord(item);
+      const id = String(model.id || model.model_id || model.model || "").trim();
+      return id ? [[id, item]] : [];
+    });
+  }
+  return Object.entries(asJsonRecord(value));
+}
+
 function stringList(value: unknown) {
   return Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean) : [];
+}
+
+function numberList(value: unknown) {
+  if (!Array.isArray(value)) return undefined;
+  const values = value.map(Number).filter((item) => Number.isInteger(item) && item > 0);
+  return values.length ? [...new Set(values)].sort((left, right) => left - right) : undefined;
 }
 
 function numberMap(value: unknown) {
@@ -584,37 +712,13 @@ function numberMap(value: unknown) {
   return result;
 }
 
-function imageModelEntries(value: unknown, ...capabilityMaps: unknown[]): Array<[string, unknown]> {
-  const entries: Array<[string, unknown]> = [];
-  if (Array.isArray(value)) {
-    entries.push(...value.flatMap((item): Array<[string, unknown]> => {
-      if (typeof item === "string" && item.trim()) return [[item.trim(), item.trim()]];
-      const record = asJsonRecord(item);
-      const id = [record.id, record.model_id, record.model, record.value]
-        .find((candidate): candidate is string => typeof candidate === "string" && Boolean(candidate.trim()))?.trim();
-      return id ? [[id, item]] : [];
-    }));
-  } else {
-    entries.push(...Object.entries(asJsonRecord(value)));
-  }
-  const knownIds = new Set(entries.map(([id]) => id));
-  for (const source of capabilityMaps) {
-    for (const id of Object.keys(asJsonRecord(source))) {
-      if (knownIds.has(id)) continue;
-      knownIds.add(id);
-      entries.push([id, id]);
-    }
-  }
-  return entries;
-}
-
 const modelCatalogCache = new Map<string, { expiresAt: number; catalog: MediaModelCatalog }>();
 const modelCatalogRequests = new Map<string, Promise<MediaModelCatalog>>();
 
 /** Fetch only the model capabilities needed by the project settings UI. */
 export async function getMaiVideoModelCatalog(userIdOverride?: string): Promise<MediaModelCatalog> {
   const defaults = defaultMediaGenerationSettings();
-  const emptyCatalog = (): MediaModelCatalog => ({ defaults, imageModels: [], videoModels: [...SEEDANCE_VIDEO_MODELS] });
+  const emptyCatalog = (): MediaModelCatalog => ({ defaults, imageModels: [MUSE_IMAGE_MODEL_OPTION, ...FLOW_IMAGE_MODEL_OPTIONS], videoModels: [...PIXVERSE_SEEDANCE_VIDEO_MODELS, ...HIGGSFIELD_SEEDANCE_VIDEO_MODELS, ...SEEDANCE_VIDEO_MODELS, ...MUSE_VIDEO_MODELS, ...FLOW_VIDEO_MODELS] });
   const userId = userIdOverride?.trim() || await getCurrentUserId();
   const apiKey = await getMaiVideoApiKey(userId);
   const cacheKey = createHash("sha256").update(userId).update("\0").update(apiKey).digest("hex");
@@ -641,85 +745,77 @@ export async function getMaiVideoModelCatalog(userIdOverride?: string): Promise<
 
     if (imageResult.status === "fulfilled") {
       const payload = imageResult.value;
-      const modelMap = payload.models;
       const resolutionsMap = asJsonRecord(payload.model_resolutions);
       const qualitiesMap = asJsonRecord(payload.model_qualities);
       const detailLevelsMap = asJsonRecord(payload.model_detail_levels);
       const aspectRatiosMap = asJsonRecord(payload.model_aspect_ratios);
       const referenceLimits = asJsonRecord(payload.max_reference_images_by_model);
-      imageModels = availableImageModels(imageModelEntries(
-        modelMap,
-        resolutionsMap,
-        qualitiesMap,
-        detailLevelsMap,
-        aspectRatiosMap,
-        referenceLimits,
-      ).map(([id, value]) => {
+      imageModels = availableImageModels([...modelEntries(payload.models).filter(([id]) => !isMuseImageModel(id)).map(([id, value]) => {
         const config = asJsonRecord(value);
-        const resolutionValues = stringList(resolutionsMap[id]);
-        const qualityValues = stringList(qualitiesMap[id]);
-        const configResolutions = stringList(config.resolutions);
-        const configQualities = stringList(config.qualities);
-        const modelQualities = resolutionValues.length
-          ? resolutionValues
-          : qualityValues.length
-            ? qualityValues
-            : configResolutions.length
-              ? configResolutions
-              : configQualities;
         const aspectRatiosByQuality: Record<string, string[]> = {};
-        const catalogRatios = asJsonRecord(aspectRatiosMap[id] || config.aspect_ratios_by_quality || config.aspectRatiosByQuality);
-        for (const [quality, ratios] of Object.entries(catalogRatios)) {
+        for (const [quality, ratios] of Object.entries(asJsonRecord(aspectRatiosMap[id]))) {
           const values = stringList(ratios);
           if (values.length) aspectRatiosByQuality[quality] = values;
         }
-        const unkeyedAspectRatios = stringList(config.aspect_ratios);
-        if (!Object.keys(aspectRatiosByQuality).length && unkeyedAspectRatios.length) {
-          for (const quality of modelQualities) aspectRatiosByQuality[quality] = unkeyedAspectRatios;
+        const configuredAspectRatios = stringList(config.aspect_ratios);
+        if (!Object.keys(aspectRatiosByQuality).length && configuredAspectRatios.length) {
+          aspectRatiosByQuality.default = configuredAspectRatios;
         }
-        const label = typeof value === "string"
-          ? value
-          : [config.label, config.name, config.display_name].find((candidate): candidate is string => typeof candidate === "string" && Boolean(candidate.trim()));
+        const configuredQualities = stringList(config.resolutions);
+        const configuredDetails = stringList(config.detail_levels);
         return {
           id,
-          label: label || id,
-          qualities: modelQualities,
-          detailLevels: stringList(detailLevelsMap[id] || config.detail_levels || config.detailLevels).filter((level): level is ImageDetailLevel => IMAGE_DETAIL_LEVELS.includes(level as ImageDetailLevel)),
+          label: typeof value === "string" ? value : typeof config.label === "string" ? config.label : typeof config.name === "string" ? config.name : id,
+          qualities: stringList(resolutionsMap[id]).length ? stringList(resolutionsMap[id]) : stringList(qualitiesMap[id]).length ? stringList(qualitiesMap[id]) : configuredQualities,
+          detailLevels: (stringList(detailLevelsMap[id]).length ? stringList(detailLevelsMap[id]) : configuredDetails).filter((level): level is ImageDetailLevel => IMAGE_DETAIL_LEVELS.includes(level as ImageDetailLevel)),
           aspectRatiosByQuality,
           maxReferenceImages: Number(config.max_reference_images) || Number(referenceLimits[id]) || Number(payload.max_reference_images) || 9,
         };
-      }));
+      }), MUSE_IMAGE_MODEL_OPTION, ...FLOW_IMAGE_MODEL_OPTIONS]);
     } else {
       imageError = imageResult.reason instanceof Error ? imageResult.reason.message : "Không lấy được danh sách model ảnh.";
+      imageModels = [MUSE_IMAGE_MODEL_OPTION, ...FLOW_IMAGE_MODEL_OPTIONS];
     }
 
     if (videoResult.status === "fulfilled") {
       const payload = videoResult.value;
-      const modelMap = asJsonRecord(payload.models);
       const offPeakModels = new Set(stringList(payload.off_peak_model_ids));
       const referenceLimits = asJsonRecord(payload.max_reference_images_by_model);
-      videoModels = Object.entries(modelMap).map(([id, value]) => {
+      const durationOptionsByModel = asJsonRecord(payload.model_durations);
+      videoModels = modelEntries(payload.models)
+        .filter(([id, value]) => {
+          const config = asJsonRecord(value);
+          const label = typeof value === "string" ? value : typeof config.label === "string" ? config.label : typeof config.name === "string" ? config.name : id;
+          return !isMaiVideoPixverseV56Model({ id, label, provider: "maivideo" }) && !isKlingVideoModel(id);
+        })
+        .map(([id, value]) => {
         const config = asJsonRecord(value);
         const maiVideoSeedance = isMaiVideoSeedanceModel(id);
+        const pixverseSeedance = id.toLowerCase() === PIXVERSE_SEEDANCE_2_FAST_MODEL_ID;
+        const label = pixverseSeedance
+          ? "Seedance 2.0 · PixVerse"
+          : typeof value === "string" ? value : typeof config.label === "string" ? config.label : typeof config.name === "string" ? config.name : id;
         const positiveLimit = (value: unknown) => {
           const number = Number(value);
           return Number.isFinite(number) && number > 0 ? Math.floor(number) : undefined;
         };
+        const configuredPromptMaxLength = positiveLimit(config.prompt_max_length) || positiveLimit(payload.prompt_max_length);
         return {
           id,
-          label: typeof config.label === "string" ? config.label : id,
+          label,
           provider: "maivideo",
-          qualities: stringList(config.qualities),
-          aspectRatios: stringList(config.aspect_ratios),
-          minDurationSec: Number(config.min_duration) || 1,
-          maxDurationSec: Number(config.max_duration) || 15,
+          qualities: filterPixverseVideoQualities(id, label, stringList(config.qualities).length ? stringList(config.qualities) : pixverseSeedance ? PIXVERSE_SEEDANCE_VIDEO_MODELS[0].qualities : []),
+          aspectRatios: stringList(config.aspect_ratios).length ? stringList(config.aspect_ratios) : pixverseSeedance ? PIXVERSE_SEEDANCE_VIDEO_MODELS[0].aspectRatios : [],
+          minDurationSec: Number(config.min_duration) || (pixverseSeedance ? 5 : 1),
+          maxDurationSec: Number(config.max_duration) || (pixverseSeedance ? 15 : 15),
+          supportedDurationsSec: numberList(config.supported_durations ?? config.supported_durations_sec ?? config.durations ?? durationOptionsByModel[id]) || (pixverseSeedance ? [5, 10, 15] : undefined),
           maxDurationByQuality: numberMap(config.max_duration_by_quality),
-          supportsMultiShot: Boolean(config.supports_multi_shot),
-          supportsAudio: typeof config.supports_audio === "boolean" ? config.supports_audio : undefined,
+          supportsMultiShot: pixverseSeedance ? false : typeof config.supports_multi_shot === "boolean" ? config.supports_multi_shot : undefined,
+          supportsAudio: typeof config.supports_audio === "boolean" ? config.supports_audio : pixverseSeedance ? true : undefined,
           supportsOffPeak: maiVideoSeedance ? false : typeof config.off_peak_supported === "boolean" ? config.off_peak_supported : offPeakModels.has(id),
           maxReferenceImages: Number(config.max_reference_images) || Number(referenceLimits[id]) || (maiVideoSeedance ? 9 : 7),
           maxCount: positiveLimit(config.max_count) || positiveLimit(payload.max_count),
-          promptMaxLength: positiveLimit(config.prompt_max_length) || positiveLimit(payload.prompt_max_length) || MAIVIDEO_VIDEO_PROMPT_DEFAULT_MAX_CHARS,
+          promptMaxLength: configuredPromptMaxLength || MAIVIDEO_VIDEO_PROMPT_DEFAULT_MAX_CHARS,
           timeoutSeconds: positiveLimit(config.timeout_seconds) || positiveLimit(payload.timeout_seconds),
           offPeakTimeoutSeconds: positiveLimit(config.off_peak_timeout_seconds) || positiveLimit(payload.off_peak_timeout_seconds),
         };
@@ -731,7 +827,11 @@ export async function getMaiVideoModelCatalog(userIdOverride?: string): Promise<
     const catalogModelKeys = new Set(videoModels.map((model) => `${model.provider || "maivideo"}:${model.id}`));
     videoModels = [
       ...videoModels,
+      ...PIXVERSE_SEEDANCE_VIDEO_MODELS.filter((model) => !catalogModelKeys.has(`${model.provider || "maivideo"}:${model.id}`)),
+      ...HIGGSFIELD_SEEDANCE_VIDEO_MODELS.filter((model) => !catalogModelKeys.has(`${model.provider || "maivideo"}:${model.id}`)),
       ...SEEDANCE_VIDEO_MODELS.filter((model) => !catalogModelKeys.has(`${model.provider || "maivideo"}:${model.id}`)),
+      ...MUSE_VIDEO_MODELS.filter((model) => !catalogModelKeys.has(`${model.provider || "maivideo"}:${model.id}`)),
+      ...FLOW_VIDEO_MODELS.filter((model) => !catalogModelKeys.has(`${model.provider || "maivideo"}:${model.id}`)),
     ];
 
     if (!apiKey) imageError = videoError = "MAIVIDEO_API_KEY_REQUIRED";
@@ -778,6 +878,24 @@ async function settingsForVideoScene(scene: SceneRecord, mediaGeneration?: Parti
       ? settings.videoDurationSec
       : sceneDuration ? Math.ceil(sceneDuration) : settings.videoDurationSec;
     return { ...settings, videoDurationSec: normalizeVideoDuration(requestedDuration, seedanceModel) };
+  }
+  if (settings.videoProvider === "muse") {
+    const sceneDuration = sceneDurationSeconds(scene);
+    const requestedDuration = presetId === "ai-drama"
+      ? normalizeAiDramaSceneDuration(sceneDuration)
+      : settings.videoDurationMode === "fixed"
+        ? settings.videoDurationSec
+        : sceneDuration ? Math.ceil(sceneDuration) : settings.videoDurationSec;
+    return { ...settings, videoDurationSec: normalizeVideoDuration(requestedDuration, MUSE_VIDEO_MODELS[0]) };
+  }
+  if (settings.videoProvider === "flow") {
+    const sceneDuration = sceneDurationSeconds(scene);
+    const requestedDuration = presetId === "ai-drama"
+      ? normalizeAiDramaSceneDuration(sceneDuration)
+      : settings.videoDurationMode === "fixed"
+        ? settings.videoDurationSec
+        : sceneDuration ? Math.ceil(sceneDuration) : settings.videoDurationSec;
+    return { ...settings, videoDurationSec: normalizeVideoDuration(requestedDuration, FLOW_VIDEO_MODEL_OPTION) };
   }
   if (settings.videoDurationMode === "fixed" && presetId !== "ai-drama") return settings;
 
@@ -827,7 +945,19 @@ function firstMediaUrl(value: unknown, preferredKeys: string[], skipKeys: string
 }
 
 function terminalStatus(payload: JsonRecord) {
-  return String(payload.status || (payload.job && typeof payload.job === "object" ? (payload.job as JsonRecord).status : "") || "").toLowerCase();
+  const findStatus = (value: unknown, depth = 0): string => {
+    if (depth > 5 || !value || typeof value !== "object") return "";
+    if (Array.isArray(value)) return value.map((item) => findStatus(item, depth + 1)).find(Boolean) || "";
+    const record = value as JsonRecord;
+    const direct = String(record.status || record.state || record.task_status || record.job_status || "").trim();
+    if (direct) return direct.toLowerCase();
+    for (const key of ["job", "task", "data", "result", "output"]) {
+      const found = findStatus(record[key], depth + 1);
+      if (found) return found;
+    }
+    return "";
+  };
+  return findStatus(payload);
 }
 
 function providerStatusUrl(payload: JsonRecord, fallbackUrl: string, base: string) {
@@ -863,14 +993,14 @@ function providerTimeoutFromModel(model: VideoGenerationModelOption | undefined,
   return Number.isFinite(seconds) && seconds > 0 ? seconds * 1_000 + 60_000 : 0;
 }
 
-async function pollJob(url: string, headers: Record<string, string>, timeoutMs: number, preferredKeys: string[], skipKeys: string[] = [], seedanceTaskId?: string, providerJobId?: string, initialProviderTimeoutMs = 0, signal?: AbortSignal, providerTaskCreatedAt?: string, providerOffPeak = false) {
+async function pollJob(url: string, headers: Record<string, string>, timeoutMs: number, preferredKeys: string[], skipKeys: string[] = [], seedanceTaskId?: string, providerJobId?: string, initialProviderTimeoutMs = 0, signal?: AbortSignal, providerTaskCreatedAt?: string, providerOffPeak = false, providerKind: "maivideo" | "higgsfield" | "seedance" | "muse" | "muse-image" | "flow-image" | "flow-video" = seedanceTaskId ? "seedance" : "maivideo", selectPolledJob?: (payload: JsonRecord) => JsonRecord | undefined) {
   let activeStartedAt = Date.now();
   const pollStartedAt = activeStartedAt;
   let lastPayload: JsonRecord = {};
   let lastStatus = "unknown";
   let pollErrors = 0;
   let effectiveTimeoutMs = Math.max(timeoutMs, initialProviderTimeoutMs);
-  const provider = seedanceTaskId ? "seedance" : "maivideo";
+  const provider = providerKind;
   const parsedProviderTaskCreatedAt = Date.parse(providerTaskCreatedAt || "");
   const seedanceTaskStartedAt = Number.isFinite(parsedProviderTaskCreatedAt)
     ? Math.min(parsedProviderTaskCreatedAt, pollStartedAt)
@@ -884,7 +1014,15 @@ async function pollJob(url: string, headers: Record<string, string>, timeoutMs: 
   };
   const pollIntervalMs = seedanceTaskId
     ? Math.max(1_000, Number(process.env.SEEDANCE_POLL_INTERVAL_MS) || 10_000)
-    : Math.max(1_000, Number(process.env.MAIVIDEO_POLL_INTERVAL_MS) || 10_000);
+    : providerKind === "higgsfield"
+      ? Math.max(1_000, Number(process.env.HIGGSFIELD_VIDEO_POLL_INTERVAL_MS) || 10_000)
+    : providerKind === "muse-image"
+      ? Math.max(1_000, Number(process.env.MUSE_IMAGE_POLL_INTERVAL_MS) || 10_000)
+      : providerKind === "muse"
+        ? Math.max(1_000, Number(process.env.MUSE_VIDEO_POLL_INTERVAL_MS) || 10_000)
+      : providerKind === "flow-image" || providerKind === "flow-video"
+        ? Math.max(1_000, Number(process.env.FLOW_MEDIA_POLL_INTERVAL_MS) || 10_000)
+      : Math.max(1_000, Number(process.env.MAIVIDEO_POLL_INTERVAL_MS) || 10_000);
   const isWaiting = (status: string) => ["queued", "pending", "submitting", "waiting", "accepted"].includes(status);
 
   while (true) {
@@ -893,7 +1031,8 @@ async function pollJob(url: string, headers: Record<string, string>, timeoutMs: 
       const requestTimeoutMs = seedanceTaskId
         ? Math.max(1, Math.min(60_000, seedanceRemainingMs()))
         : 60_000;
-      lastPayload = await requestJson(url, { headers }, requestTimeoutMs, seedanceTaskId ? { stage: "seedance_poll", taskId: seedanceTaskId } : undefined, signal);
+      const responsePayload = await requestJson(url, { headers }, requestTimeoutMs, seedanceTaskId ? { stage: "seedance_poll", taskId: seedanceTaskId } : undefined, signal);
+      lastPayload = selectPolledJob ? selectPolledJob(responsePayload) || { status: "queued" } : responsePayload;
       pollErrors = 0;
     } catch (cause) {
       if (signal?.aborted) throw signal.reason || cause;
@@ -915,7 +1054,8 @@ async function pollJob(url: string, headers: Record<string, string>, timeoutMs: 
       pollErrors += 1;
       const backoffMultiplier = Math.min(3, 2 ** Math.min(2, pollErrors - 1));
       const retryDelayMs = Math.min(30_000, pollIntervalMs * backoffMultiplier, seedanceTaskId ? Math.max(1, seedanceRemainingMs()) : Number.POSITIVE_INFINITY);
-      await sleep(retryDelayMs, signal);
+      const providerRetryAfterMs = cause instanceof Error ? (cause as Error & { retryAfterMs?: number }).retryAfterMs : undefined;
+      await sleep(Math.max(retryDelayMs, providerRetryAfterMs || 0), signal);
       continue;
     }
 
@@ -946,9 +1086,20 @@ async function pollJob(url: string, headers: Record<string, string>, timeoutMs: 
         await sleep(Math.min(Math.max(pollIntervalMs, 30_000), seedanceTaskId ? Math.max(1, seedanceRemainingMs()) : Number.POSITIVE_INFINITY), signal);
         continue;
       }
-      const detail = safeProviderDetail(providerDetail, `Seedance task ${status}`);
+      const providerName = provider === "seedance" ? "Seedance task" : provider === "muse-image" ? "Muse image task" : provider === "muse" ? "Muse video task" : provider === "flow-image" ? "Flow image job" : provider === "flow-video" ? "Flow video job" : provider === "higgsfield" ? "Higgsfield job" : "MaiVideo job";
+      const detail = safeProviderDetail(providerDetail, `${providerName} ${status}`);
       if (seedanceTaskId) throw new SeedanceGenerationError({ stage: "seedance_poll", detail, taskId: seedanceTaskId, retryStrategy: "new_task" });
-      throw new Error(String(job.error || lastPayload.error || `MaiVideo job ${status}`));
+      if (provider === "muse-image") throw new Error(`Muse.ai image task ${status}: ${detail}`);
+      if (provider === "muse") throw new SeedanceGenerationError({ stage: "seedance_poll", detail, taskId: providerJobId, retryStrategy: "new_task", providerLabel: "Muse.ai" });
+      if (provider === "flow-image" || provider === "flow-video") throw new SeedanceGenerationError({ stage: "seedance_poll", detail, taskId: providerJobId, retryStrategy: "new_task", providerLabel: "Flow" });
+      throw new Error(`${provider === "higgsfield" ? "Higgsfield" : "MaiVideo"} job ${status}: ${detail}`);
+    }
+    if (status === "partial") {
+      const detail = safeProviderDetail(responseErrorDetail(job) || responseErrorDetail(lastPayload), "Provider không trả media hoàn tất nào.");
+      if (provider === "muse-image") throw new Error(`Muse.ai image task partial: ${detail}`);
+      if (provider === "muse") throw new SeedanceGenerationError({ stage: "seedance_poll", detail, taskId: providerJobId, retryStrategy: "new_task", providerLabel: "Muse.ai" });
+      if (provider === "flow-image" || provider === "flow-video") throw new SeedanceGenerationError({ stage: "seedance_poll", detail, taskId: providerJobId, retryStrategy: "new_task", providerLabel: "Flow" });
+      throw new Error(`MaiVideo job partial: ${detail}`);
     }
     if (isWaiting(status)) {
       activeStartedAt = Date.now();
@@ -957,7 +1108,7 @@ async function pollJob(url: string, headers: Record<string, string>, timeoutMs: 
     } else if (Date.now() - activeStartedAt >= effectiveTimeoutMs) {
       const id = seedanceTaskId || providerJobId;
       if (id) throw new MediaProviderJobPendingError(provider, id);
-      throw new Error(`MaiVideo job quá thời gian chờ (${status || "unknown"})`);
+      throw new Error(`${provider === "muse-image" ? "Muse.ai image" : provider === "muse" ? "Muse video" : provider === "flow-image" ? "Flow image" : provider === "flow-video" ? "Flow video" : provider === "higgsfield" ? "Higgsfield job" : "MaiVideo job"} quá thời gian chờ (${status || "unknown"})`);
     }
     lastStatus = status || "unknown";
     await sleep(Math.min(pollIntervalMs, seedanceTaskId ? Math.max(1, seedanceRemainingMs()) : Number.POSITIVE_INFINITY), signal);
@@ -970,18 +1121,27 @@ async function generateMaiVideoImage(
   aspectRatio: string,
   mediaGeneration?: Partial<MediaGenerationSettings>,
   referenceImageUrls: string[] = [],
+  referenceImageNames: string[] = [],
   userId?: string,
   existingJobId?: string,
   onJobCreated?: (jobId: string) => Promise<void>,
+  providerAuthToken?: string,
 ): Promise<SceneMediaAsset> {
+  const settings = resolveMediaGenerationSettings(mediaGeneration);
+  if (isMuseImageModel(settings.imageModel)) {
+    return generateMuseImage(prompt, outputPath, aspectRatio, referenceImageUrls, referenceImageNames, settings, userId, existingJobId, onJobCreated, providerAuthToken);
+  }
+  if (isFlowImageModel(settings.imageModel)) {
+    return generateFlowImage(prompt, outputPath, aspectRatio, referenceImageUrls, referenceImageNames, settings, userId, existingJobId, onJobCreated, providerAuthToken);
+  }
   const apiKey = await getMaiVideoApiKey(userId);
   if (!apiKey) throw new Error("MAIVIDEO_IMAGE_API_KEY_REQUIRED");
-  const settings = resolveMediaGenerationSettings(mediaGeneration);
   const base = baseUrl();
   const headers = { ...authHeaders(apiKey), "Content-Type": "application/json" };
-  const imageModel = existingJobId
-    ? undefined
-    : availableImageModels((await getMaiVideoModelCatalog(userId)).imageModels).find((model) => model.id === settings.imageModel);
+  const imageModel = existingJobId ? undefined : (await getMaiVideoModelCatalog(userId)).imageModels.find((model) => model.id === settings.imageModel);
+  const imageQuality = imageModel?.qualities.length && !imageModel.qualities.includes(settings.imageQuality)
+    ? imageModel.qualities[0]
+    : settings.imageQuality;
   const detailLevel = imageModel?.detailLevels?.includes(settings.imageDetailLevel) ? settings.imageDetailLevel : undefined;
   let created: JsonRecord = {};
   let jobId = existingJobId || "";
@@ -993,7 +1153,7 @@ async function generateMaiVideoImage(
         body: JSON.stringify({
           prompt: prompt.slice(0, 9_999),
           model: settings.imageModel,
-          resolution: settings.imageQuality,
+          resolution: imageQuality,
           ...(detailLevel ? { detail_level: detailLevel } : {}),
           aspect_ratio: aspectRatio,
           n: 1,
@@ -1015,11 +1175,190 @@ async function generateMaiVideoImage(
   if (!jobId) throw new Error("MaiVideo không trả về job_id cho ảnh");
   const fallbackStatusUrl = `${base}/api/v1/image-generation/${encodeURIComponent(jobId)}`;
   const statusUrl = providerStatusUrl(created, fallbackStatusUrl, base);
-  const pollTimeoutMs = Math.max(Number(process.env.MAIVIDEO_IMAGE_TIMEOUT_MS) || 0, 62 * 60 * 1000);
+  const configuredImageTimeoutMs = Number(process.env.MAIVIDEO_IMAGE_TIMEOUT_MS);
+  const pollTimeoutMs = Number.isFinite(configuredImageTimeoutMs) && configuredImageTimeoutMs > 0
+    ? Math.min(configuredImageTimeoutMs, MAIVIDEO_IMAGE_TIMEOUT_MAX_MS)
+    : MAIVIDEO_IMAGE_TIMEOUT_MAX_MS;
   const { mediaUrl } = await pollJob(statusUrl, authHeaders(apiKey), pollTimeoutMs, ["file_url", "image_url", "url"], [], undefined, jobId, providerTimeoutFromResponse(created));
   const resolved = resolveUrl(mediaUrl, base);
-  await downloadAsset(resolved, outputPath, "image", authHeaders(apiKey));
-  return { kind: "image", provider: "maivideo-image", status: "ready", localPath: relativePath(outputPath), sourceUrl: resolved, query: prompt, model: settings.imageModel, quality: settings.imageQuality };
+  const savedPath = await downloadAsset(resolved, outputPath, "image", authHeaders(apiKey));
+  return { kind: "image", provider: "maivideo-image", status: "ready", localPath: relativePath(savedPath), sourceUrl: resolved, query: prompt, model: settings.imageModel, quality: imageQuality };
+}
+
+const MUSE_IMAGE_RATIOS = ["9:16", "16:9", "1:1", "4:3", "3:4"] as const;
+
+function museImageRatio(value: string) {
+  if ((MUSE_IMAGE_RATIOS as readonly string[]).includes(value)) return value;
+  const [width, height] = value.split(":").map(Number);
+  const target = Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0 ? width / height : 16 / 9;
+  return MUSE_IMAGE_RATIOS.reduce((closest, candidate) => {
+    const [candidateWidth, candidateHeight] = candidate.split(":").map(Number);
+    return Math.abs(Math.log(candidateWidth / candidateHeight / target)) < Math.abs(Math.log(Number(closest.split(":")[0]) / Number(closest.split(":")[1]) / target)) ? candidate : closest;
+  }, "16:9" as (typeof MUSE_IMAGE_RATIOS)[number]);
+}
+
+async function generateMuseImage(
+  prompt: string,
+  outputPath: string,
+  aspectRatio: string,
+  referenceImageUrls: string[],
+  referenceImageNames: string[],
+  settings: MediaGenerationSettings,
+  userId?: string,
+  existingJobId?: string,
+  onJobCreated?: (jobId: string) => Promise<void>,
+  providerAuthToken?: string,
+): Promise<SceneMediaAsset> {
+  if (prompt.length > 12_000) throw new Error(`Prompt ảnh dài ${prompt.length} ký tự, vượt giới hạn 12000 ký tự của Muse.ai.`);
+  if (referenceImageUrls.length > 30) throw new Error(`Muse.ai chỉ nhận tối đa 30 ảnh tham chiếu; hiện có ${referenceImageUrls.length} ảnh.`);
+  const apiKey = await getSeedanceApiKey(undefined, userId);
+  const sessionToken = await getSeedanceApiSessionToken(undefined, userId, providerAuthToken);
+  if (!sessionToken) throw new Error("PROVIDER_SESSION_REQUIRED");
+  const headers = gatewayApiHeaders(apiKey, sessionToken);
+  let taskId = existingJobId?.trim() || "";
+  let created: JsonRecord = {};
+  if (!taskId) {
+    try {
+      created = await requestJson(`${SEEDANCE_BASE_URL}/v1/muse/images/generations`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt,
+          ratio: museImageRatio(aspectRatio),
+          ...(referenceImageUrls.length ? { reference_images: referenceImageUrls, reference_image_names: referenceImageNames } : {}),
+        }),
+      }, Number(process.env.MUSE_IMAGE_CREATE_TIMEOUT_MS) || 180_000);
+    } catch (cause) {
+      throw uncertainSubmissionError("Muse.ai", cause);
+    }
+    taskId = providerJobIdFromPayload(created);
+    if (!taskId) throw new Error("Muse.ai không trả về task ID cho ảnh.");
+    if (onJobCreated) {
+      try {
+        await onJobCreated(taskId);
+      } catch {
+        throw new MediaProviderJobPendingError("muse-image", taskId);
+      }
+    }
+  }
+
+  const configuredTimeoutMs = Number(process.env.MUSE_IMAGE_TIMEOUT_MS);
+  const timeoutMs = Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0
+    ? Math.min(configuredTimeoutMs, MUSE_IMAGE_TIMEOUT_MAX_MS)
+    : MUSE_IMAGE_TIMEOUT_MAX_MS;
+  const { mediaUrl } = await pollJob(
+    `${SEEDANCE_BASE_URL}/v1/muse/jobs/${encodeURIComponent(taskId)}`,
+    headers,
+    timeoutMs,
+    ["result_url", "image_url", "file_url", "url"],
+    [],
+    undefined,
+    taskId,
+    providerTimeoutFromResponse(created),
+    undefined,
+    undefined,
+    false,
+    "muse-image",
+  );
+  const resolved = resolveUrl(mediaUrl, SEEDANCE_BASE_URL);
+  const sameOrigin = new URL(resolved).origin === new URL(SEEDANCE_BASE_URL).origin;
+  const savedPath = await downloadAsset(resolved, outputPath, "image", sameOrigin ? headers : {}, undefined, undefined, "Muse.ai");
+  return { kind: "image", provider: "muse-image", status: "ready", localPath: relativePath(savedPath), sourceUrl: resolved, query: prompt, model: settings.imageModel };
+}
+
+function providerJobIdFromPayload(payload: unknown): string {
+  if (Array.isArray(payload)) return payload.map(providerJobIdFromPayload).find(Boolean) || "";
+  const record = asJsonRecord(payload);
+  for (const key of ["jobs", "tasks", "items", "results", "data", "job", "task"]) {
+    const nested = record[key];
+    if (nested && typeof nested === "object") {
+      const nestedId = providerJobIdFromPayload(nested);
+      if (nestedId) return nestedId;
+    }
+  }
+  for (const key of ["job_id", "task_id", "id", "uuid", "generation_id"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim().slice(0, 200);
+  }
+  return "";
+}
+
+function gatewayApiHeaders(apiKey: string, authToken?: string) {
+  return {
+    Accept: "application/json",
+    Authorization: `Bearer ${apiKey}`,
+    ...(authToken?.trim() ? { "X-MaiVideo-Auth-Token": authToken.trim() } : {}),
+  };
+}
+
+async function generateFlowImage(
+  prompt: string,
+  outputPath: string,
+  aspectRatio: string,
+  referenceImageUrls: string[],
+  referenceImageNames: string[],
+  settings: MediaGenerationSettings,
+  userId?: string,
+  existingJobId?: string,
+  onJobCreated?: (jobId: string) => Promise<void>,
+  providerAuthToken?: string,
+): Promise<SceneMediaAsset> {
+  if (prompt.length > 12_000) throw new Error(`Prompt ảnh dài ${prompt.length} ký tự, vượt giới hạn 12000 ký tự của Flow.`);
+  if (referenceImageUrls.length > 30) throw new Error(`Flow chỉ nhận tối đa 30 ảnh tham chiếu; hiện có ${referenceImageUrls.length} ảnh.`);
+  const apiKey = await getSeedanceApiKey(undefined, userId);
+  const sessionToken = await getSeedanceApiSessionToken(undefined, userId, providerAuthToken);
+  if (!sessionToken) throw new Error("PROVIDER_SESSION_REQUIRED");
+  const headers = gatewayApiHeaders(apiKey, sessionToken);
+  let taskId = existingJobId?.trim() || "";
+  let created: JsonRecord = {};
+  if (!taskId) {
+    try {
+      created = await requestJson(`${SEEDANCE_BASE_URL}/v1/flow/images/generations`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt,
+          model: settings.imageModel,
+          ratio: museImageRatio(aspectRatio),
+          ...(referenceImageUrls.length ? { reference_images: referenceImageUrls, reference_image_names: referenceImageNames } : {}),
+        }),
+      }, Number(process.env.FLOW_IMAGE_CREATE_TIMEOUT_MS) || 180_000, { stage: "seedance_create", providerLabel: "Flow" });
+    } catch (cause) {
+      throw uncertainSubmissionError("Flow", cause);
+    }
+    taskId = providerJobIdFromPayload(created);
+    if (!taskId) throw new Error("Flow không trả về job ID cho ảnh.");
+    if (onJobCreated) {
+      try {
+        await onJobCreated(taskId);
+      } catch {
+        throw new MediaProviderJobPendingError("flow-image", taskId);
+      }
+    }
+  }
+
+  const configuredTimeoutMs = Number(process.env.FLOW_IMAGE_TIMEOUT_MS);
+  const timeoutMs = Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0
+    ? Math.min(configuredTimeoutMs, FLOW_MEDIA_TIMEOUT_MAX_MS)
+    : FLOW_MEDIA_TIMEOUT_MAX_MS;
+  const { mediaUrl } = await pollJob(
+    `${SEEDANCE_BASE_URL}/v1/flow/jobs/${encodeURIComponent(taskId)}`,
+    headers,
+    timeoutMs,
+    ["result_url", "image_url", "output_url", "download_url", "file_url", "url"],
+    [],
+    undefined,
+    taskId,
+    providerTimeoutFromResponse(created),
+    undefined,
+    undefined,
+    false,
+    "flow-image",
+  );
+  const resolved = resolveUrl(mediaUrl, SEEDANCE_BASE_URL);
+  const sameOrigin = new URL(resolved).origin === new URL(SEEDANCE_BASE_URL).origin;
+  const savedPath = await downloadAsset(resolved, outputPath, "image", sameOrigin ? headers : {}, taskId, undefined, "Flow");
+  return { kind: "image", provider: "flow-image", status: "ready", localPath: relativePath(savedPath), sourceUrl: resolved, query: prompt, model: settings.imageModel };
 }
 
 export async function generateMaiVideoProfileImage(input: {
@@ -1034,8 +1373,10 @@ export async function generateMaiVideoProfileImage(input: {
   settingNotes?: string;
   visualStyle?: string;
   imageStyle?: string;
+  providerAuthToken?: string;
 }) {
-  const outputPath = path.join(MEDIA_DIR, safeSegment(input.projectSlug, "project"), input.profileKind, `${safeSegment(input.profileId, "profile")}-maivideo-image.png`);
+  const outputProvider = isMuseImageModel(input.mediaGeneration?.imageModel) ? "muse" : isFlowImageModel(input.mediaGeneration?.imageModel) ? "flow" : "maivideo";
+  const outputPath = path.join(MEDIA_DIR, safeSegment(input.projectSlug, "project"), input.profileKind, `${safeSegment(input.profileId, "profile")}-${outputProvider}-image.png`);
   const basePrompt = sanitizeDramaVisualPrompt(input.prompt);
   const visualDirection = visualStylePrompt(input.visualStyle);
   const renderingStyle = imageStylePrompt(input.imageStyle);
@@ -1053,7 +1394,7 @@ export async function generateMaiVideoProfileImage(input: {
   const prompt = sanitizeDramaVisualPrompt(input.profileKind === "characters"
     ? characterReferencePrompt(input.profileId, visualPrompt, PROFILE_REFERENCE_ASPECT_RATIO)
     : locationReferencePrompt(input.profileId, visualPrompt, PROFILE_REFERENCE_ASPECT_RATIO));
-  return generateMaiVideoImage(prompt, outputPath, PROFILE_REFERENCE_ASPECT_RATIO, input.mediaGeneration);
+  return generateMaiVideoImage(prompt, outputPath, PROFILE_REFERENCE_ASPECT_RATIO, input.mediaGeneration, [], [], undefined, undefined, undefined, input.providerAuthToken);
 }
 
 async function localCharacterReferenceDataUrl(projectSlug: string, character: ProjectCharacter) {
@@ -1212,6 +1553,7 @@ export async function generateMaiVideoImageForScene({
   userId,
   maiVideoJobId,
   onMaiVideoJobCreated,
+  providerAuthToken,
   characters = [],
   locations = [],
 }: {
@@ -1232,6 +1574,7 @@ export async function generateMaiVideoImageForScene({
   userId?: string;
   maiVideoJobId?: string;
   onMaiVideoJobCreated?: (jobId: string) => Promise<void>;
+  providerAuthToken?: string;
   characters?: ProjectCharacter[];
   locations?: ProjectLocation[];
 }) {
@@ -1248,7 +1591,9 @@ export async function generateMaiVideoImageForScene({
   const selectedLocation = locationId ? locations.find((location) => location.id === locationId) : undefined;
   if (locationId && !selectedLocation) throw new Error(`Cảnh ${id} đang tham chiếu một hồ sơ bối cảnh không còn tồn tại trong project.`);
   const configuredReferenceLimit = Number(process.env.MAIVIDEO_IMAGE_MAX_REFERENCE_IMAGES);
-  const referenceLimit = Number.isInteger(configuredReferenceLimit) && configuredReferenceLimit > 0 ? Math.min(9, configuredReferenceLimit) : 9;
+  const referenceLimit = isMuseImageModel(settings.imageModel) || isFlowImageModel(settings.imageModel)
+    ? 30
+    : Number.isInteger(configuredReferenceLimit) && configuredReferenceLimit > 0 ? Math.min(9, configuredReferenceLimit) : 9;
   const picturedCharacters = selectedCharacters.filter((character) => Boolean(character.referenceImagePath));
   const picturedLocation = selectedLocation?.referenceImagePath ? selectedLocation : undefined;
   const referenceCount = picturedCharacters.length + Number(Boolean(picturedLocation));
@@ -1277,16 +1622,38 @@ export async function generateMaiVideoImageForScene({
     : note ? `${scenePrompt.slice(0, Math.max(0, 9_999 - note.length - 2))}\n\n${note}`.slice(0, 9_999) : scenePrompt;
   const safePrompt = presetId === "ai-drama" ? sanitizeDramaVisualPrompt(prompt) : prompt;
   const referenceImageUrls: string[] = [];
-  for (const character of picturedCharacters) referenceImageUrls.push(await localCharacterReferenceDataUrl(projectSlug, character));
-  if (picturedLocation) referenceImageUrls.push(await localLocationReferenceDataUrl(projectSlug, picturedLocation));
-  if (includedContinuityReference) referenceImageUrls.push(await localSceneReferenceDataUrl(projectSlug, includedContinuityReference.sceneId, includedContinuityReference.image as unknown as JsonRecord));
+  const referenceImageNames: string[] = [];
+  if (isMuseImageModel(settings.imageModel) || isFlowImageModel(settings.imageModel)) {
+    if (picturedCharacters.length || picturedLocation || includedContinuityReference) {
+      const publicBaseUrlIssue = seedancePublicBaseUrlIssue();
+      if (publicBaseUrlIssue) throw new Error(publicBaseUrlIssue);
+      const ownerId = userId || await getCurrentUserId();
+      for (const character of picturedCharacters) {
+        referenceImageUrls.push(createSeedanceCharacterReferenceUrl(projectSlug, character.id, ownerId));
+        referenceImageNames.push(`Character - ${character.name}`);
+      }
+      if (picturedLocation) {
+        referenceImageUrls.push(createSeedanceLocationReferenceUrl(projectSlug, picturedLocation.id, ownerId));
+        referenceImageNames.push(`Location - ${picturedLocation.name}`);
+      }
+      if (includedContinuityReference) {
+        referenceImageUrls.push(createSeedanceSceneReferenceUrl(projectSlug, includedContinuityReference.sceneId, ownerId));
+        referenceImageNames.push(`Previous scene - ${includedContinuityReference.sceneId}`);
+      }
+    }
+  } else {
+    for (const character of picturedCharacters) referenceImageUrls.push(await localCharacterReferenceDataUrl(projectSlug, character));
+    if (picturedLocation) referenceImageUrls.push(await localLocationReferenceDataUrl(projectSlug, picturedLocation));
+    if (includedContinuityReference) referenceImageUrls.push(await localSceneReferenceDataUrl(projectSlug, includedContinuityReference.sceneId, includedContinuityReference.image as unknown as JsonRecord));
+  }
+  const imageProviderSuffix = isMuseImageModel(settings.imageModel) ? "muse" : isFlowImageModel(settings.imageModel) ? "flow" : "maivideo";
   const outputPath = path.join(
     MEDIA_DIR,
     safeSegment(projectSlug, "project"),
     safeSegment(chunkId, "chunk"),
-    `${safeSegment(id, `S${String(sceneNumber).padStart(3, "0")}`)}-maivideo-image.png`
+    `${safeSegment(id, `S${String(sceneNumber).padStart(3, "0")}`)}-${imageProviderSuffix}-image.png`
   );
-  const media = await generateMaiVideoImage(safePrompt, outputPath, aspectRatio, settings, referenceImageUrls, userId, maiVideoJobId, onMaiVideoJobCreated);
+  const media = await generateMaiVideoImage(safePrompt, outputPath, aspectRatio, settings, referenceImageUrls, referenceImageNames, userId, maiVideoJobId, onMaiVideoJobCreated, providerAuthToken);
   return { ...media, referenceCharacterIds: selectedCharacters.map((character) => character.id), ...(selectedLocation ? { referenceLocationId: selectedLocation.id } : {}) };
 }
 
@@ -1302,18 +1669,25 @@ async function generateMaiVideoVideo(
   signal?: AbortSignal,
   videoModelOption?: VideoGenerationModelOption,
 ): Promise<SceneMediaAsset> {
-  const promptMaxLength = videoModelOption?.promptMaxLength || MAIVIDEO_VIDEO_PROMPT_DEFAULT_MAX_CHARS;
-  prompt = requireVideoPromptWithinLimit(prompt, "MaiVideo", promptMaxLength);
+  const settings = resolveMediaGenerationSettings(mediaGeneration);
+  const catalogPromptLimit = videoModelOption?.promptMaxLength || MAIVIDEO_VIDEO_PROMPT_DEFAULT_MAX_CHARS;
+  prompt = requireVideoPromptWithinLimit(prompt, "MaiVideo", catalogPromptLimit);
   const apiKey = await getMaiVideoApiKey(userId);
   if (!apiKey) throw new Error("MAIVIDEO_VIDEO_API_KEY_REQUIRED");
-  const settings = resolveMediaGenerationSettings(mediaGeneration);
   const headers = authHeaders(apiKey);
   const base = baseUrl();
   const createPath = process.env.MAIVIDEO_VIDEO_API_PATH || "/api/v1/video-generation";
   const statusPath = process.env.MAIVIDEO_VIDEO_STATUS_PATH || createPath;
   const offPeak = isVideoOffPeakRequired(settings.videoModel)
     ? true
-    : isMaiVideoSeedanceModel(settings.videoModel) ? false : settings.videoOffPeak;
+    : isMaiVideoSeedanceModel(settings.videoModel) || videoModelOption?.supportsOffPeak === false ? false : settings.videoOffPeak;
+  const videoQuality = videoModelOption?.qualities.length && !videoModelOption.qualities.includes(settings.videoQuality)
+    ? videoModelOption.qualities[0]
+    : settings.videoQuality;
+  const videoDurationSec = normalizeVideoDuration(settings.videoDurationSec, videoModelOption, videoQuality);
+  const pixverse = isPixverseVideoSettings(settings);
+  const videoMultiShot = pixverse ? true : videoModelOption?.supportsMultiShot === false ? false : settings.videoMultiShot;
+  const videoAudio = pixverse ? true : videoModelOption?.supportsAudio === false ? false : settings.videoAudio;
   // MaiVideo/PixVerse clip requests must remain within the per-scene cap.
   let created: JsonRecord = {};
   let jobId = existingJobId || "";
@@ -1325,12 +1699,12 @@ async function generateMaiVideoVideo(
         body: JSON.stringify({
           prompt,
           model: settings.videoModel,
-          quality: settings.videoQuality,
-          duration: settings.videoDurationSec,
+          quality: videoQuality,
+          duration: videoDurationSec,
           count: 1,
           aspect_ratio: aspectRatio,
-          multi_shot: settings.videoMultiShot,
-          audio: settings.videoAudio,
+          multi_shot: videoMultiShot,
+          audio: videoAudio,
           off_peak: offPeak,
           reference_image_urls: referenceImageUrls,
         }),
@@ -1359,7 +1733,7 @@ async function generateMaiVideoVideo(
   const { mediaUrl } = await pollJob(statusUrl, headers, pollTimeoutMs, ["file_url", "video_url", "url"], ["reference_images"], undefined, jobId, providerTimeoutFromResponse(created, offPeak), signal, undefined, offPeak);
   const resolved = resolveUrl(mediaUrl, base);
   await downloadAsset(resolved, outputPath, "video", headers, undefined, signal);
-  return { kind: "video", provider: "maivideo-video", status: "ready", localPath: relativePath(outputPath), sourceUrl: resolved, query: prompt, model: settings.videoModel, quality: settings.videoQuality, durationSec: settings.videoDurationSec };
+  return { kind: "video", provider: "maivideo-video", status: "ready", localPath: relativePath(outputPath), sourceUrl: resolved, query: prompt, model: settings.videoModel, quality: videoQuality, durationSec: videoDurationSec };
 }
 
 async function generateSeedanceVideo(
@@ -1377,8 +1751,7 @@ async function generateSeedanceVideo(
   signal?: AbortSignal,
 ): Promise<SceneMediaAsset> {
   prompt = requireVideoPromptWithinLimit(prompt, "Seedance", SEEDANCE_DIRECT_VIDEO_PROMPT_MAX_CHARS);
-  const base = seedanceServiceBaseUrl();
-  const headers = seedanceServiceHeaders(apiKey);
+  const headers = { Authorization: `Bearer ${apiKey}` };
   let taskId = existingTaskId || "";
   if (!taskId) {
     if (onSeedanceCreateStarted) {
@@ -1392,11 +1765,12 @@ async function generateSeedanceVideo(
         });
       }
     }
-    const created = await requestJson(`${base}/v1/videos/generations`, {
+    const created = await requestJson(`${SEEDANCE_BASE_URL}/v1/videos/generations`, {
       method: "POST",
       headers: { ...headers, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: settings.videoModel,
+        chat_mode: settings.seedanceChatMode,
         prompt,
         duration: settings.videoDurationSec,
         ratio: aspectRatio,
@@ -1407,7 +1781,7 @@ async function generateSeedanceVideo(
         } : {}),
       }),
     }, Number(process.env.SEEDANCE_CREATE_TIMEOUT_MS) || 180_000, { stage: "seedance_create" }, signal);
-    taskId = String(created.id || created.task_id || "").trim().slice(0, 200);
+    taskId = providerJobIdFromPayload(created);
     if (!taskId) {
       throw new SeedanceGenerationError({ stage: "seedance_create", detail: "Dịch vụ không trả về task ID.", retryStrategy: "new_task" });
     }
@@ -1426,7 +1800,7 @@ async function generateSeedanceVideo(
     }
   }
   const { mediaUrl } = await pollJob(
-    `${base}/v1/videos/${encodeURIComponent(taskId)}`,
+    `${SEEDANCE_BASE_URL}/v1/videos/${encodeURIComponent(taskId)}`,
     headers,
     configuredSeedanceVideoTimeoutMs(),
     ["video_url", "url"],
@@ -1437,8 +1811,8 @@ async function generateSeedanceVideo(
     signal,
     taskCreatedAt,
   );
-  const resolved = resolveUrl(mediaUrl, base);
-  const sameOrigin = new URL(resolved).origin === new URL(base).origin;
+  const resolved = resolveUrl(mediaUrl, SEEDANCE_BASE_URL);
+  const sameOrigin = new URL(resolved).origin === new URL(SEEDANCE_BASE_URL).origin;
   await downloadAsset(resolved, outputPath, "video", sameOrigin ? headers : {}, taskId, signal);
   return {
     kind: "video",
@@ -1452,11 +1826,335 @@ async function generateSeedanceVideo(
   };
 }
 
+async function generateMuseVideo(
+  prompt: string,
+  outputPath: string,
+  aspectRatio: string,
+  referenceImageUrls: string[],
+  referenceImageNames: string[],
+  settings: MediaGenerationSettings,
+  apiKey: string,
+  existingTaskId?: string,
+  onCreateStarted?: () => Promise<void>,
+  onTaskCreated?: (taskId: string, createdAt: string) => Promise<void>,
+  taskCreatedAt?: string,
+  signal?: AbortSignal,
+  providerAuthToken?: string,
+): Promise<SceneMediaAsset> {
+  prompt = requireVideoPromptWithinLimit(prompt, "Muse.ai", 12_000);
+  const headers = gatewayApiHeaders(apiKey, providerAuthToken);
+  let taskId = existingTaskId || "";
+  let created: JsonRecord = {};
+  if (!taskId) {
+    if (onCreateStarted) {
+      try {
+        await onCreateStarted();
+      } catch {
+        throw new SeedanceGenerationError({ stage: "seedance_checkpoint", detail: "Chưa gửi yêu cầu tạo video vì không lưu được trạng thái queue.", retryStrategy: "new_task", providerLabel: "Muse.ai" });
+      }
+    }
+    created = await requestJson(`${SEEDANCE_BASE_URL}/v1/muse/videos/generations`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt,
+        duration: normalizeVideoDuration(settings.videoDurationSec, MUSE_VIDEO_MODELS[0]),
+        ratio: aspectRatio,
+        ...(referenceImageUrls.length ? {
+          reference_images: referenceImageUrls,
+          reference_image_names: referenceImageNames,
+          reference_image_mode: "none",
+        } : {}),
+      }),
+    }, Number(process.env.MUSE_VIDEO_CREATE_TIMEOUT_MS) || 180_000, { stage: "seedance_create", providerLabel: "Muse.ai" }, signal);
+    taskId = String(created.id || created.task_id || "").trim().slice(0, 200);
+    if (!taskId) {
+      throw new SeedanceGenerationError({ stage: "seedance_create", detail: "Dịch vụ không trả về task ID.", retryStrategy: "new_task", providerLabel: "Muse.ai" });
+    }
+    taskCreatedAt = new Date().toISOString();
+    if (onTaskCreated) {
+      try {
+        await onTaskCreated(taskId, taskCreatedAt);
+      } catch {
+        throw new SeedanceGenerationError({ stage: "seedance_checkpoint", detail: "Đã tạo task nhưng chưa lưu được task ID. Thử lại sẽ tiếp tục task này.", taskId, retryStrategy: "same_task", providerLabel: "Muse.ai" });
+      }
+    }
+  }
+
+  const configuredTimeoutMs = Number(process.env.MUSE_VIDEO_TIMEOUT_MS);
+  const timeoutMs = Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0
+    ? Math.min(configuredTimeoutMs, MUSE_VIDEO_TIMEOUT_MAX_MS)
+    : MUSE_VIDEO_TIMEOUT_MAX_MS;
+  const { mediaUrl } = await pollJob(
+    `${SEEDANCE_BASE_URL}/v1/muse/jobs/${encodeURIComponent(taskId)}`,
+    headers,
+    timeoutMs,
+    ["result_url", "video_url", "url"],
+    [],
+    undefined,
+    taskId,
+    providerTimeoutFromResponse(created),
+    signal,
+    taskCreatedAt,
+    false,
+    "muse",
+  );
+  const resolved = resolveUrl(mediaUrl, SEEDANCE_BASE_URL);
+  const sameOrigin = new URL(resolved).origin === new URL(SEEDANCE_BASE_URL).origin;
+  await downloadAsset(resolved, outputPath, "video", sameOrigin ? headers : {}, taskId, signal, "Muse.ai");
+  return {
+    kind: "video",
+    provider: "maivideo-video-muse",
+    status: "ready",
+    localPath: relativePath(outputPath),
+    sourceUrl: resolved,
+    query: prompt,
+    model: "Muse.ai",
+    durationSec: settings.videoDurationSec,
+  };
+}
+
+async function generateFlowVideo(
+  prompt: string,
+  outputPath: string,
+  aspectRatio: string,
+  referenceImageUrls: string[],
+  referenceImageNames: string[],
+  settings: MediaGenerationSettings,
+  apiKey: string,
+  existingTaskId?: string,
+  onCreateStarted?: () => Promise<void>,
+  onTaskCreated?: (taskId: string, createdAt: string) => Promise<void>,
+  signal?: AbortSignal,
+  providerAuthToken?: string,
+): Promise<SceneMediaAsset> {
+  prompt = requireVideoPromptWithinLimit(prompt, "Flow", 12_000);
+  if (settings.flowReferenceMode === "frames" && referenceImageUrls.length !== 2) throw new Error("Flow Frames cần đúng 2 ảnh theo thứ tự khung đầu rồi khung cuối.");
+  if (settings.flowReferenceMode !== "frames" && referenceImageUrls.length > 10) throw new Error(`Flow Ingredients/References chỉ nhận tối đa 10 ảnh; hiện có ${referenceImageUrls.length} ảnh.`);
+  const headers = gatewayApiHeaders(apiKey, providerAuthToken);
+  const duration = normalizeVideoDuration(settings.videoDurationSec, FLOW_VIDEO_MODEL_OPTION);
+  let taskId = existingTaskId?.trim() || "";
+  let created: JsonRecord = {};
+  if (!taskId) {
+    if (onCreateStarted) {
+      try {
+        await onCreateStarted();
+      } catch {
+        throw new SeedanceGenerationError({ stage: "seedance_checkpoint", detail: "Chưa gửi yêu cầu tạo video vì không lưu được trạng thái queue.", retryStrategy: "new_task", providerLabel: "Flow" });
+      }
+    }
+    try {
+      created = await requestJson(`${SEEDANCE_BASE_URL}/v1/flow/videos/generations`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt,
+          model: DEFAULT_FLOW_VIDEO_MODEL_ID,
+          duration,
+          // The gateway accepts 720p here and downloads its 1080p result when available.
+          resolution: "720p",
+          ratio: museImageRatio(aspectRatio),
+          reference_mode: settings.flowReferenceMode,
+          ...(referenceImageUrls.length ? { reference_images: referenceImageUrls, reference_image_names: referenceImageNames } : {}),
+        }),
+      }, Number(process.env.FLOW_VIDEO_CREATE_TIMEOUT_MS) || 180_000, { stage: "seedance_create", providerLabel: "Flow" }, signal);
+    } catch (cause) {
+      const uncertain = uncertainSubmissionError("Flow", cause);
+      if (uncertain instanceof SeedanceGenerationError) throw uncertain;
+      throw new SeedanceGenerationError({ stage: "seedance_create", detail: uncertain.message, retryStrategy: "new_task", providerLabel: "Flow" });
+    }
+    taskId = providerJobIdFromPayload(created);
+    if (!taskId) throw new SeedanceGenerationError({ stage: "seedance_create", detail: "Dịch vụ không trả về job ID.", retryStrategy: "new_task", providerLabel: "Flow" });
+    if (onTaskCreated) {
+      try {
+        await onTaskCreated(taskId, new Date().toISOString());
+      } catch {
+        throw new SeedanceGenerationError({ stage: "seedance_checkpoint", detail: "Đã tạo job nhưng chưa lưu được job ID. Thử lại sẽ tiếp tục job này.", taskId, retryStrategy: "same_task", providerLabel: "Flow" });
+      }
+    }
+  }
+
+  const configuredTimeoutMs = Number(process.env.FLOW_VIDEO_TIMEOUT_MS);
+  const timeoutMs = Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0
+    ? Math.min(configuredTimeoutMs, FLOW_MEDIA_TIMEOUT_MAX_MS)
+    : FLOW_MEDIA_TIMEOUT_MAX_MS;
+  const { mediaUrl } = await pollJob(
+    `${SEEDANCE_BASE_URL}/v1/flow/jobs/${encodeURIComponent(taskId)}`,
+    headers,
+    timeoutMs,
+    ["result_url", "video_url", "output_url", "download_url", "file_url", "url"],
+    [],
+    undefined,
+    taskId,
+    providerTimeoutFromResponse(created),
+    signal,
+    undefined,
+    false,
+    "flow-video",
+  );
+  const resolved = resolveUrl(mediaUrl, SEEDANCE_BASE_URL);
+  const sameOrigin = new URL(resolved).origin === new URL(SEEDANCE_BASE_URL).origin;
+  await downloadAsset(resolved, outputPath, "video", sameOrigin ? headers : {}, taskId, signal, "Flow");
+  return {
+    kind: "video",
+    provider: "flow-video",
+    status: "ready",
+    localPath: relativePath(outputPath),
+    sourceUrl: resolved,
+    query: prompt,
+    model: DEFAULT_FLOW_VIDEO_MODEL_ID,
+    quality: "1080p",
+    durationSec: duration,
+  };
+}
+
+/** Generate a standalone Timelapse transition through the same Flow provider used by project scenes. */
+export async function generateFlowTimelapseVideo({
+  userId,
+  workflowId,
+  transitionId,
+  prompt,
+  aspectRatio,
+  durationSec,
+  referenceImageUrls,
+  referenceImageNames,
+  providerAuthToken,
+}: {
+  userId: string;
+  workflowId: string;
+  transitionId: string;
+  prompt: string;
+  aspectRatio: string;
+  durationSec: number;
+  referenceImageUrls: string[];
+  referenceImageNames: string[];
+  providerAuthToken: string;
+}) {
+  const safeSegment = (value: string) => value.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 100) || "timelapse";
+  const ownerKey = createHash("sha256").update(userId).digest("hex").slice(0, 24);
+  const outputPath = path.join(MEDIA_DIR, "timelapse", ownerKey, safeSegment(workflowId), `${safeSegment(transitionId)}-flow-video.mp4`);
+  const settings = resolveMediaGenerationSettings({
+    videoProvider: "flow",
+    videoModel: DEFAULT_FLOW_VIDEO_MODEL_ID,
+    videoQuality: "1080p",
+    videoDurationMode: "fixed",
+    videoDurationSec: durationSec,
+  });
+  const apiKey = await getSeedanceApiKey(undefined, userId);
+  const sessionToken = await getSeedanceApiSessionToken(undefined, userId, providerAuthToken);
+  if (!sessionToken) throw new Error("PROVIDER_SESSION_REQUIRED");
+  return generateFlowVideo(prompt, outputPath, aspectRatio, referenceImageUrls, referenceImageNames, settings, apiKey, undefined, undefined, undefined, undefined, sessionToken);
+}
+
+function appendReferenceImage(form: FormData, dataUrl: string, name: string) {
+  const match = /^data:(image\/(?:png|jpeg|webp));base64,([\s\S]+)$/i.exec(dataUrl);
+  if (!match) throw new Error("Ảnh tham chiếu " + name + " không đúng định dạng PNG, JPEG hoặc WebP.");
+  const mimeType = match[1].toLowerCase();
+  const bytes = Buffer.from(match[2], "base64");
+  if (!bytes.length || bytes.length > 40 * 1024 * 1024) throw new Error("Ảnh tham chiếu " + name + " vượt giới hạn 40 MB.");
+  const extension = mimeType === "image/png" ? "png" : mimeType === "image/webp" ? "webp" : "jpg";
+  const safeName = name.trim().replace(/[^\p{L}\p{N}._-]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "reference";
+  const fileName = safeName.toLowerCase().endsWith("." + extension) ? safeName : safeName + "." + extension;
+  form.append("reference_images", new Blob([bytes], { type: mimeType }), fileName);
+}
+
+async function generateHiggsfieldVideo(
+  prompt: string,
+  outputPath: string,
+  aspectRatio: string,
+  referenceImageUrls: string[],
+  referenceImageNames: string[],
+  settings: MediaGenerationSettings,
+  authToken: string,
+  existingJobId?: string,
+  onCreateStarted?: () => Promise<void>,
+  onJobCreated?: (jobId: string) => Promise<void>,
+  signal?: AbortSignal,
+): Promise<SceneMediaAsset> {
+  prompt = requireVideoPromptWithinLimit(prompt, "Higgsfield Seedance 2.0", HIGGSFIELD_SEEDANCE_VIDEO_PROMPT_MAX_CHARS);
+  if (!authToken.trim()) throw new Error("HIGGSFIELD_SESSION_REQUIRED");
+  let jobId = existingJobId?.trim() || "";
+  const base = baseUrl();
+  const headers: Record<string, string> = { "X-Auth-Token": authToken.trim(), Accept: "application/json" };
+  const higgsfieldAccess = process.env.HIGGSFIELD_ACCESS_TOKEN?.trim();
+  if (higgsfieldAccess) headers["X-Higgsfield-Access"] = higgsfieldAccess;
+  const durationSec = normalizeVideoDuration(settings.videoDurationSec, HIGGSFIELD_SEEDANCE_VIDEO_MODELS[0], "720p");
+
+  if (!jobId) {
+    if (onCreateStarted) {
+      try {
+        await onCreateStarted();
+      } catch {
+        throw new Error("HIGGSFIELD_CREATE_CHECKPOINT_FAILED");
+      }
+    }
+    const form = new FormData();
+    form.append("prompt", prompt);
+    form.append("model", "seedance_2_0");
+    form.append("aspect_ratio", ["auto", "16:9", "9:16", "4:3", "3:4", "1:1", "21:9"].includes(aspectRatio) ? aspectRatio : "auto");
+    form.append("duration", String(durationSec));
+    form.append("resolution", "720p");
+    form.append("mode", "fast");
+    form.append("sound", String(settings.videoAudio));
+    for (let index = 0; index < referenceImageUrls.length; index += 1) {
+      appendReferenceImage(form, referenceImageUrls[index], referenceImageNames[index] || "reference-" + (index + 1));
+    }
+    const created = await requestJson(base + "/api/higgsfield/video", {
+      method: "POST",
+      headers,
+      body: form,
+    }, Number(process.env.HIGGSFIELD_VIDEO_CREATE_TIMEOUT_MS) || 180_000, undefined, signal);
+    const createdJob = created.job && typeof created.job === "object" ? created.job as JsonRecord : {};
+    jobId = String(created.job_id || createdJob.id || created.id || "").trim().slice(0, 200);
+    if (!jobId) throw new Error("Higgsfield không trả về job_id cho video.");
+    if (onJobCreated) {
+      try {
+        await onJobCreated(jobId);
+      } catch {
+        throw new MediaProviderJobPendingError("higgsfield", jobId);
+      }
+    }
+  }
+
+  const configuredTimeoutMs = Number(process.env.HIGGSFIELD_VIDEO_TIMEOUT_MS);
+  const timeoutMs = Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0
+    ? Math.min(configuredTimeoutMs, HIGGSFIELD_VIDEO_TIMEOUT_MAX_MS)
+    : HIGGSFIELD_VIDEO_TIMEOUT_MAX_MS;
+  const pollResult = await pollJob(
+    base + "/api/higgsfield/jobs/" + encodeURIComponent(jobId),
+    headers,
+    timeoutMs,
+    ["file_url", "video_url", "url"],
+    [],
+    undefined,
+    jobId,
+    0,
+    signal,
+    undefined,
+    false,
+    "higgsfield",
+  );
+  const resolved = resolveUrl(pollResult.mediaUrl, base);
+  await downloadAsset(resolved, outputPath, "video", {}, undefined, signal, "Higgsfield");
+  return {
+    kind: "video",
+    provider: "maivideo-video-higgsfield",
+    status: "ready",
+    localPath: relativePath(outputPath),
+    sourceUrl: resolved,
+    query: prompt,
+    model: HIGGSFIELD_SEEDANCE_MODEL_ID,
+    quality: "720p",
+    durationSec,
+  };
+}
+
 /** Generate one scene directly through MaiVideo's video API. This path never uses Flow. */
 export async function generateMaiVideoVideoForScene({
   projectSlug,
   chunkId,
   scene,
+  projectScenes = [],
   characters = [],
   locations = [],
   sceneIndex = 0,
@@ -1473,6 +2171,11 @@ export async function generateMaiVideoVideoForScene({
   userId,
   maiVideoJobId,
   onMaiVideoJobCreated,
+  providerAuthToken,
+  higgsfieldAuthToken,
+  higgsfieldJobId,
+  onHiggsfieldCreateStarted,
+  onHiggsfieldJobCreated,
   seedanceTaskId,
   seedanceTaskCreatedAt,
   onSeedanceCreateStarted,
@@ -1489,6 +2192,7 @@ export async function generateMaiVideoVideoForScene({
   projectSlug: string;
   chunkId: string;
   scene: SceneRecord;
+  projectScenes?: SceneRecord[];
   characters?: ProjectCharacter[];
   locations?: ProjectLocation[];
   sceneIndex?: number;
@@ -1505,6 +2209,11 @@ export async function generateMaiVideoVideoForScene({
   userId?: string;
   maiVideoJobId?: string;
   onMaiVideoJobCreated?: (jobId: string) => Promise<void>;
+  providerAuthToken?: string;
+  higgsfieldAuthToken?: string;
+  higgsfieldJobId?: string;
+  onHiggsfieldCreateStarted?: () => Promise<void>;
+  onHiggsfieldJobCreated?: (jobId: string) => Promise<void>;
   seedanceTaskId?: string;
   seedanceTaskCreatedAt?: string;
   onSeedanceCreateStarted?: () => Promise<void>;
@@ -1518,7 +2227,11 @@ export async function generateMaiVideoVideoForScene({
   projectVoiceLanguage?: string;
   signal?: AbortSignal;
 }) {
-  const settings = await settingsForVideoScene(scene, mediaGeneration, presetId, userId, Boolean(maiVideoJobId || seedanceTaskId));
+  const resolvedSettings = await settingsForVideoScene(scene, mediaGeneration, presetId, userId, Boolean(maiVideoJobId || higgsfieldJobId || seedanceTaskId));
+  const settings: MediaGenerationSettings = {
+    ...resolvedSettings,
+    flowReferenceMode: isFlowStoryOnlyPreset(presetId) ? "ingredients" : resolvedSettings.flowReferenceMode,
+  };
   const sceneNumber = Number(scene.sceneNumber) || sceneIndex + 1;
   const id = stringValue(scene, "id", "scene_id") || `S${String(sceneNumber).padStart(3, "0")}`;
   const rawScenePrompt = presetId === "ai-drama"
@@ -1552,37 +2265,60 @@ export async function generateMaiVideoVideoForScene({
     .filter((value): value is JsonRecord => Boolean(value && typeof value === "object" && !Array.isArray(value)))
     .filter((value) => value.kind === "image" && value.status === "ready");
   const sceneReference = sceneReferenceCandidates.find((value) => value.stale !== true) || sceneReferenceCandidates[0];
-  if (!promptPreviewOnly && settings.videoUseSceneImageReference && (!sceneReference || sceneReference.kind !== "image" || sceneReference.status !== "ready")) throw new Error(`Cảnh ${id} chưa có ảnh cảnh để tạo video.`);
+  const flowFramesMode = settings.videoProvider === "flow" && settings.flowReferenceMode === "frames";
+  const flowFrameEndSceneId = stringValue(scene, "flowFrameEndSceneId", "flow_frame_end_scene_id");
+  const flowFrameEndScene = projectScenes.find((candidate) => stringValue(candidate, "id", "scene_id") === flowFrameEndSceneId);
+  const flowFrameEndImage = flowFrameEndScene ? sceneReferenceImageForFlowFrame(flowFrameEndScene) : undefined;
+  if (!promptPreviewOnly && flowFramesMode && (!sceneReference || sceneReference.kind !== "image" || sceneReference.status !== "ready" || sceneReference.stale === true || !sceneReference.localPath)) {
+    throw new Error(`Flow Frames cần ảnh khung đầu sẵn sàng cho cảnh ${id}.`);
+  }
+  if (!promptPreviewOnly && flowFramesMode && (!flowFrameEndSceneId || flowFrameEndSceneId === id || !flowFrameEndScene || !flowFrameEndImage)) {
+    throw new Error(`Flow Frames cần chọn một ảnh cảnh sẵn sàng làm khung cuối cho cảnh ${id}.`);
+  }
+  if (!promptPreviewOnly && !flowFramesMode && settings.videoUseSceneImageReference && (!sceneReference || sceneReference.kind !== "image" || sceneReference.status !== "ready")) throw new Error(`Cảnh ${id} chưa có ảnh cảnh để tạo video.`);
   const model = settings.videoModel;
   const seedanceModel = settings.videoProvider === "seedance"
     ? SEEDANCE_VIDEO_MODELS.find((item) => item.id === model)
     : undefined;
   const configuredReferenceLimit = Number(process.env.MAIVIDEO_VIDEO_MAX_REFERENCE_IMAGES);
-  const providerReferenceLimit = settings.videoProvider === "seedance"
-    ? seedanceModel?.maxReferenceImages || SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES
+  const providerReferenceLimit = settings.videoProvider === "seedance" || settings.videoProvider === "muse" || settings.videoProvider === "flow"
+    ? (settings.videoProvider === "muse" ? MUSE_VIDEO_MODELS[0]?.maxReferenceImages : settings.videoProvider === "flow" ? FLOW_VIDEO_MODEL_OPTION.maxReferenceImages : seedanceModel?.maxReferenceImages) || SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES
+    : settings.videoProvider === "higgsfield"
+      ? HIGGSFIELD_SEEDANCE_VIDEO_MODELS[0].maxReferenceImages || 9
     : maiVideoModelOption?.maxReferenceImages || (isMaiVideoSeedanceModel(model) ? 9 : 7);
   const referenceLimit = Number.isInteger(configuredReferenceLimit) && configuredReferenceLimit > 0
     ? Math.min(providerReferenceLimit, configuredReferenceLimit)
     : providerReferenceLimit;
-  const referenceCount = Number(Boolean(settings.videoUseSceneImageReference)) + picturedCharacters.length + Number(Boolean(picturedLocation));
+  const referenceCount = flowFramesMode ? 2 : Number(Boolean(settings.videoUseSceneImageReference)) + picturedCharacters.length + Number(Boolean(picturedLocation));
   if (referenceCount > referenceLimit) {
     throw new Error("Cảnh " + id + " đang chọn " + referenceCount + " ảnh tham chiếu, nhưng model " + model + " chỉ nhận tối đa " + referenceLimit + " ảnh.");
   }
   const previousSceneImage = continuityReference?.image?.kind === "image" && continuityReference.image.status === "ready" && continuityReference.image.localPath
-    && (settings.videoProvider !== "seedance" || continuityReference.persisted)
+    && (settings.videoProvider !== "seedance" && settings.videoProvider !== "muse" && settings.videoProvider !== "flow" || continuityReference.persisted)
     ? continuityReference
     : undefined;
-  const includedContinuityReference = previousSceneImage && referenceCount < referenceLimit ? previousSceneImage : undefined;
-  const references: Array<{ kind: "scene" | "previous-scene" | "character" | "location"; character?: ProjectCharacter; previousSceneId?: string; previousSceneImage?: JsonRecord; name: string }> = [];
-  if (settings.videoUseSceneImageReference) references.push({ kind: "scene", name: "Scene frame" });
-  if (includedContinuityReference) references.push({ kind: "previous-scene", previousSceneId: includedContinuityReference.sceneId, previousSceneImage: includedContinuityReference.image as unknown as JsonRecord, name: "Previous scene - " + includedContinuityReference.sceneId });
-  for (const character of picturedCharacters) references.push({ kind: "character", character, name: "Character - " + character.name });
-  if (picturedLocation) references.push({ kind: "location", name: "Location - " + picturedLocation.name });
+  const includedContinuityReference = !flowFramesMode && previousSceneImage && referenceCount < referenceLimit ? previousSceneImage : undefined;
+  const references: Array<{ kind: "scene" | "previous-scene" | "character" | "location" | "flow-frame-start" | "flow-frame-end"; character?: ProjectCharacter; previousSceneId?: string; previousSceneImage?: JsonRecord; name: string }> = [];
+  if (flowFramesMode) {
+    references.push({ kind: "flow-frame-start", name: "Frame 1 - first frame" });
+    references.push({ kind: "flow-frame-end", previousSceneId: flowFrameEndSceneId, name: "Frame 2 - last frame" });
+  } else {
+    if (settings.videoUseSceneImageReference) references.push({ kind: "scene", name: "Scene frame" });
+    if (includedContinuityReference) references.push({ kind: "previous-scene", previousSceneId: includedContinuityReference.sceneId, previousSceneImage: includedContinuityReference.image as unknown as JsonRecord, name: "Previous scene - " + includedContinuityReference.sceneId });
+    for (const character of picturedCharacters) references.push({ kind: "character", character, name: "Character - " + character.name });
+    if (picturedLocation) references.push({ kind: "location", name: "Location - " + picturedLocation.name });
+  }
   if (onVideoReferencesComposed) {
     const apiProjectPath = `/api/projects/${encodeURIComponent(projectSlug)}`;
     const copyableReferences = references.flatMap((reference): VideoPromptReferenceImage[] => {
       if (reference.kind === "scene" && sceneReference?.localPath) {
         return [{ name: reference.name, url: `${apiProjectPath}/scenes/${encodeURIComponent(id)}/media?kind=reference` }];
+      }
+      if (reference.kind === "flow-frame-start" && sceneReference?.localPath) {
+        return [{ name: reference.name, url: `${apiProjectPath}/scenes/${encodeURIComponent(id)}/media?kind=reference` }];
+      }
+      if (reference.kind === "flow-frame-end" && flowFrameEndSceneId && flowFrameEndImage?.localPath) {
+        return [{ name: reference.name, url: `${apiProjectPath}/scenes/${encodeURIComponent(flowFrameEndSceneId)}/media?kind=reference` }];
       }
       if (reference.kind === "previous-scene" && reference.previousSceneId && reference.previousSceneImage?.localPath) {
         return [{ name: reference.name, url: `${apiProjectPath}/scenes/${encodeURIComponent(reference.previousSceneId)}/media?kind=reference` }];
@@ -1600,6 +2336,8 @@ export async function generateMaiVideoVideoForScene({
   const imageToken = (index: number) => settings.videoProvider === "seedance" ? "@Image" + index : "Image " + index;
   const referenceNotes = references.map((reference, index) => {
     const image = imageToken(index + 1);
+    if (reference.kind === "flow-frame-start") return image + " — FIRST FRAME. Use this image as the exact opening composition and preserve its subject, setting, lighting, and camera position at 0 seconds.";
+    if (reference.kind === "flow-frame-end") return image + " — LAST FRAME. Reach this image's composition and visible state by the end of the clip; preserve scene continuity while transitioning from the first frame.";
     if (reference.kind === "scene") return image + " — CURRENT SCENE IMAGE, exact frame at 0s. Preserve its setting, props, lighting, palette and initial blocking; hold the opening composition briefly. Animate the scene-specific prompt from this frame; do not reset or replace it.";
     if (reference.kind === "previous-scene") return image + " — PREVIOUS SCENE (" + reference.previousSceneId + "). Use only for location, prop, screen-direction, lighting and time continuity; follow this scene's own opening frame and scene-specific prompt.";
     if (reference.kind === "character") {
@@ -1616,7 +2354,9 @@ export async function generateMaiVideoVideoForScene({
     }
     return image + " — REFERENCE IMAGE.";
   });
-  const referencePriority = settings.videoUseSceneImageReference
+  const referencePriority = flowFramesMode
+    ? "FLOW FRAMES: The first attached image is the exact opening frame and the second is the required ending frame. Keep the action and camera transition coherent between them; do not treat either frame as a character or location reference."
+    : settings.videoUseSceneImageReference
     ? "REFERENCE PRIORITY: The scene image controls the exact 0s frame, setting, props, light, composition and initial blocking; preserve people and positions in it for the first 0.5s. Character images bind identity/costume. The scene-specific prompt controls later timed action, reactions and camera movement. Preserve cause-and-effect and prop ownership; do not invent, omit or substitute story details."
     : "REFERENCE PRIORITY: Character images bind identity/costume. The scene-specific prompt establishes setting, initial blocking, timed action, reactions and camera movement. Preserve cause-and-effect and prop ownership; do not invent, omit or substitute story details.";
   const continuityNotes = referenceNotes.length
@@ -1678,22 +2418,62 @@ export async function generateMaiVideoVideoForScene({
   ].filter(Boolean);
   const promptMaxLength = settings.videoProvider === "seedance"
     ? seedanceModel?.promptMaxLength || SEEDANCE_DIRECT_VIDEO_PROMPT_MAX_CHARS
-    : maiVideoModelOption?.promptMaxLength || MAIVIDEO_VIDEO_PROMPT_DEFAULT_MAX_CHARS;
+    : settings.videoProvider === "muse"
+      ? MUSE_VIDEO_MODELS[0].promptMaxLength || 12_000
+      : settings.videoProvider === "flow"
+        ? FLOW_VIDEO_MODEL_OPTION.promptMaxLength || 12_000
+      : settings.videoProvider === "higgsfield"
+        ? HIGGSFIELD_SEEDANCE_VIDEO_PROMPT_MAX_CHARS
+      : maiVideoModelOption?.promptMaxLength || MAIVIDEO_VIDEO_PROMPT_DEFAULT_MAX_CHARS;
   const safePrompt = composeVideoApiPrompt(id, scenePrompt, promptNotes, presetId === "ai-drama", promptMaxLength);
   if (onPromptComposed) await onPromptComposed(safePrompt);
-  if (settings.videoProvider === "seedance") {
-    if (!SEEDANCE_VIDEO_MODELS.some((item) => item.id === model)) throw new Error(`Model Seedance không được hỗ trợ: ${model}`);
-    const ownerId = userId?.trim() || await getCurrentUserId();
-    const seedanceApiKey = usesDolaRenderGateway()
-      ? process.env.DOLA_GATEWAY_API_KEY?.trim() || ""
-      : await getSeedanceApiKey(settings.seedanceAccountId, ownerId);
+  if (settings.videoProvider === "higgsfield") {
+    if (model !== HIGGSFIELD_SEEDANCE_MODEL_ID) throw new Error("Model Higgsfield Seedance 2.0 không được hỗ trợ.");
     const referenceImageUrls: string[] = [];
     for (const reference of references) {
-      if (reference.kind === "scene") referenceImageUrls.push(createSeedanceSceneReferenceUrl(projectSlug, id, ownerId));
+      if (reference.kind === "scene" && sceneReference) referenceImageUrls.push(await localSceneReferenceDataUrl(projectSlug, id, sceneReference));
+      else if (reference.kind === "previous-scene" && reference.previousSceneId && reference.previousSceneImage) referenceImageUrls.push(await localSceneReferenceDataUrl(projectSlug, reference.previousSceneId, reference.previousSceneImage));
+      else if (reference.kind === "character" && reference.character) referenceImageUrls.push(await localCharacterReferenceDataUrl(projectSlug, reference.character));
+      else if (reference.kind === "location" && selectedLocation) referenceImageUrls.push(await localLocationReferenceDataUrl(projectSlug, selectedLocation));
+    }
+    const outputPath = path.join(
+      MEDIA_DIR,
+      safeSegment(projectSlug, "project"),
+      safeSegment(chunkId, "chunk"),
+      safeSegment(id, "S" + String(sceneNumber).padStart(3, "0")) + "-higgsfield-video.mp4"
+    );
+    return generateHiggsfieldVideo(safePrompt, outputPath, aspectRatio, referenceImageUrls, references.map((reference) => reference.name), settings, higgsfieldAuthToken || "", higgsfieldJobId, onHiggsfieldCreateStarted, onHiggsfieldJobCreated, signal);
+  }
+  if (settings.videoProvider === "seedance" || settings.videoProvider === "muse" || settings.videoProvider === "flow") {
+    if (settings.videoProvider === "seedance" && !SEEDANCE_VIDEO_MODELS.some((item) => item.id === model)) throw new Error(`Model Seedance không được hỗ trợ: ${model}`);
+    if (settings.videoProvider === "muse" && model !== DEFAULT_MUSE_VIDEO_MODEL_ID) throw new Error(`Model Muse.ai không được hỗ trợ: ${model}`);
+    if (settings.videoProvider === "flow" && model !== DEFAULT_FLOW_VIDEO_MODEL_ID) throw new Error(`Model Flow không được hỗ trợ: ${model}`);
+    const ownerId = userId?.trim() || await getCurrentUserId();
+    // Flow/Muse use the current account's default API key. Legacy projects may
+    // still carry an account ID that points at an older profile key.
+    const gatewayProvider = settings.videoProvider === "muse" || settings.videoProvider === "flow";
+    const seedanceApiKey = await getSeedanceApiKey(gatewayProvider ? undefined : settings.seedanceAccountId, ownerId);
+    const gatewaySessionToken = settings.videoProvider === "muse" || settings.videoProvider === "flow"
+      ? await getSeedanceApiSessionToken(undefined, ownerId, providerAuthToken)
+      : providerAuthToken;
+    if ((settings.videoProvider === "muse" || settings.videoProvider === "flow") && !gatewaySessionToken) throw new Error("PROVIDER_SESSION_REQUIRED");
+    const referenceImageUrls: string[] = [];
+    for (const reference of references) {
+      if (reference.kind === "scene" || reference.kind === "flow-frame-start") referenceImageUrls.push(createSeedanceSceneReferenceUrl(projectSlug, id, ownerId));
+      else if (reference.kind === "flow-frame-end" && reference.previousSceneId) referenceImageUrls.push(createSeedanceSceneReferenceUrl(projectSlug, reference.previousSceneId, ownerId));
       else if (reference.kind === "previous-scene" && reference.previousSceneId) referenceImageUrls.push(createSeedanceSceneReferenceUrl(projectSlug, reference.previousSceneId, ownerId));
       else if (reference.kind === "character" && reference.character) referenceImageUrls.push(createSeedanceCharacterReferenceUrl(projectSlug, reference.character.id, ownerId));
       else if (reference.kind === "location" && selectedLocation) referenceImageUrls.push(createSeedanceLocationReferenceUrl(projectSlug, selectedLocation.id, ownerId));
     }
+    if (settings.videoProvider === "muse") {
+      const outputPath = path.join(MEDIA_DIR, safeSegment(projectSlug, "project"), safeSegment(chunkId, "chunk"), `${safeSegment(id, `S${String(sceneNumber).padStart(3, "0")}`)}-muse-video.mp4`);
+      return generateMuseVideo(safePrompt, outputPath, aspectRatio, referenceImageUrls, references.map((reference) => reference.name), settings, seedanceApiKey, seedanceTaskId, onSeedanceCreateStarted, onSeedanceTaskCreated, seedanceTaskCreatedAt, signal, gatewaySessionToken);
+    }
+    if (settings.videoProvider === "flow") {
+      const outputPath = path.join(MEDIA_DIR, safeSegment(projectSlug, "project"), safeSegment(chunkId, "chunk"), `${safeSegment(id, `S${String(sceneNumber).padStart(3, "0")}`)}-flow-video.mp4`);
+      return generateFlowVideo(safePrompt, outputPath, aspectRatio, referenceImageUrls, references.map((reference) => reference.name), settings, seedanceApiKey, maiVideoJobId, onSeedanceCreateStarted, onSeedanceTaskCreated, signal, gatewaySessionToken);
+    }
+    if (!seedanceModel) throw new Error(`Model Seedance không được hỗ trợ: ${model}`);
     const outputPath = path.join(
       MEDIA_DIR,
       safeSegment(projectSlug, "project"),
@@ -1767,6 +2547,16 @@ function sceneImageContinuityReference(scene: SceneRecord, persisted = false): S
   return { sceneId: id, image: image as unknown as SceneMediaAsset, persisted };
 }
 
+function sceneReferenceImageForFlowFrame(scene: SceneRecord): JsonRecord | undefined {
+  const savedReference = scene.videoReferenceImage ?? scene.video_reference_image;
+  const savedImage = savedReference && typeof savedReference === "object" && !Array.isArray(savedReference) ? savedReference as JsonRecord : undefined;
+  const media = scene.media && typeof scene.media === "object" && !Array.isArray(scene.media) ? scene.media as JsonRecord : undefined;
+  const candidates = [savedImage, media].filter((value): value is JsonRecord => Boolean(
+    value && value.kind === "image" && value.status === "ready" && typeof value.localPath === "string" && value.localPath.trim(),
+  ));
+  return candidates.find((value) => value.stale !== true) || undefined;
+}
+
 function sceneAssetPath(slug: string, chunkId: string, index: number, kind: "image" | "video", provider: string) {
   const extension = kind === "image" ? (provider === "maivideo-image" ? "png" : "jpg") : "mp4";
   return path.join(MEDIA_DIR, safeSegment(slug, "project"), safeSegment(chunkId, "chunk"), `S${String(index + 1).padStart(3, "0")}-${provider}.${extension}`);
@@ -1838,7 +2628,6 @@ export async function materializeChunkMedia({
   projectVoiceLanguage,
   previousScenes = [],
   sceneStart = 1,
-  concurrency: concurrencyOverride,
 }: {
   projectSlug: string;
   chunkId: string;
@@ -1861,12 +2650,11 @@ export async function materializeChunkMedia({
   projectVoiceLanguage?: string;
   previousScenes?: unknown[];
   sceneStart?: number;
-  concurrency?: number;
 }) {
   const normalizedSource = presetId === "ai-drama" ? "maivideo-video" : mediaSource || "stock-mixed";
   const settings = resolveMediaGenerationSettings(mediaGeneration);
   const materialized: SceneRecord[] = [];
-  const concurrency = Math.max(1, Math.min(20, Number(concurrencyOverride) || Number(process.env.STORYAI_MEDIA_CONCURRENCY) || 5));
+  const concurrency = Math.max(1, Math.min(5, Number(process.env.STORYAI_MEDIA_CONCURRENCY) || 5));
   const normalizedScenes = scenes.map((sceneValue, index) => {
     const normalized = sceneWithMatchedReferences(sceneValue && typeof sceneValue === "object" ? sceneValue as SceneRecord : { raw_scene: sceneValue }, characters, locations);
     const sceneNumber = Number(normalized.sceneNumber) || sceneStart + index;
@@ -1924,7 +2712,7 @@ export async function materializeChunkMedia({
           videoReferenceImage = reference || await generateMaiVideoImageForScene({ projectSlug, chunkId, scene, characters, locations, sceneIndex: index, aspectRatio, mediaGeneration: settings, presetId, contentGenre, secondaryGenres, storySetting, settingNotes, visualStyle, imageStyle, continuityReference });
           sceneForVideo = { ...scene, videoReferenceImage };
         }
-        asset = await generateMaiVideoVideoForScene({ projectSlug, chunkId, scene: sceneForVideo, characters, locations, sceneIndex: index, aspectRatio, mediaGeneration: settings, presetId, contentGenre, secondaryGenres, storySetting, settingNotes, visualStyle, imageStyle, continuityReference, videoSpokenLanguage, projectVoiceId, projectVoiceName, projectVoiceLanguage });
+        asset = await generateMaiVideoVideoForScene({ projectSlug, chunkId, scene: sceneForVideo, projectScenes: normalizedScenes, characters, locations, sceneIndex: index, aspectRatio, mediaGeneration: settings, presetId, contentGenre, secondaryGenres, storySetting, settingNotes, visualStyle, imageStyle, continuityReference, videoSpokenLanguage, projectVoiceId, projectVoiceName, projectVoiceLanguage });
       }
     } catch (cause) {
       lastError = cause instanceof Error ? cause.message : String(cause);
@@ -1939,7 +2727,7 @@ export async function materializeChunkMedia({
         } catch (cause) { lastError = cause instanceof Error ? cause.message : String(cause); }
       } else if (kind === "video") {
         try {
-          asset = await generateMaiVideoVideoForScene({ projectSlug, chunkId, scene, characters, locations, sceneIndex: index, aspectRatio, mediaGeneration: settings, presetId, contentGenre, secondaryGenres, storySetting, settingNotes, visualStyle, imageStyle, continuityReference, videoSpokenLanguage, projectVoiceId, projectVoiceName, projectVoiceLanguage });
+          asset = await generateMaiVideoVideoForScene({ projectSlug, chunkId, scene, projectScenes: normalizedScenes, characters, locations, sceneIndex: index, aspectRatio, mediaGeneration: settings, presetId, contentGenre, secondaryGenres, storySetting, settingNotes, visualStyle, imageStyle, continuityReference, videoSpokenLanguage, projectVoiceId, projectVoiceName, projectVoiceLanguage });
           usedFallback = true;
         } catch (cause) { lastError = cause instanceof Error ? cause.message : String(cause); }
       }

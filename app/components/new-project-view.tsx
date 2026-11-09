@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { DEFAULT_PRESET_ID, STORY_PRESETS, type StoryPresetId } from "../lib/story-presets";
+import { DEFAULT_PRESET_ID, isFlowStoryOnlyPreset, STORY_PRESETS, type StoryPresetId } from "../lib/story-presets";
 import { useProjects } from "../lib/project-store";
 import { FALLBACK_VIDEO_LANGUAGES, voiceLanguageLabel, type OmniVoiceCatalog, type OmniVoiceOption } from "../lib/omnivoice";
 import { formatDurationLabel, getManualScriptMetrics } from "../lib/script-utils";
-import { DEFAULT_MEDIA_GENERATION_SETTINGS, IMAGE_DETAIL_LEVEL_LABELS, MAX_PROJECT_CHUNK_SIZE, MAX_SCENE_DURATION_SEC, MIN_PROJECT_CHUNK_SIZE, PROJECT_CHUNK_SIZE_PRESETS, slugify, type DramaProjectPlan, type DurationMode, type ImageGenerationModelOption, type MediaGenerationSettings, type MediaModelCatalog, type MediaSource, type ScriptFormat, type ScriptMode, type VideoGenerationModelOption } from "../lib/project-types";
-import { availableImageModels, DEFAULT_MAIVIDEO_VIDEO_MODEL_ID, DEFAULT_SEEDANCE_VIDEO_MODEL_ID, imageDetailLevelsForModel, isVideoOffPeakRequired, normalizeVideoDuration, preferredVideoQuality, resolveMediaGenerationSettings, videoDurationOptions, videoQualitiesForModel } from "../lib/media-generation-settings";
+import { DEFAULT_MEDIA_GENERATION_SETTINGS, IMAGE_DETAIL_LEVEL_LABELS, MAX_PROJECT_CHUNK_SIZE, MAX_SCENE_DURATION_SEC, MIN_PROJECT_CHUNK_SIZE, PROJECT_CHUNK_SIZE_PRESETS, slugify, type DramaProjectPlan, type DurationMode, type MediaGenerationSettings, type MediaModelCatalog, type MediaSource, type ScriptFormat, type ScriptMode, type VideoGenerationModelOption } from "../lib/project-types";
+import { availableImageModels, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, DEFAULT_SEEDANCE_VIDEO_MODEL_ID, HIGGSFIELD_SEEDANCE_MODEL_ID, imageDetailLevelsForModel, isFlowImageModel, isMuseImageModel, isPixverseVideoSettings, isTemporarilyHiddenMaiVideoSeedance25, isTemporarilyHiddenSeedanceProvider, isVideoOffPeakRequired, normalizeVideoDuration, preferredVideoQuality, resolveMediaGenerationSettings, videoDurationOptions, videoModelDisplayName, videoQualitiesForModel, visibleVideoModels } from "../lib/media-generation-settings";
+import { useSeedanceAccounts } from "../lib/seedance-accounts-client";
 import { DEFAULT_IMAGE_STYLE, DEFAULT_VISUAL_STYLE, IMAGE_STYLE_OPTIONS, IMAGE_STYLE_PRESETS } from "../lib/visual-styles";
 import { CONTENT_GENRES, DEFAULT_CONTENT_GENRE, DEFAULT_STORY_SETTING, normalizeContentGenre, normalizeSecondaryGenres, normalizeStorySetting, STORY_SETTING_OPTIONS } from "../lib/content-genres";
 import { AI_DRAMA_JSON_TEMPLATE, AI_DRAMA_SOURCE_SCRIPT_TEMPLATE } from "../lib/project-script-templates";
@@ -40,42 +41,14 @@ type FormState = {
 };
 
 type ScriptEntryMode = "ai" | "manual" | "json";
-type ScriptJsonSummary = { schema: "scene-script.v1" | "scene-series.v1"; episodeCount: number; sceneCount: number };
+type ScriptJsonSummary = { schema: "scene-script.v1"; episodeCount: 1; sceneCount: number };
 type PendingScriptImport = { slug: string; title: string };
 
 const NEW_PROJECT_MEDIA_GENERATION_DEFAULTS: MediaGenerationSettings = {
   ...DEFAULT_MEDIA_GENERATION_SETTINGS,
-  videoProvider: "maivideo",
-  videoModel: DEFAULT_MAIVIDEO_VIDEO_MODEL_ID,
-  videoQuality: "720p",
-  imageModel: "gpt-image-2.5-flare",
   imageQuality: "1440p",
   imageDetailLevel: "medium",
 };
-
-const ASPECT_RATIO_ORDER = ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2", "21:9"];
-const DEFAULT_PROJECT_ASPECT_RATIOS = ["16:9", "9:16", "1:1"];
-const ASPECT_RATIO_LABELS: Record<string, string> = {
-  "16:9": "16:9 · YouTube",
-  "9:16": "9:16 · Shorts",
-  "1:1": "1:1 · Social",
-};
-
-function projectAspectRatioOptions(
-  imageModel: ImageGenerationModelOption | undefined,
-  imageQuality: string,
-  videoModel: VideoGenerationModelOption | undefined,
-) {
-  const imageRatios = imageModel?.aspectRatiosByQuality?.[imageQuality]
-    || Object.values(imageModel?.aspectRatiosByQuality || {}).flat();
-  const videoRatios = videoModel?.aspectRatios || [];
-  const candidates = [...new Set([...ASPECT_RATIO_ORDER, ...imageRatios, ...videoRatios])];
-  const supported = candidates.filter((ratio) =>
-    (!imageRatios.length || imageRatios.includes(ratio))
-    && (!videoRatios.length || videoRatios.includes(ratio)),
-  );
-  return supported.length ? supported : DEFAULT_PROJECT_ASPECT_RATIOS;
-}
 
 const CONTENT_GENRE_EN_LABELS: Record<(typeof CONTENT_GENRES)[number]["value"], string> = {
   action: "Action",
@@ -121,18 +94,7 @@ function inspectScriptJson(value: unknown): ScriptJsonSummary {
     if (!scenes) throw new Error("scene-script.v1 cần có mảng scenes.");
     return { schema: "scene-script.v1", episodeCount: 1, sceneCount: scenes };
   }
-  if (record.schema === "scene-series.v1" && Array.isArray(record.episodes) && record.episodes.length) {
-    if (record.episodes.length > 100) throw new Error("Một file nhập tối đa 100 tập.");
-    const sceneCount = record.episodes.reduce((count, episode, index) => {
-      const item = episode && typeof episode === "object" && !Array.isArray(episode) ? episode as Record<string, unknown> : undefined;
-      if (!item || item.schema !== "scene-script.v1" || !Array.isArray(item.scenes) || !item.scenes.length) {
-        throw new Error(`Tập thứ ${index + 1} cần có schema scene-script.v1 và mảng scenes.`);
-      }
-      return count + item.scenes.length;
-    }, 0);
-    return { schema: "scene-series.v1", episodeCount: record.episodes.length, sceneCount };
-  }
-  throw new Error("File cần theo schema scene-script.v1 hoặc scene-series.v1.");
+  throw new Error("Mỗi lần chỉ nhập một tập theo schema scene-script.v1. Hãy chọn JSON của một tập.");
 }
 
 const emptyForm: FormState = {
@@ -163,13 +125,11 @@ const emptyForm: FormState = {
 
 export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: string; fixedPresetId?: StoryPresetId }) {
   const { getProject, createProject, updateProject, provider, refresh } = useProjects();
+  const { accounts: seedanceAccounts, defaultAccountId: defaultSeedanceAccountId } = useSeedanceAccounts();
   const existing = projectSlug ? getProject(projectSlug) : undefined;
-  const isFixedAiDramaCreation = !projectSlug && fixedPresetId === "ai-drama";
   const [form, setForm] = useState<FormState>(() => ({ ...emptyForm, presetId: fixedPresetId || emptyForm.presetId }));
   const [customChunkSize, setCustomChunkSize] = useState(false);
   const [voiceCatalog, setVoiceCatalog] = useState<OmniVoiceCatalog | null>(null);
-  const [voiceCatalogLoading, setVoiceCatalogLoading] = useState(true);
-  const [voiceCatalogRetry, setVoiceCatalogRetry] = useState(0);
   const [mediaCatalog, setMediaCatalog] = useState<MediaModelCatalog | null>(null);
   const [mediaCatalogError, setMediaCatalogError] = useState("");
   const [voiceError, setVoiceError] = useState("");
@@ -193,13 +153,17 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
   const mediaGenerationTouched = useRef(false);
   const mediaSourceTouched = useRef(false);
   const presetFromUrlApplied = useRef(false);
-  const hydratedExistingSlug = useRef<string | null>(null);
+  const currentScriptEntryMode: ScriptEntryMode = projectSlug
+    ? form.scriptMode
+    : fixedPresetId === "ai-drama" ? "ai" : scriptEntryMode;
 
   useEffect(() => {
     if (projectSlug || !fixedPresetId) return;
+    if (fixedPresetId === "ai-drama") setScriptEntryMode("ai");
     setForm((current) => ({
       ...current,
       presetId: fixedPresetId,
+      ...(fixedPresetId === "ai-drama" ? { scriptMode: "ai" as const, durationMode: "manual" as const } : {}),
       mediaSource: fixedPresetId === "ai-drama" ? "maivideo-video" : "stock-mixed",
       ...(fixedPresetId === "ai-drama" ? { mediaGeneration: { ...current.mediaGeneration, videoDurationMode: "scene" as const } } : {}),
     }));
@@ -218,41 +182,10 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
         setMediaCatalog(catalog);
         setMediaCatalogError("");
         if (!projectSlug && !mediaGenerationTouched.current) {
-          const imageModels = availableImageModels(catalog.imageModels);
-          const videoModels = catalog.videoModels.filter((model) => (model.provider || "maivideo") === "maivideo");
-          const initialSettings = { ...catalog.defaults, ...NEW_PROJECT_MEDIA_GENERATION_DEFAULTS };
-          const selectedImage = imageModels.find((model) => model.id === initialSettings.imageModel)
-            || imageModels.find((model) => model.id === "gpt-image-2.5-flare")
-            || imageModels[0];
-          const selectedVideo = videoModels.find((model) => model.id === initialSettings.videoModel)
-            || videoModels.find((model) => model.id === DEFAULT_MAIVIDEO_VIDEO_MODEL_ID)
-            || videoModels[0];
-          const imageQuality = selectedImage?.qualities.length && !selectedImage.qualities.includes(initialSettings.imageQuality)
-            ? selectedImage.qualities[0]
-            : initialSettings.imageQuality;
-          const imageDetailLevels = imageDetailLevelsForModel(selectedImage);
-          const imageDetailLevel = imageDetailLevels.includes(initialSettings.imageDetailLevel)
-            ? initialSettings.imageDetailLevel
-            : imageDetailLevels[0] || initialSettings.imageDetailLevel;
-          const videoQuality = preferredVideoQuality(
-            selectedVideo?.id || initialSettings.videoModel,
-            initialSettings.videoQuality,
-            videoQualitiesForModel(selectedVideo, initialSettings.videoQuality),
-          );
-          const videoSettings = resolveMediaGenerationSettings({
-            ...initialSettings,
-            videoProvider: "maivideo",
-            ...(selectedImage ? { imageModel: selectedImage.id } : {}),
-            imageQuality,
-            imageDetailLevel,
-            ...(selectedVideo ? { videoModel: selectedVideo.id } : {}),
-            videoQuality,
-            videoDurationSec: normalizeVideoDuration(initialSettings.videoDurationSec, selectedVideo, videoQuality),
-            ...(selectedVideo?.supportsMultiShot === false ? { videoMultiShot: false } : {}),
-            ...(selectedVideo?.supportsAudio === false ? { videoAudio: false } : {}),
-            ...(isVideoOffPeakRequired(selectedVideo?.id, selectedVideo?.label) ? { videoOffPeak: true } : selectedVideo?.supportsOffPeak === false ? { videoOffPeak: false } : {}),
-          });
-          setForm((current) => ({ ...current, mediaGeneration: videoSettings }));
+          setForm((current) => ({
+            ...current,
+            mediaGeneration: { ...catalog.defaults, ...NEW_PROJECT_MEDIA_GENERATION_DEFAULTS },
+          }));
         }
       })
       .catch((cause) => {
@@ -263,28 +196,15 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
 
   useEffect(() => {
     let cancelled = false;
-    setVoiceCatalogLoading(true);
-    setVoiceError("");
     fetch("/api/omnivoice/voices", { cache: "no-store" })
       .then(async (response) => {
-        const payload = await response.json().catch(() => null) as (Partial<OmniVoiceCatalog> & { message?: string; code?: string }) | null;
-        if (!response.ok) {
-          throw Object.assign(new Error(payload?.message || `Không lấy được danh sách giọng OmniVoice (HTTP ${response.status}).`), { code: payload?.code });
-        }
-        if (!payload || !Array.isArray(payload.voices)) throw new Error("MaiVideo không trả về danh sách voice hợp lệ.");
-        return {
-          provider: "omnivoice" as const,
-          voices: payload.voices,
-          languages: Array.isArray(payload.languages) ? payload.languages : [],
-        } satisfies OmniVoiceCatalog;
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.message || "Không lấy được danh sách giọng OmniVoice.");
+        return payload as OmniVoiceCatalog;
       })
       .then((catalog) => {
         if (cancelled) return;
         setVoiceCatalog(catalog);
-        if (!catalog.voices.length) {
-          setVoiceError("MaiVideo phản hồi thành công nhưng catalog OmniVoice hiện không có giọng nào.");
-          return;
-        }
         setForm((current) => {
           const currentVoice = catalog.voices.find((voice) => voice.id === current.voiceId);
           const matchingVoice = currentVoice || catalog.voices.find((voice) => voice.language === current.language) || catalog.voices[0];
@@ -298,31 +218,13 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
         });
       })
       .catch((cause) => {
-        if (cancelled) return;
-        const message = cause instanceof Error ? cause.message : "Không lấy được danh sách giọng OmniVoice.";
-        const code = cause instanceof Error && "code" in cause ? String(cause.code || "") : "";
-        if (message === "MAIVIDEO_API_KEY_REQUIRED" || code === "MAIVIDEO_API_KEY_REQUIRED") {
-          setVoiceError("Chưa có API key MaiVideo cho tài khoản này. Hãy cấu hình key trong Cài đặt rồi thử tải lại.");
-        } else if (message === "STORYAI_AUTH_REQUIRED" || code === "MAIVIDEO_AUTH_REQUIRED" || message.includes("MAIVIDEO_AUTH_REQUIRED")) {
-          setVoiceError("Phiên đăng nhập MaiVideo đã hết hạn. Hãy đăng nhập lại rồi thử tải lại danh sách giọng.");
-        } else if (code === "MAIVIDEO_API_KEY_INVALID" || message.includes("401")) {
-          setVoiceError("API key MaiVideo bị thiếu hiệu lực hoặc đã bị thu hồi. Cập nhật key trong Cài đặt rồi thử tải lại.");
-        } else if (message === "MAIVIDEO_VOICE_CATALOG_INVALID_RESPONSE") {
-          setVoiceError("MaiVideo trả về dữ liệu catalog không đúng định dạng. Hãy tải lại; nếu tiếp tục lỗi, kiểm tra endpoint /api/v1/voices.");
-        } else if (message === "MAIVIDEO_VOICE_CATALOG_UNRECOGNIZED_VOICES") {
-          setVoiceError("MaiVideo có trả về voice nhưng ứng dụng không nhận diện được trường ID, tên hoặc ngôn ngữ.");
-        } else {
-          setVoiceError(`Không tải được danh sách giọng từ MaiVideo: ${message}`);
-        }
-      })
-      .finally(() => { if (!cancelled) setVoiceCatalogLoading(false); });
+        if (!cancelled) setVoiceError(cause instanceof Error ? cause.message : "Không lấy được danh sách giọng OmniVoice.");
+      });
     return () => { cancelled = true; };
-  }, [voiceCatalogRetry]);
+  }, []);
 
   useEffect(() => {
-    if (!projectSlug) hydratedExistingSlug.current = null;
-    if (existing && hydratedExistingSlug.current !== existing.slug) {
-      hydratedExistingSlug.current = existing.slug;
+    if (existing) {
       setCustomChunkSize(!PROJECT_CHUNK_SIZE_PRESETS.includes(existing.chunkSize as (typeof PROJECT_CHUNK_SIZE_PRESETS)[number]));
       const catalogVoice = existing.voiceId
         ? voiceCatalog?.voices.find((voice) => voice.id === existing.voiceId)
@@ -365,12 +267,10 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
         ...(presetFromUrl === "ai-drama" ? { mediaSource: "maivideo-video" } : !mediaSourceTouched.current ? { mediaSource: "stock-mixed" } : {}),
       }));
     }
-  }, [existing, voiceCatalog?.voices, fixedPresetId, projectSlug]);
+  }, [existing?.slug, existing?.updatedAt, voiceCatalog, fixedPresetId, projectSlug]);
 
   useEffect(() => {
-    const existingSlug = existing?.slug;
-    const existingMediaGeneration = existing?.mediaGeneration;
-    if (!existingSlug || existingMediaGeneration || !mediaCatalog || mediaGenerationTouched.current) return;
+    if (!existing || existing.mediaGeneration || !mediaCatalog || mediaGenerationTouched.current) return;
     setForm((current) => ({ ...current, mediaGeneration: mediaCatalog.defaults }));
   }, [existing?.slug, existing?.mediaGeneration, mediaCatalog]);
 
@@ -398,11 +298,24 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
 
   function setMediaSettings(patch: Partial<MediaGenerationSettings>) {
     mediaGenerationTouched.current = true;
-    setForm((current) => ({ ...current, mediaGeneration: { ...current.mediaGeneration, ...patch, ...(current.presetId === "ai-drama" ? { videoDurationMode: "scene" as const } : {}) } }));
+    setForm((current) => {
+      const mediaGeneration = {
+        ...current.mediaGeneration,
+        ...patch,
+        ...(current.presetId === "ai-drama" ? { videoDurationMode: "scene" as const } : {}),
+        ...(isFlowStoryOnlyPreset(current.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
+      };
+      if (mediaGeneration.videoProvider === "flow" && mediaGeneration.flowReferenceMode === "frames") mediaGeneration.videoUseSceneImageReference = true;
+      if (isPixverseVideoSettings(mediaGeneration)) {
+        mediaGeneration.videoMultiShot = true;
+        mediaGeneration.videoAudio = true;
+      }
+      return { ...current, mediaGeneration };
+    });
   }
 
   function selectImageModel(imageModel: string, currentQuality: string) {
-    const selected = availableImageModels(mediaCatalog?.imageModels || []).find((item) => item.id === imageModel);
+    const selected = mediaCatalog?.imageModels.find((item) => item.id === imageModel);
     const imageQuality = selected?.qualities.length && !selected.qualities.includes(currentQuality)
       ? selected.qualities[0]
       : currentQuality;
@@ -414,40 +327,49 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
   }
 
   function videoDurationLimit(model: VideoGenerationModelOption | undefined, quality: string) {
-    return Math.min(15, model?.maxDurationByQuality?.[quality] || model?.maxDurationSec || 15);
+    return Math.min(model?.provider === "muse" || model?.provider === "flow" ? 10 : 15, model?.maxDurationByQuality?.[quality] || model?.maxDurationSec || 15);
   }
 
-  function selectVideoModel(videoModel: string) {
-    const selected = mediaCatalog?.videoModels.find((item) => item.id === videoModel && (item.provider || "maivideo") === form.mediaGeneration.videoProvider);
+  function selectVideoModel(videoModelKey: string) {
+    const separator = videoModelKey.indexOf("::");
+    if (separator < 0) return;
+    const videoProvider = videoModelKey.slice(0, separator) as MediaGenerationSettings["videoProvider"];
+    const videoModel = videoModelKey.slice(separator + 2);
+    const selected = mediaCatalog?.videoModels.find((item) => item.id === videoModel && (item.provider || "maivideo") === videoProvider);
     const currentQuality = form.mediaGeneration.videoQuality;
-    const videoQuality = preferredVideoQuality(videoModel, currentQuality, videoQualitiesForModel(selected, currentQuality));
+    const videoQuality = preferredVideoQuality(videoModel, currentQuality, videoQualitiesForModel(selected, currentQuality), selected?.label);
     const maxDuration = videoDurationLimit(selected, videoQuality);
     const videoDurationSec = selected?.supportedDurationsSec?.length
       ? normalizeVideoDuration(form.mediaGeneration.videoDurationSec, selected, videoQuality)
       : Math.min(maxDuration, Math.max(selected?.minDurationSec || 1, form.mediaGeneration.videoDurationSec));
     setMediaSettings({
-      videoProvider: selected?.provider || form.mediaGeneration.videoProvider,
+      videoProvider: selected?.provider || videoProvider,
       videoModel,
       videoQuality,
       videoDurationSec,
+      ...(isPixverseVideoSettings({ videoProvider: selected?.provider || videoProvider, videoModel }) ? { videoMultiShot: true, videoAudio: true } : {}),
       ...(selected?.supportsMultiShot === false ? { videoMultiShot: false } : {}),
+      ...(selected?.supportsAudio === true ? { videoAudio: true } : {}),
+      ...(selected?.supportsAudio === false ? { videoAudio: false } : {}),
       ...(isVideoOffPeakRequired(videoModel, selected?.label) ? { videoOffPeak: true } : selected?.supportsOffPeak === false ? { videoOffPeak: false } : {}),
     });
   }
 
   function selectVideoProvider(videoProvider: MediaGenerationSettings["videoProvider"]) {
-    const models = (mediaCatalog?.videoModels || []).filter((item) => (item.provider || "maivideo") === videoProvider);
+    const models = visibleVideoModels(mediaCatalog?.videoModels || [], videoProvider);
     const currentModel = models.find((item) => item.id === form.mediaGeneration.videoModel);
-    const defaultModelId = videoProvider === "seedance" ? DEFAULT_SEEDANCE_VIDEO_MODEL_ID : DEFAULT_MAIVIDEO_VIDEO_MODEL_ID;
+    const defaultModelId = videoProvider === "seedance" ? DEFAULT_SEEDANCE_VIDEO_MODEL_ID : videoProvider === "higgsfield" ? HIGGSFIELD_SEEDANCE_MODEL_ID : videoProvider === "muse" ? DEFAULT_MUSE_VIDEO_MODEL_ID : videoProvider === "flow" ? DEFAULT_FLOW_VIDEO_MODEL_ID : DEFAULT_MEDIA_GENERATION_SETTINGS.videoModel;
     const selected = currentModel || models.find((item) => item.id === defaultModelId) || models[0];
     const videoModel = selected?.id || defaultModelId;
-    const videoQuality = preferredVideoQuality(videoModel, form.mediaGeneration.videoQuality, videoQualitiesForModel(selected, form.mediaGeneration.videoQuality));
+    const videoQuality = preferredVideoQuality(videoModel, form.mediaGeneration.videoQuality, videoQualitiesForModel(selected, form.mediaGeneration.videoQuality), selected?.label);
     setMediaSettings({
       videoProvider,
       videoModel,
       videoQuality,
       videoDurationSec: normalizeVideoDuration(form.mediaGeneration.videoDurationSec, selected, videoQuality),
+      ...(isPixverseVideoSettings({ videoProvider, videoModel }) ? { videoMultiShot: true, videoAudio: true } : {}),
       ...(selected?.supportsMultiShot === false ? { videoMultiShot: false } : {}),
+      ...(selected?.supportsAudio === true ? { videoAudio: true } : {}),
       ...(selected?.supportsAudio === false ? { videoAudio: false } : {}),
       ...(isVideoOffPeakRequired(videoModel, selected?.label) ? { videoOffPeak: true } : selected?.supportsOffPeak === false ? { videoOffPeak: false } : {}),
     });
@@ -487,6 +409,7 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
   }
 
   function selectScriptEntryMode(mode: ScriptEntryMode) {
+    if (fixedPresetId === "ai-drama" && mode !== "ai") return;
     setError("");
     setScriptEntryMode(mode);
     if (mode === "ai" || mode === "manual") selectScriptMode(mode);
@@ -708,7 +631,7 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
       setError("Hãy ghi rõ thời đại hoặc địa điểm lịch sử để AI giữ đúng bối cảnh.");
       return;
     }
-    const creatingAiDrama = !projectSlug && scriptEntryMode === "ai" && selectedPresetId === "ai-drama";
+    const creatingAiDrama = !projectSlug && currentScriptEntryMode === "ai" && selectedPresetId === "ai-drama";
     if (creatingAiDrama && !form.sourceText.trim() && !form.sourceUrl.trim()) {
       setError("Hãy tạo kịch bản nguồn AI Drama hoặc nhập nội dung nguồn trước khi tạo project.");
       return;
@@ -717,7 +640,7 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
       setError("Thông tin project đã đổi sau khi AI viết kịch bản. Hãy viết lại để tên tập và thời lượng khớp project.");
       return;
     }
-    const importsJson = Boolean(pendingScriptImport || (!projectSlug && scriptEntryMode === "json"));
+    const importsJson = Boolean(pendingScriptImport || (!projectSlug && currentScriptEntryMode === "json"));
     if (importsJson && !validateScriptJsonInput()) return;
     setError("");
     setSaving(true);
@@ -735,15 +658,17 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
       const selectedVideo = mediaCatalog?.videoModels.find((item) => item.id === form.mediaGeneration.videoModel && (item.provider || "maivideo") === form.mediaGeneration.videoProvider);
       const mediaGeneration = {
         ...form.mediaGeneration,
+        flowReferenceMode: isFlowStoryOnlyPreset(selectedPresetId) ? "ingredients" as const : form.mediaGeneration.flowReferenceMode,
         ...(selectedVideo?.supportsMultiShot === false ? { videoMultiShot: false } : {}),
         ...(isVideoOffPeakRequired(selectedVideo?.id, selectedVideo?.label) ? { videoOffPeak: true } : selectedVideo?.supportsOffPeak === false ? { videoOffPeak: false } : {}),
         videoDurationSec: normalizeVideoDuration(form.mediaGeneration.videoDurationSec, selectedVideo, form.mediaGeneration.videoQuality),
       };
       const payload = {
         ...form,
+        scriptMode: currentScriptEntryMode === "manual" ? "manual" as const : "ai" as const,
         mediaGeneration: { ...mediaGeneration, ...(selectedPresetId === "ai-drama" ? { videoDurationMode: "scene" as const } : {}) },
         ...(creatingAiDrama && dramaPlan ? { dramaPlan } : {}),
-        ...(scriptEntryMode === "json" && !projectSlug ? { deferSourceIngest: true } : {}),
+        ...(currentScriptEntryMode === "json" && !projectSlug ? { deferSourceIngest: true } : {}),
       };
       if (projectSlug && existing) {
         if (existing.presetId === "ai-drama" && selectedPresetId === "ai-drama") {
@@ -755,7 +680,7 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
         window.location.href = `/projects/${projectSlug}`;
       } else {
         const project = await createProject({ ...payload, presetId: selectedPresetId, mediaSource: selectedPresetId === "ai-drama" ? "maivideo-video" : form.mediaSource }, selectedPresetId);
-        if (scriptEntryMode === "json") {
+        if (currentScriptEntryMode === "json") {
           try {
             await importJsonIntoProject(project, scriptJsonText);
             await refresh();
@@ -778,7 +703,6 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
     }
   }
 
-  const currentScriptEntryMode: ScriptEntryMode = projectSlug ? form.scriptMode : scriptEntryMode;
   const manualMetrics = currentScriptEntryMode !== "json" && form.scriptMode === "manual" && form.sourceText.trim()
     ? getManualScriptMetrics({
       text: form.sourceText,
@@ -792,7 +716,7 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
   const totalScenes = manualMetrics?.sceneCount || Math.max(1, Math.ceil(effectiveDurationSeconds / MAX_SCENE_DURATION_SEC));
   const totalChunks = Math.ceil(totalScenes / Math.max(MIN_PROJECT_CHUNK_SIZE, form.chunkSize));
   const hasCustomImageStyle = !IMAGE_STYLE_OPTIONS.includes(form.imageStyle as (typeof IMAGE_STYLE_OPTIONS)[number]);
-  const isNewAiDrama = !projectSlug && scriptEntryMode === "ai" && form.presetId === "ai-drama";
+  const isNewAiDrama = !projectSlug && currentScriptEntryMode === "ai" && form.presetId === "ai-drama";
   const dramaSourceInputs = JSON.stringify({
     title: form.title.trim(),
     brief: dramaIdea.trim(),
@@ -818,31 +742,37 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
     ? imageModelCatalog
     : [{ id: form.mediaGeneration.imageModel, label: `${form.mediaGeneration.imageModel} · cấu hình đã lưu`, qualities: [form.mediaGeneration.imageQuality] }, ...imageModelCatalog];
   const selectedImageModel = imageModelOptions.find((item) => item.id === form.mediaGeneration.imageModel);
+  const museImageSelected = isMuseImageModel(form.mediaGeneration.imageModel);
+  const flowImageSelected = isFlowImageModel(form.mediaGeneration.imageModel);
   const supportedImageQualities = selectedImageModel?.qualities.length ? selectedImageModel.qualities : [form.mediaGeneration.imageQuality || "1440p"];
   const imageQualities = supportedImageQualities.includes(form.mediaGeneration.imageQuality) ? supportedImageQualities : [form.mediaGeneration.imageQuality, ...supportedImageQualities];
   const supportedImageDetailLevels = imageDetailLevelsForModel(selectedImageModel);
-  const availableVideoModels = (mediaCatalog?.videoModels || []).filter((item) => (item.provider || "maivideo") === form.mediaGeneration.videoProvider);
-  const videoModelOptions = availableVideoModels.some((item) => item.id === form.mediaGeneration.videoModel)
+  const availableVideoModels = visibleVideoModels(mediaCatalog?.videoModels || []);
+  const seedanceHiddenSelected = isTemporarilyHiddenSeedanceProvider(form.mediaGeneration.videoProvider);
+  const currentVideoModelInCatalog = availableVideoModels.some((item) => item.id === form.mediaGeneration.videoModel && (item.provider || "maivideo") === form.mediaGeneration.videoProvider);
+  const videoModelOptions = currentVideoModelInCatalog
     ? availableVideoModels
-    : [{ id: form.mediaGeneration.videoModel, label: `${form.mediaGeneration.videoModel} · cấu hình đã lưu`, provider: form.mediaGeneration.videoProvider, qualities: [form.mediaGeneration.videoQuality], minDurationSec: 1, maxDurationSec: 15 }, ...availableVideoModels];
-  const selectedVideoModel = videoModelOptions.find((item) => item.id === form.mediaGeneration.videoModel);
+    : seedanceHiddenSelected ? availableVideoModels
+      : [{ id: form.mediaGeneration.videoModel, label: isTemporarilyHiddenMaiVideoSeedance25({ id: form.mediaGeneration.videoModel, provider: form.mediaGeneration.videoProvider }) ? "Model tạm ẩn" : `${videoModelDisplayName(form.mediaGeneration.videoModel, form.mediaGeneration.videoProvider)} · cấu hình đã lưu`, provider: form.mediaGeneration.videoProvider, qualities: [form.mediaGeneration.videoQuality], minDurationSec: 1, maxDurationSec: 15 }, ...availableVideoModels];
+  const videoModelOptionGroups = [
+    { label: "MaiVideo", models: videoModelOptions.filter((item) => (item.provider || "maivideo") === "maivideo" || item.provider === "higgsfield") },
+    { label: "Muse.ai", models: videoModelOptions.filter((item) => item.provider === "muse") },
+    { label: "Flow", models: videoModelOptions.filter((item) => item.provider === "flow") },
+  ].filter((group) => group.models.length > 0);
+  const selectedVideoModel = videoModelOptions.find((item) => item.id === form.mediaGeneration.videoModel && (item.provider || "maivideo") === form.mediaGeneration.videoProvider);
   const supportedVideoQualities = videoQualitiesForModel(selectedVideoModel, form.mediaGeneration.videoQuality || "720p");
   const videoQualities = supportedVideoQualities.includes(form.mediaGeneration.videoQuality) ? supportedVideoQualities : [form.mediaGeneration.videoQuality, ...supportedVideoQualities];
   const videoMinDuration = selectedVideoModel?.minDurationSec || 1;
   const videoMaxDuration = videoDurationLimit(selectedVideoModel, form.mediaGeneration.videoQuality);
   const videoDurationChoices = videoDurationOptions(selectedVideoModel, form.mediaGeneration.videoQuality);
-  const seedanceSelected = form.mediaGeneration.videoProvider === "seedance" || Boolean(selectedVideoModel?.supportedDurationsSec?.length);
+  const seedanceSelected = form.mediaGeneration.videoProvider === "seedance";
+  const higgsfieldSelected = form.mediaGeneration.videoProvider === "higgsfield";
+  const museSelected = form.mediaGeneration.videoProvider === "muse";
+  const flowSelected = form.mediaGeneration.videoProvider === "flow";
+  const providerAccountSelected = seedanceSelected && !seedanceHiddenSelected || museSelected || flowSelected;
+  const mediaAccountSelected = seedanceSelected && !seedanceHiddenSelected;
+  const pixverseVideoSelected = isPixverseVideoSettings(form.mediaGeneration);
   const videoOffPeakRequired = form.mediaGeneration.videoProvider === "maivideo" && isVideoOffPeakRequired(selectedVideoModel?.id, selectedVideoModel?.label);
-  const aspectRatioOptions = projectAspectRatioOptions(selectedImageModel, form.mediaGeneration.imageQuality, selectedVideoModel);
-  const aspectRatioOptionsKey = aspectRatioOptions.join("|");
-
-  useEffect(() => {
-    const availableAspectRatios = aspectRatioOptionsKey.split("|").filter(Boolean);
-    if (availableAspectRatios.includes(form.aspectRatio)) return;
-    setForm((current) => current.aspectRatio === form.aspectRatio
-      ? { ...current, aspectRatio: availableAspectRatios[0] || "16:9" }
-      : current);
-  }, [aspectRatioOptionsKey, form.aspectRatio]);
 
   function continueToProject(setupCharacters: boolean) {
     if (!characterSetupPrompt) return;
@@ -901,14 +831,16 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
               </label>
               <label htmlFor="project-script-mode" className="form-field full">
                 <span>Cách nhập kịch bản</span>
-                <select id="project-script-mode" value={projectSlug ? form.scriptMode : scriptEntryMode} onChange={(event) => selectScriptEntryMode(event.target.value as ScriptEntryMode)} disabled={Boolean(pendingScriptImport)}>
+                <select id="project-script-mode" value={currentScriptEntryMode} onChange={(event) => selectScriptEntryMode(event.target.value as ScriptEntryMode)} disabled={Boolean(pendingScriptImport) || fixedPresetId === "ai-drama"}>
                   <option value="ai">{form.presetId === "ai-drama" ? "AI viết kịch bản nguồn từ ý tưởng" : "AI tạo kịch bản từ nguồn"}</option>
-                  {!isFixedAiDramaCreation && <option value="manual">Tôi tự nhập kịch bản</option>}
-                  {!projectSlug && !isFixedAiDramaCreation && <option value="json">Nhập JSON từ GPT</option>}
+                  {fixedPresetId !== "ai-drama" && <option value="manual">Tôi tự nhập kịch bản</option>}
+                  {!projectSlug && fixedPresetId !== "ai-drama" && <option value="json">Nhập JSON từ GPT</option>}
                 </select>
-                {currentScriptEntryMode === "json"
+                {fixedPresetId === "ai-drama"
+                  ? <small className="field-help">Luồng AI Drama dùng ý tưởng để tạo kịch bản nguồn; bạn có thể xem và chỉnh sửa nội dung ở phần bên dưới.</small>
+                  : currentScriptEntryMode === "json"
                   ? <small className="field-help">Dán JSON hoặc nạp file; nội dung này là nguồn kịch bản chính của project.</small>
-                  : <small className="field-help">Chế độ thủ công giữ nguyên từng chữ khi chạy chunk. Sau khi lưu project, Short Drama Studio có thể phân tích và đưa gợi ý riêng; không tự ghi đè bản gốc.</small>}
+                  : <small className="field-help">Chế độ thủ công giữ nguyên nội dung đã nhập. Sau khi lưu project, Short Drama Studio có thể phân tích và đưa gợi ý riêng; không tự ghi đè bản gốc.</small>}
               </label>
               {currentScriptEntryMode === "json" ? <div className="form-field full">
                 <span>JSON kịch bản</span>
@@ -939,7 +871,7 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
                 </div>
                 {scriptJsonSummary
                   ? <small className="field-help">{scriptJsonSummary.schema} · {scriptJsonSummary.episodeCount} tập · {scriptJsonSummary.sceneCount} cảnh</small>
-                  : <small className="field-help">Hỗ trợ scene-script.v1 (một tập) và scene-series.v1 (nhiều tập). Kiểm tra JSON trước khi tạo project.</small>}
+                  : <small className="field-help">Mỗi lần chỉ nhập một tập theo schema scene-script.v1. Các tập tiếp theo cần nhập lần lượt trong project.</small>}
               </div> : isNewAiDrama ? <div className="form-field full drama-source-composer">
                 <label htmlFor="project-drama-idea" className="form-field">
                   <span>Ý tưởng / đề bài sáng tác</span>
@@ -1018,12 +950,12 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
                       {imageModelOptions.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
                     </select>
                   </label>
-                  <label htmlFor="project-image-quality" className="form-field">
+                  {!museImageSelected && !flowImageSelected && <label htmlFor="project-image-quality" className="form-field">
                     <span>Độ phân giải ảnh</span>
                     <select id="project-image-quality" value={form.mediaGeneration.imageQuality} onChange={(event) => setMediaSettings({ imageQuality: event.target.value })}>
                       {imageQualities.map((quality) => <option key={quality} value={quality}>{quality}{!supportedImageQualities.includes(quality) ? " · cấu hình đã lưu" : ""}</option>)}
                     </select>
-                  </label>
+                  </label>}
                   {supportedImageDetailLevels.length > 0 && <label htmlFor="project-image-detail-level" className="form-field">
                     <span>Detail level</span>
                     <select id="project-image-detail-level" value={form.mediaGeneration.imageDetailLevel} onChange={(event) => setMediaSettings({ imageDetailLevel: event.target.value as MediaGenerationSettings["imageDetailLevel"] })}>
@@ -1037,29 +969,52 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
                     </label>
                   </div>
                 </div>
-                {(mediaCatalog?.imageError || mediaCatalogError) && <small className="field-help media-generation-help">Catalog ảnh không tải được. Kiểm tra API key MaiVideo.</small>}
+                {!museImageSelected && !flowImageSelected && (mediaCatalog?.imageError || mediaCatalogError) && <small className="field-help media-generation-help">Catalog ảnh không tải được. Kiểm tra API key MaiVideo.</small>}
               </section>
 
               <section className="media-generation-group" aria-labelledby="video-generation-settings-title">
-                <div className="media-generation-group-heading"><span className="media-generation-icon video"><Icon name="play" size={15} /></span><div><strong id="video-generation-settings-title">Tạo video</strong></div>{projectSlug && <Link className="seedance-connect-link" href="/settings#dola-gateway">Quản lý Dola Gateway</Link>}</div>
+                <div className="media-generation-group-heading"><span className="media-generation-icon video"><Icon name="play" size={15} /></span><div><strong id="video-generation-settings-title">Tạo video</strong></div><Link className="seedance-connect-link" href="/settings#seedance-login">Quản lý API video</Link></div>
                 <div className="form-grid">
                   <label htmlFor="project-video-provider" className="form-field">
                     <span>Hệ thống tạo video</span>
-                    <select id="project-video-provider" value={form.mediaGeneration.videoProvider} onChange={(event) => selectVideoProvider(event.target.value as MediaGenerationSettings["videoProvider"])}>
-                      <option value="maivideo">MaiVideo API</option>
-                      <option value="seedance">Seedance · Dola.com local</option>
+                    <select id="project-video-provider" value={seedanceHiddenSelected ? "__hidden_seedance__" : form.mediaGeneration.videoProvider === "higgsfield" ? "maivideo" : form.mediaGeneration.videoProvider} onChange={(event) => selectVideoProvider(event.target.value as MediaGenerationSettings["videoProvider"])}>
+                      {seedanceHiddenSelected && <option value="__hidden_seedance__" disabled>Seedance trực tiếp · tạm ẩn</option>}
+                      <option value="maivideo">MaiVideo</option>
+                      <option value="muse">Muse.ai · Seedance Gateway</option>
+                      <option value="flow">Flow · Seedance Gateway</option>
                     </select>
                   </label>
                   <label htmlFor="project-video-model" className="form-field">
                     <span>Model video</span>
-                    <select id="project-video-model" value={form.mediaGeneration.videoModel} onChange={(event) => selectVideoModel(event.target.value)}>
-                      {videoModelOptions.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
+                    <select id="project-video-model" value={seedanceHiddenSelected ? "__hidden_seedance__" : `${form.mediaGeneration.videoProvider}::${form.mediaGeneration.videoModel}`} onChange={(event) => selectVideoModel(event.target.value)}>
+                      {seedanceHiddenSelected && <option value="__hidden_seedance__" disabled>Model Seedance trực tiếp · tạm ẩn</option>}
+                      {videoModelOptionGroups.map((group) => <optgroup key={group.label} label={group.label}>
+                        {group.models.map((model) => <option key={`${model.provider || "maivideo"}::${model.id}`} value={`${model.provider || "maivideo"}::${model.id}`}>{model.label}</option>)}
+                      </optgroup>)}
                     </select>
                   </label>
+                  {seedanceHiddenSelected && <small className="field-help full">Seedance trực tiếp từ seedance.maivideo.top đang tạm ẩn. Chọn MaiVideo, Muse.ai hoặc Flow để tiếp tục.</small>}
+                  {higgsfieldSelected && <small className="field-help full">Dùng phiên đăng nhập MaiVideo hiện tại · prompt tối đa 10.000 ký tự · video 720p, 5/10/15 giây.</small>}
+                  {(flowSelected || flowImageSelected || museSelected || museImageSelected) && <small className="field-help full">Flow và Muse dùng API key Seedance mặc định đã ghép với phiên MaiVideo đang đăng nhập.</small>}
+                  {mediaAccountSelected && <label htmlFor="project-seedance-account" className="form-field full">
+                    <span>{flowSelected || flowImageSelected ? "API key Seedance · Flow" : museSelected || museImageSelected ? "API key Seedance · Muse.ai" : "Tài khoản Seedance"}</span>
+                    <select id="project-seedance-account" value={form.mediaGeneration.seedanceAccountId === defaultSeedanceAccountId ? "" : form.mediaGeneration.seedanceAccountId || ""} onChange={(event) => setMediaSettings({ seedanceAccountId: event.target.value })}>
+                      <option value="">Mặc định{seedanceAccounts.find((account) => account.id === defaultSeedanceAccountId) ? ` · ${seedanceAccounts.find((account) => account.id === defaultSeedanceAccountId)?.name}` : " · chưa kết nối"}</option>
+                      {seedanceAccounts.filter((account) => account.id !== defaultSeedanceAccountId).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
+                    </select>
+                    {!seedanceAccounts.length && <small className="field-help"><Link href="/settings#seedance-login">Kết nối API key Seedance trong Cài đặt</Link></small>}
+                  </label>}
+                  {seedanceSelected && !seedanceHiddenSelected && <label htmlFor="project-seedance-chat-mode" className="form-field">
+                    <span>Chế độ chat Seedance</span>
+                    <select id="project-seedance-chat-mode" value={form.mediaGeneration.seedanceChatMode} onChange={(event) => setMediaSettings({ seedanceChatMode: event.target.value === "Pro" ? "Pro" : "Fast" })}>
+                      <option value="Fast">Fast · mặc định</option>
+                      <option value="Pro">Pro</option>
+                    </select>
+                  </label>}
                   <label htmlFor="project-video-quality" className="form-field">
                     <span>Chất lượng video</span>
-                    {seedanceSelected
-                      ? <select id="project-video-quality" value="profile" disabled><option value="profile">Theo profile Dola</option></select>
+                    {providerAccountSelected
+                      ? <select id="project-video-quality" value="profile" disabled><option value="profile">{flowSelected ? "1080p · cố định" : museSelected ? "Theo profile Muse.ai" : "Theo profile Seedance"}</option></select>
                       : <select id="project-video-quality" value={form.mediaGeneration.videoQuality} onChange={(event) => selectVideoQuality(event.target.value)}>
                         {videoQualities.map((quality) => <option key={quality} value={quality}>{quality}{!supportedVideoQualities.includes(quality) ? " · cấu hình đã lưu" : ""}</option>)}
                       </select>}
@@ -1070,32 +1025,42 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
                       <option value="scene">Theo độ dài từng cảnh</option>
                       {form.presetId !== "ai-drama" && <option value="fixed">Cố định cho mọi cảnh</option>}
                     </select>
-                    {form.presetId === "ai-drama" && <small className="field-help">AI Drama luôn tạo clip theo từng cảnh 5/10/15 giây.</small>}
+                    {form.presetId === "ai-drama" && <small className="field-help">{museSelected ? "Muse.ai chỉ nhận clip 5 hoặc 10 giây; cảnh dài hơn dùng tối đa 10 giây." : flowSelected ? "Flow nhận clip 6, 8 hoặc 10 giây; thời lượng cảnh được làm tròn lên mốc phù hợp, tối đa 10 giây." : "AI Drama luôn tạo clip theo từng cảnh 5/10/15 giây."}</small>}
                     {form.mediaGeneration.videoDurationMode === "fixed"
-                      ? seedanceSelected
+                      ? providerAccountSelected
                         ? <select id="project-video-duration-seconds" value={form.mediaGeneration.videoDurationSec} onChange={(event) => setMediaSettings({ videoDurationSec: Number(event.target.value) })}>{videoDurationChoices.map((seconds) => <option key={seconds} value={seconds}>{seconds} giây</option>)}</select>
                         : <input id="project-video-duration-seconds" type="number" min={videoMinDuration} max={videoMaxDuration} step={1} value={form.mediaGeneration.videoDurationSec} onChange={(event) => setMediaSettings({ videoDurationSec: Number(event.target.value) })} />
-                      : <small className="field-help">{seedanceSelected ? "Tự chọn 5/10/15s theo cảnh." : `Theo cảnh · tối đa ${videoMaxDuration}s.`}</small>}
+                      : <small className="field-help">{providerAccountSelected ? `Tự chọn thời lượng hợp lệ theo cảnh${museSelected ? " (5/10s)" : flowSelected ? " (6/8/10s)" : " (5/10/15s)"}.` : `Theo cảnh · tối đa ${videoMaxDuration}s.`}</small>}
                   </label>
+                  {flowSelected && <label htmlFor="project-flow-reference-mode" className="form-field">
+                    <span>Tham chiếu video Flow</span>
+                    {isFlowStoryOnlyPreset(form.presetId)
+                      ? <select id="project-flow-reference-mode" value="ingredients" disabled><option value="ingredients">Ingredients / References · Story</option></select>
+                      : <select id="project-flow-reference-mode" value={form.mediaGeneration.flowReferenceMode} onChange={(event) => setMediaSettings({ flowReferenceMode: event.target.value === "frames" ? "frames" : "ingredients" })}>
+                        <option value="ingredients">Ingredients / References</option>
+                        <option value="frames">Frames · khung đầu và khung cuối</option>
+                      </select>}
+                    <small className="field-help">{isFlowStoryOnlyPreset(form.presetId) ? "Chế độ Story chỉ gửi ảnh Ingredients/References." : form.mediaGeneration.flowReferenceMode === "frames" ? "Frames cần ảnh cảnh đầu và chọn đúng một ảnh cảnh cuối cho từng cảnh." : "Gửi tối đa 10 ảnh hồ sơ/cảnh theo thứ tự tham chiếu."}</small>
+                  </label>}
                   <div className="media-generation-toggles video-generation-reference">
                     <label className="media-generation-toggle">
-                      <input type="checkbox" checked={form.mediaGeneration.videoUseCharacterReferences} onChange={(event) => setMediaSettings({ videoUseCharacterReferences: event.target.checked })} />
-                      <span><strong>Ảnh nhân vật cho video</strong></span>
+                      <input type="checkbox" checked={form.mediaGeneration.videoUseCharacterReferences} disabled={flowSelected && form.mediaGeneration.flowReferenceMode === "frames"} onChange={(event) => setMediaSettings({ videoUseCharacterReferences: event.target.checked })} />
+                      <span><strong>Ảnh nhân vật cho video</strong>{flowSelected && form.mediaGeneration.flowReferenceMode === "frames" && <small>Chỉ dùng ở Ingredients/References</small>}</span>
                     </label>
                   </div>
                 </div>
-                {(mediaCatalog?.videoError || mediaCatalogError) && !seedanceSelected && <small className="field-help media-generation-help">Catalog video không tải được. Kiểm tra API key MaiVideo.</small>}
+                {(mediaCatalog?.videoError || mediaCatalogError) && form.mediaGeneration.videoProvider === "maivideo" && <small className="field-help media-generation-help">Catalog video không tải được. Kiểm tra API key MaiVideo.</small>}
               </section>
-              {!seedanceSelected && <section className="media-generation-group media-generation-options" aria-labelledby="video-options-title">
+              {!providerAccountSelected && <section className="media-generation-group media-generation-options" aria-labelledby="video-options-title">
                 <div className="media-generation-group-heading"><div><strong id="video-options-title">Tùy chọn model video</strong></div></div>
                 <div className="media-generation-toggles">
                   <label className="media-generation-toggle">
-                    <input type="checkbox" checked={selectedVideoModel?.supportsMultiShot === false ? false : form.mediaGeneration.videoMultiShot} disabled={selectedVideoModel?.supportsMultiShot === false} onChange={(event) => setMediaSettings({ videoMultiShot: event.target.checked })} />
-                    <span><strong>Multi-shot</strong>{selectedVideoModel?.supportsMultiShot === false && <small>Model không hỗ trợ</small>}</span>
+                    <input type="checkbox" checked={pixverseVideoSelected ? true : selectedVideoModel?.supportsMultiShot === false ? false : form.mediaGeneration.videoMultiShot} disabled={pixverseVideoSelected || selectedVideoModel?.supportsMultiShot === false} onChange={(event) => setMediaSettings({ videoMultiShot: event.target.checked })} />
+                    <span><strong>Multi-shot</strong>{pixverseVideoSelected && <small>Luôn bật với PixVerse</small>}{!pixverseVideoSelected && selectedVideoModel?.supportsMultiShot === false && <small>Model không hỗ trợ</small>}</span>
                   </label>
                   <label className="media-generation-toggle">
-                    <input type="checkbox" checked={selectedVideoModel?.supportsAudio === false ? false : form.mediaGeneration.videoAudio} disabled={selectedVideoModel?.supportsAudio === false} onChange={(event) => setMediaSettings({ videoAudio: event.target.checked })} />
-                    <span><strong>Âm thanh từ model</strong>{selectedVideoModel?.supportsAudio === false && <small>Model không hỗ trợ</small>}</span>
+                    <input type="checkbox" checked={pixverseVideoSelected ? true : selectedVideoModel?.supportsAudio === false ? false : form.mediaGeneration.videoAudio} disabled={pixverseVideoSelected || selectedVideoModel?.supportsAudio === false} onChange={(event) => setMediaSettings({ videoAudio: event.target.checked })} />
+                    <span><strong>Âm thanh từ model</strong>{pixverseVideoSelected && <small>Luôn bật với PixVerse</small>}{!pixverseVideoSelected && selectedVideoModel?.supportsAudio === false && <small>Model không hỗ trợ</small>}</span>
                   </label>
                   <label className="media-generation-toggle">
                     <input type="checkbox" checked={videoOffPeakRequired || (selectedVideoModel?.supportsOffPeak === false ? false : form.mediaGeneration.videoOffPeak)} disabled={videoOffPeakRequired || selectedVideoModel?.supportsOffPeak === false} onChange={(event) => setMediaSettings({ videoOffPeak: event.target.checked })} />
@@ -1137,16 +1102,17 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
               <label htmlFor="project-voice" className="form-field">
                 <span>Giọng đọc OmniVoice</span>
                 <select id="project-voice" value={form.voiceId} onChange={(event) => selectVoice(event.target.value)} disabled={!visibleVoiceChoices.length}>
-                  <option value="">{voiceCatalogLoading ? "Đang tải giọng từ MaiVideo…" : visibleVoiceChoices.length ? "Chọn giọng từ MaiVideo" : "Chưa có giọng OmniVoice khả dụng"}</option>
+                  <option value="">OmniVoice mặc định</option>
                   {visibleVoiceChoices.map((voice: OmniVoiceOption) => <option key={voice.id} value={voice.id}>{voice.name} · {voiceLanguageLabel(voice.language)}{voice.gender ? ` · ${voice.gender}` : ""}</option>)}
                 </select>
-                {voiceCatalogLoading && <small className="field-help">Đang tải thư viện voice từ MaiVideo…</small>}
+                {voiceError && <small className="field-help">Không kết nối MaiVideo; sẽ dùng giọng mặc định.</small>}
               </label>
-              {voiceError && <div className="voice-catalog-error" role="status"><small className="field-help">{voiceError}</small><button className="secondary-button compact" type="button" onClick={() => setVoiceCatalogRetry((attempt) => attempt + 1)} disabled={voiceCatalogLoading}><Icon name="refresh" size={13} />Thử tải lại</button></div>}
               <label htmlFor="project-aspect" className="form-field">
                 <span>Khung hình</span>
                 <select id="project-aspect" value={form.aspectRatio} onChange={(event) => setField("aspectRatio", event.target.value)}>
-                  {aspectRatioOptions.map((ratio) => <option key={ratio} value={ratio}>{ASPECT_RATIO_LABELS[ratio] || ratio}</option>)}
+                  <option value="16:9">16:9 · YouTube</option>
+                  <option value="9:16">9:16 · Shorts</option>
+                  <option value="1:1">1:1 · Social</option>
                 </select>
               </label>
               <label htmlFor="project-content-genre" className="form-field">
@@ -1263,15 +1229,15 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
         <span>{currentScriptEntryMode === "json"
           ? scriptJsonSummary
             ? <>Project sẽ nhập <strong>{scriptJsonSummary.episodeCount} tập</strong> · <strong>{scriptJsonSummary.sceneCount} cảnh</strong> từ {scriptJsonSummary.schema}.</>
-            : "Chọn file scene-script.v1 hoặc scene-series.v1 để xem số tập và cảnh trước khi tạo project."
-          : <>Project sẽ tạo <strong>{totalScenes} cảnh</strong> trong <strong>{totalChunks} chunk</strong>, sau đó bạn có thể chạy từng chunk từ màn hình sử dụng.</>}</span>
+            : "Chọn JSON scene-script.v1 của một tập để xem số cảnh trước khi tạo project."
+          : <>Project sẽ tạo <strong>{totalScenes} cảnh</strong> trong <strong>{totalChunks} tập</strong>. Sau khi tạo, hãy nhập JSON riêng cho từng tập.</>}</span>
       </div>
 
       {characterSetupPrompt && <div className="character-setup-backdrop">
         <section className="character-setup-dialog" role="dialog" aria-modal="true" aria-labelledby="character-setup-title" aria-describedby="character-setup-description">
           <span className="character-setup-icon"><Icon name="users" size={22} /></span>
           <div className="section-kicker">PROJECT READY</div>
-          <h2 id="character-setup-title">{projectCreatedFromJson ? "Kịch bản đã nhập. Tạo hồ sơ nhân vật?" : "Tạo nhân vật trước khi chạy kịch bản?"}</h2>
+          <h2 id="character-setup-title">{projectCreatedFromJson ? "Kịch bản đã nhập. Tạo hồ sơ nhân vật?" : "Tạo hồ sơ nhân vật cho project?"}</h2>
           <p id="character-setup-description">{projectCreatedFromJson ? "Hồ sơ nhân vật giúp giữ diện mạo nhất quán khi tạo ảnh và video cho các cảnh. Bạn có thể thêm ảnh tham chiếu ngay bây giờ hoặc bổ sung sau trong project." : "Hồ sơ nhân vật giúp giữ diện mạo nhất quán giữa các cảnh. Bạn có thể thêm ảnh tham chiếu và mô tả nhận diện ngay bây giờ, hoặc bổ sung sau trong project."}</p>
           <div className="character-setup-project"><Icon name="folder" size={15} />{characterSetupPrompt.title}</div>
           <div className="character-setup-actions">

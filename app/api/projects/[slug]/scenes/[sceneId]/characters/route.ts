@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import type { MediaGenerationSettings } from "../../../../../../lib/project-types";
 import { chunkForScene, findProjectScene } from "../../../../../../lib/scene-store";
-import { resolveMediaGenerationSettings, SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES, shouldUseVideoLocationReference } from "../../../../../../lib/media-generation-settings";
+import { isFlowImageModel, isMuseImageModel, resolveMediaGenerationSettings, SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES, shouldUseVideoLocationReference } from "../../../../../../lib/media-generation-settings";
 import { getProjectOrThrow, makeActivity, markRenderStale, now, readChunkOutput, readData, saveChunkOutput, updateData } from "../../../../../../lib/server-store";
 import { resolveProjectSceneVoice } from "../../../../../../lib/project-tts-voice";
+import { isFlowStoryOnlyPreset } from "../../../../../../lib/story-presets";
 import { sceneReferenceCharacterIds, sceneReferenceLocationId, type SceneReferenceKind } from "../../../../../../lib/scene-reference-assignments";
 
 export const runtime = "nodejs";
@@ -46,21 +47,28 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   const videoReferenceIds = sceneReferenceCharacterIds(assignmentsForValidation, "video");
   const videoReferenceLocationId = sceneReferenceLocationId(assignmentsForValidation, "video");
   const sceneSettings = asRecord(scene.mediaGeneration || scene.media_generation) as Partial<MediaGenerationSettings> | null;
-  const settings = resolveMediaGenerationSettings({ ...project.mediaGeneration, ...sceneSettings });
+  const settings = resolveMediaGenerationSettings({
+    ...project.mediaGeneration,
+    ...sceneSettings,
+    ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
+  });
   const model = settings.videoModel.toLowerCase();
   const configuredLimit = Number(process.env.MAIVIDEO_VIDEO_MAX_REFERENCE_IMAGES);
-  const modelLimit = settings.videoProvider === "seedance" ? SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES : 7;
+  const modelLimit = settings.videoProvider === "flow" ? 10 : settings.videoProvider === "seedance" || settings.videoProvider === "muse" ? SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES : settings.videoProvider === "higgsfield" ? 9 : 7;
   const referenceLimit = Number.isInteger(configuredLimit) && configuredLimit > 0
     ? Math.min(modelLimit, configuredLimit)
     : modelLimit;
-  const videoReferenceCount = Number(settings.videoUseSceneImageReference)
-    + (settings.videoUseCharacterReferences ? videoReferenceIds.length : 0)
-    + (shouldUseVideoLocationReference(settings, project.presetId === "ai-drama") && videoReferenceLocationId ? 1 : 0);
+  const videoReferenceCount = settings.videoProvider === "flow" && settings.flowReferenceMode === "frames"
+    ? 2
+    : Number(settings.videoUseSceneImageReference)
+      + (settings.videoUseCharacterReferences ? videoReferenceIds.length : 0)
+      + (shouldUseVideoLocationReference(settings, project.presetId === "ai-drama") && videoReferenceLocationId ? 1 : 0);
   if (referencesChanged && (referenceKind === "video" || !referenceKind) && videoReferenceCount > referenceLimit) {
     return NextResponse.json({ message: `Model ${model} nhận tối đa ${referenceLimit} ảnh tham chiếu mỗi cảnh; hiện đang chọn ${videoReferenceCount} ảnh.` }, { status: 400 });
   }
   const configuredImageLimit = Number(process.env.MAIVIDEO_IMAGE_MAX_REFERENCE_IMAGES);
-  const imageReferenceLimit = Number.isInteger(configuredImageLimit) && configuredImageLimit > 0 ? Math.min(9, configuredImageLimit) : 9;
+  const imageModelLimit = isFlowImageModel(settings.imageModel) || isMuseImageModel(settings.imageModel) ? 30 : 9;
+  const imageReferenceLimit = Number.isInteger(configuredImageLimit) && configuredImageLimit > 0 ? Math.min(imageModelLimit, configuredImageLimit) : imageModelLimit;
   const imageReferenceCount = (settings.imageUseCharacterReferences ? imageReferenceIds.length : 0) + Number(Boolean(imageReferenceLocationId));
   if (referencesChanged && (referenceKind === "image" || !referenceKind) && imageReferenceCount > imageReferenceLimit) {
     return NextResponse.json({ message: `Model ảnh nhận tối đa ${imageReferenceLimit} ảnh tham chiếu; cần chừa 1 ảnh nếu cảnh có bối cảnh.` }, { status: 400 });

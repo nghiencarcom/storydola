@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { buildProceduralOverlayFilter, buildRandomPanZoomFilter, DEFAULT_RENDER_SETTINGS, normalizeRenderSettings } from "./render-effects";
-import { estimateDialogueDurationMs, hasExplicitDialogueSegments, readDialogueSegments } from "./dialogue-segments";
+import { estimateDialogueDurationMs, hasExplicitDialogueSegments, isTemplateDialogueText, readDialogueSegments } from "./dialogue-segments";
 import { resolveProjectDialogueVoice } from "./project-tts-voice";
 import { normalizeAiDramaSceneDuration } from "./ai-drama-scene-timing";
 import type { RenderSettings, StoryProject } from "./project-types";
@@ -178,12 +178,7 @@ async function existingDataFile(localPath: string | undefined) {
 }
 
 function ffprobePath() {
-  const configuredPath = process.env.STORYAI_FFPROBE_PATH || process.env.VIBE_FFPROBE_PATH;
-  if (configuredPath && existsSync(configuredPath)) return configuredPath;
-
-  const bundledPath = path.join(process.cwd(), "ffprobe.exe");
-  if (process.platform === "win32" && existsSync(bundledPath)) return bundledPath;
-  return "ffprobe";
+  return process.env.STORYAI_FFPROBE_PATH || process.env.VIBE_FFPROBE_PATH || "ffprobe";
 }
 
 function hasAudioStream(filePath: string) {
@@ -312,7 +307,8 @@ export async function buildRenderManifest(project: StoryProject, scenes?: Stored
       ? await existingDataFile(localAudioPath(scene))
       : undefined;
     let audioCues: RenderManifestAudioCue[] | undefined;
-    let voiceover = textValue(record, "dialogue_or_voiceover", "voiceText", "voiceover");
+    const rawVoiceover = textValue(record, "dialogue_or_voiceover", "voiceText", "voiceover");
+    let voiceover = isTemplateDialogueText(rawVoiceover) ? "" : rawVoiceover;
     if (project.presetId === "ai-drama" && hasExplicitDialogueSegments(record)) {
       audioPath = undefined;
       const dialogueSegments = readDialogueSegments(record, project.characters || []);
@@ -450,12 +446,7 @@ async function createDialogueMix(ffmpeg: string, scene: RenderManifestScene, tem
 }
 
 function ffmpegPath() {
-  const configuredPath = process.env.STORYAI_FFMPEG_PATH || process.env.VIBE_FFMPEG_PATH;
-  if (configuredPath && existsSync(configuredPath)) return configuredPath;
-
-  const bundledPath = path.join(process.cwd(), "ffmpeg.exe");
-  if (process.platform === "win32" && existsSync(bundledPath)) return bundledPath;
-  return "ffmpeg";
+  return process.env.STORYAI_FFMPEG_PATH || process.env.VIBE_FFMPEG_PATH || "ffmpeg";
 }
 
 function escapeConcatPath(value: string) {

@@ -22,8 +22,9 @@ function assignedLocationId(scene: SceneRecord) {
   return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
-function referenceIsCurrent(reference: Record<string, unknown> | undefined, characterIds: string[], locationId: string) {
-  if (!reference?.localPath || reference.stale === true || !String(reference.provider || "").startsWith("maivideo-image")) return false;
+function referenceIsCurrent(reference: Record<string, unknown> | undefined, characterIds: string[], locationId: string, imageModel: string) {
+  if (!reference?.localPath || reference.stale === true || !(String(reference.provider || "").startsWith("maivideo-image") || String(reference.provider || "").startsWith("muse-image") || String(reference.provider || "").startsWith("flow-image"))) return false;
+  if (reference.model && reference.model !== imageModel) return false;
   const savedCharacterIds = Array.isArray(reference.referenceCharacterIds) ? reference.referenceCharacterIds.map((id) => String(id)) : [];
   const savedLocationId = typeof reference.referenceLocationId === "string" ? reference.referenceLocationId : "";
   return savedCharacterIds.length === characterIds.length
@@ -65,7 +66,7 @@ export async function ensureSceneReferenceFrame({
   const currentImageMedia = asRecord(scene.media);
   const existing = sceneReferenceImage(scene);
   const reference = savedReference || existing || (currentImageMedia?.kind === "image" ? currentImageMedia : undefined);
-  if (reference?.kind === "image" && reference.status === "ready" && referenceIsCurrent(reference, ids, locationId) && await referenceFileIsAvailable(projectSlug, reference)) {
+  if (reference?.kind === "image" && reference.status === "ready" && referenceIsCurrent(reference, ids, locationId, settings.imageModel) && await referenceFileIsAvailable(projectSlug, reference)) {
     const media = reference as unknown as SceneMediaAsset;
     if (!savedReference) {
       const saved = await saveGeneratedSceneReferenceImage({ projectSlug, sceneId: scene.id, media, mediaGeneration: settings });

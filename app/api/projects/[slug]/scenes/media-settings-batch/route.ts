@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { MediaGenerationSettings } from "../../../../../lib/project-types";
 import { resolveMediaGenerationSettings } from "../../../../../lib/media-generation-settings";
+import { isFlowStoryOnlyPreset } from "../../../../../lib/story-presets";
 import { readProjectScenes } from "../../../../../lib/scene-store";
 import { getProjectOrThrow, makeActivity, now, readChunkOutput, saveChunkOutput, updateData } from "../../../../../lib/server-store";
 
@@ -24,7 +25,10 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       const allScenes = await readProjectScenes(project);
       const targets = allScenes.filter((scene) => requestedIds.includes(scene.id));
       if (targets.length !== requestedIds.length) throw new Error("SCENE_NOT_FOUND");
-      const settings = resolveMediaGenerationSettings(requestedSettings);
+      const settings = resolveMediaGenerationSettings({
+        ...requestedSettings,
+        ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
+      });
       const idsByChunk = new Map<string, Set<string>>();
       for (const scene of targets) {
         const chunk = project.chunks.find((item) => item.id === scene.chunkId);
@@ -46,7 +50,24 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
           const sceneId = String(record.id || record.scene_id || "").trim();
           if (!sceneIds.has(sceneId)) return value;
           foundIds.add(sceneId);
-          return { ...record, mediaGeneration: settings };
+          const currentSettings = resolveMediaGenerationSettings({
+            ...project.mediaGeneration,
+            ...(asRecord(record.mediaGeneration || record.media_generation) || {}),
+          });
+          const currentMedia = asRecord(record.media);
+          const currentReference = asRecord(record.videoReferenceImage || record.video_reference_image)
+            || (currentMedia?.kind === "image" ? currentMedia : null);
+          const imageSettingsChanged = ["imageModel", "imageQuality", "imageDetailLevel", "imageUseCharacterReferences"]
+            .some((key) => currentSettings[key as keyof MediaGenerationSettings] !== settings[key as keyof MediaGenerationSettings]);
+          const videoSettingsChanged = ["videoProvider", "seedanceAccountId", "seedanceChatMode", "videoModel", "videoQuality", "videoDurationMode", "videoDurationSec", "videoMultiShot", "videoAudio", "videoOffPeak", "videoUseCharacterReferences", "videoUseLocationReferences", "videoUseSceneImageReference", "flowReferenceMode"]
+            .some((key) => currentSettings[key as keyof MediaGenerationSettings] !== settings[key as keyof MediaGenerationSettings]);
+          return {
+            ...record,
+            mediaGeneration: settings,
+            ...(imageSettingsChanged && currentMedia?.kind === "image" ? { media: { ...currentMedia, stale: true } } : {}),
+            ...(videoSettingsChanged && currentMedia?.kind === "video" ? { media: { ...currentMedia, stale: true } } : {}),
+            ...(imageSettingsChanged && currentReference?.kind === "image" ? { videoReferenceImage: { ...currentReference, stale: true } } : {}),
+          };
         });
         if (foundIds.size !== sceneIds.size) throw new Error("SCENE_OUTPUT_NOT_FOUND");
         outputPaths.push(await saveChunkOutput(slug, chunkId, { ...(payload || {}), scenes: updatedScenes }));

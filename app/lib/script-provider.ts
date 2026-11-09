@@ -1,5 +1,3 @@
-import { getOpenAIApiKey } from "./openai-api-keys";
-
 type ProviderConfig = {
   apiKey: string;
   baseUrl: string;
@@ -73,8 +71,8 @@ function failureMessage(cause: unknown, timeoutMs: number) {
     : message;
 }
 
-export async function getProviderConfig(): Promise<ProviderConfig & { keyConfigured: boolean }> {
-  const apiKey = await getOpenAIApiKey();
+export function getProviderConfig(): ProviderConfig & { keyConfigured: boolean } {
+  const apiKey = process.env.OPENAI_API_KEY || "";
   const baseUrl = process.env.HTMLVIDEO_SCRIPT_LLM_BASE_URL || "https://api.openai.com/v1";
   const primaryModel = process.env.HTMLVIDEO_SCRIPT_LLM_MODEL || "gpt-6-luna";
   const fallbackModels = (process.env.HTMLVIDEO_SCRIPT_LLM_FALLBACK_MODELS || "")
@@ -118,7 +116,7 @@ function parseJsonContent(content: unknown) {
 }
 
 export async function generateWithScriptProvider(prompt: string) {
-  const config = await getProviderConfig();
+  const config = getProviderConfig();
   if (!config.keyConfigured) {
     const error = new Error("SCRIPT_LLM_NOT_CONFIGURED");
     error.name = "SCRIPT_LLM_NOT_CONFIGURED";

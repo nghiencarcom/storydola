@@ -1,7 +1,12 @@
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
-import { resolveMediaGenerationSettings } from "../../../../lib/media-generation-settings";
+import { isFlowImageModel, isMuseImageModel, resolveMediaGenerationSettings } from "../../../../lib/media-generation-settings";
+import { isFlowStoryOnlyPreset } from "../../../../lib/story-presets";
+import { readMaiVideoAuthCookie } from "../../../../lib/maivideo-auth-shared";
 import { createSceneMediaJob, startSceneMediaQueue } from "../../../../lib/scene-media-queue";
+import { getSeedanceApiKey } from "../../../../lib/seedance-accounts";
+import { providerSessionEncryptionReady, saveProviderSessionToken } from "../../../../lib/provider-session-store";
+import { higgsfieldSessionEncryptionReady, saveHiggsfieldSessionToken } from "../../../../lib/higgsfield-session-store";
 import { chunkForScene, readProjectScenes, sceneReferenceImage } from "../../../../lib/scene-store";
 import { makeActivity, now, readDataForUser, updateDataForUser } from "../../../../lib/server-store";
 import type { MediaGenerationSettings, SceneMediaJob, StoryProject } from "../../../../lib/project-types";
@@ -76,20 +81,68 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   if (scenesWithoutOutput.length) return NextResponse.json({ message: `Chunk chưa có output ở ${scenesWithoutOutput.join(", ")}.` }, { status: 409 });
 
   const explicitSettings = settingsRecord(body.mediaGeneration);
+  const requestedMediaSettings = requestedScenes.filter((scene): scene is NonNullable<typeof scene> => Boolean(scene)).map((scene) => resolveMediaGenerationSettings({
+    ...project.mediaGeneration,
+    ...settingsRecord(scene.mediaGeneration || scene.media_generation),
+    ...explicitSettings,
+    ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
+  }));
   if (kind === "video") {
-    const missingSceneImageIds = requestedScenes
-      .filter((scene): scene is NonNullable<typeof scene> => Boolean(scene))
-      .filter((scene) => {
-        const savedSceneSettings = scene.mediaGeneration || scene.media_generation;
-        const settings = resolveMediaGenerationSettings({ ...project.mediaGeneration, ...settingsRecord(savedSceneSettings), ...explicitSettings });
-        return settings.videoUseSceneImageReference && sceneReferenceImage(scene)?.status !== "ready";
-      })
-      .map((scene) => scene.id);
-    if (missingSceneImageIds.length) {
-      return NextResponse.json({
-        message: `Chưa có ảnh cảnh sẵn sàng tại ${missingSceneImageIds.join(", ")}. Hãy tạo ảnh cảnh trước hoặc tắt “Ảnh cảnh làm tham chiếu” nếu chỉ muốn gửi ảnh nhân vật/bối cảnh.`,
-      }, { status: 409 });
+    const missingFrames = requestedScenes.flatMap((scene, index) => {
+      if (!scene || requestedMediaSettings[index]?.videoProvider !== "flow" || requestedMediaSettings[index]?.flowReferenceMode !== "frames") return [];
+      const startImage = sceneReferenceImage(scene);
+      const endSceneId = String(scene.flowFrameEndSceneId || scene.flow_frame_end_scene_id || "").trim();
+      const endScene = scenes.find((item) => item.id === endSceneId);
+      const endImage = endScene ? sceneReferenceImage(endScene) : undefined;
+      return endSceneId !== scene.id && startImage?.kind === "image" && startImage.status === "ready" && startImage.stale !== true
+        && endImage?.kind === "image" && endImage.status === "ready" && endImage.stale !== true
+        ? []
+        : [scene.id];
+    });
+    if (missingFrames.length) return NextResponse.json({
+      code: "FLOW_FRAMES_REQUIRED",
+      message: `Flow Frames cần ảnh khung đầu và ảnh khung cuối sẵn sàng cho: ${missingFrames.slice(0, 8).join(", ")}${missingFrames.length > 8 ? ` và ${missingFrames.length - 8} cảnh khác` : ""}.`,
+      sceneIds: missingFrames,
+    }, { status: 409 });
+  }
+  const higgsfieldJobsRequested = kind === "video" && requestedMediaSettings.some((settings) => settings.videoProvider === "higgsfield");
+  const gatewayJobsRequested = requestedMediaSettings.some((settings) => kind === "image"
+    ? isMuseImageModel(settings.imageModel) || isFlowImageModel(settings.imageModel)
+    : settings.videoProvider === "muse" || settings.videoProvider === "flow");
+  const seedanceApiJobsRequested = requestedMediaSettings.some((settings) => kind === "image"
+    ? isMuseImageModel(settings.imageModel) || isFlowImageModel(settings.imageModel)
+    : settings.videoProvider === "seedance" || settings.videoProvider === "muse" || settings.videoProvider === "flow");
+  if (seedanceApiJobsRequested) {
+    const accountIds = new Set(requestedMediaSettings
+      .filter((settings) => kind === "image"
+        ? isMuseImageModel(settings.imageModel) || isFlowImageModel(settings.imageModel)
+        : settings.videoProvider === "seedance" || settings.videoProvider === "muse" || settings.videoProvider === "flow")
+      .map((settings) => kind === "video" && settings.videoProvider === "seedance" ? settings.seedanceAccountId || "" : ""));
+    try {
+      for (const accountId of accountIds) await getSeedanceApiKey(accountId, userId);
+    } catch (cause) {
+      const code = cause instanceof Error ? cause.message : "SEEDANCE_ACCOUNT_REQUIRED";
+      const message = code === "SEEDANCE_ACCOUNT_NOT_FOUND"
+        ? "Tài khoản API đã chọn không còn tồn tại. Hãy chọn lại tài khoản."
+        : code === "SEEDANCE_ENCRYPTION_KEY_REQUIRED"
+          ? "Máy chủ chưa cấu hình khóa mã hóa tài khoản API."
+          : "Chưa kết nối API key Seedance / MaiVideo. Hãy thêm tài khoản trong Cài đặt.";
+      return NextResponse.json({ code, message }, { status: 503 });
     }
+  }
+  const higgsfieldAuthToken = higgsfieldJobsRequested ? readMaiVideoAuthCookie(request.headers.get("cookie")) : "";
+  if (higgsfieldJobsRequested && !higgsfieldAuthToken) {
+    return NextResponse.json({ code: "HIGGSFIELD_SESSION_REQUIRED", message: "Hãy đăng nhập MaiVideo để dùng Seedance 2.0 · Higgsfield." }, { status: 401 });
+  }
+  if (higgsfieldJobsRequested && !higgsfieldSessionEncryptionReady()) {
+    return NextResponse.json({ code: "HIGGSFIELD_SESSION_ENCRYPTION_KEY_REQUIRED", message: "Máy chủ chưa cấu hình khóa mã hóa để chạy và tiếp tục job Higgsfield." }, { status: 503 });
+  }
+  const providerAuthToken = gatewayJobsRequested ? readMaiVideoAuthCookie(request.headers.get("cookie")) : "";
+  if (gatewayJobsRequested && !providerAuthToken) {
+    return NextResponse.json({ code: "PROVIDER_SESSION_REQUIRED", message: "Hãy đăng nhập MaiVideo để dùng API Muse.ai hoặc Flow." }, { status: 401 });
+  }
+  if (gatewayJobsRequested && !providerSessionEncryptionReady()) {
+    return NextResponse.json({ code: "PROVIDER_SESSION_ENCRYPTION_KEY_REQUIRED", message: "Máy chủ chưa cấu hình khóa mã hóa để chạy và tiếp tục job Muse.ai/Flow." }, { status: 503 });
   }
   let replacedLegacyVideoJobs = 0;
   let queued: SceneMediaJob[];
@@ -132,7 +185,12 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       const chunk = chunkForScene(current, scene);
       if (!chunk?.outputPath) continue;
       const savedSceneSettings = scene.mediaGeneration || scene.media_generation;
-      const settings = resolveMediaGenerationSettings({ ...current.mediaGeneration, ...settingsRecord(savedSceneSettings), ...explicitSettings });
+      const settings = resolveMediaGenerationSettings({
+        ...current.mediaGeneration,
+        ...settingsRecord(savedSceneSettings),
+        ...explicitSettings,
+        ...(isFlowStoryOnlyPreset(current.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
+      });
       const job = createSceneMediaJob({ sceneId: scene.id, chunkId: chunk.id, sceneIndex: scene.sceneIndex, kind, settings });
       current.sceneMediaJobs.push(job);
       created.push(job);
@@ -161,6 +219,34 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     throw cause;
   }
 
+  if (higgsfieldJobsRequested) {
+    try {
+      for (const job of queued) {
+        if (job.kind === "video" && job.provider === "higgsfield" && (job.status === "queued" || job.status === "running")) {
+          await saveHiggsfieldSessionToken(userId, job.id, higgsfieldAuthToken);
+        }
+      }
+    } catch {
+      return NextResponse.json({ code: "HIGGSFIELD_SESSION_STORE_UNAVAILABLE", message: "Không lưu được phiên Higgsfield an toàn; hãy thử xếp job lại." }, { status: 503 });
+    }
+  }
+
+  if (gatewayJobsRequested) {
+    try {
+      for (const job of queued) {
+        if (job.status !== "queued" && job.status !== "running") continue;
+        const settings = resolveMediaGenerationSettings({ ...project.mediaGeneration, ...settingsRecord(job.mediaGeneration) });
+        const usesGateway = job.kind === "image"
+          ? isMuseImageModel(settings.imageModel) || isFlowImageModel(settings.imageModel)
+          : settings.videoProvider === "muse" || settings.videoProvider === "flow";
+        if (usesGateway) await saveProviderSessionToken(userId, job.id, providerAuthToken);
+      }
+    } catch {
+      return NextResponse.json({ code: "PROVIDER_SESSION_STORE_UNAVAILABLE", message: "Không lưu được phiên MaiVideo an toàn; hãy thử xếp job lại." }, { status: 503 });
+    }
+  }
+
   startSceneMediaQueue(userId, slug);
   return NextResponse.json({ ok: true, jobs: queued.map(publicJob), queued: queued.filter((job) => job.status === "queued").length, replacedLegacyVideoJobs }, { status: 202 });
 }
+

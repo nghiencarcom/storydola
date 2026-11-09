@@ -8,7 +8,7 @@ const ACCOUNTS_FILE = path.join(DATA_DIR, "seedance-accounts.json");
 const SEEDANCE_BASE_URL = "https://seedance.maivideo.top";
 
 type EncryptedSecret = { iv: string; tag: string; ciphertext: string };
-type StoredAccount = { id: string; ownerId?: string; name: string; apiKey: EncryptedSecret; lastFour: string; createdAt: string };
+type StoredAccount = { id: string; ownerId?: string; name: string; apiKey: EncryptedSecret; maiVideoSessionToken?: EncryptedSecret; lastFour: string; createdAt: string };
 type AccountFile = { accounts: StoredAccount[]; defaultAccountId?: string; defaultAccountByUser?: Record<string, string> };
 export type SeedanceAccountSummary = { id: string; name: string; lastFour: string; createdAt: string; isDefault: boolean };
 
@@ -85,7 +85,7 @@ export async function listSeedanceAccounts() {
   return listSeedanceAccountsForUser(userId);
 }
 
-export async function verifySeedanceApiKey(apiKey: string) {
+export async function verifySeedanceApiKey(apiKey: string, maiVideoSessionToken?: string) {
   const response = await fetch(`${SEEDANCE_BASE_URL}/v1/videos/status?ids=storyai-api-key-check`, {
     headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
     cache: "no-store",
@@ -99,11 +99,36 @@ export async function verifySeedanceApiKey(apiKey: string) {
   throw new Error(`SEEDANCE_VALIDATION_REJECTED_${response.status}`);
 }
 
-export async function addSeedanceAccountForUser(name: string, apiKey: string, userId: string) {
+export async function verifySeedanceApiKeySession(apiKey: string, maiVideoSessionToken: string) {
+  const token = maiVideoSessionToken.trim();
+  if (!token) throw new Error("MAIVIDEO_SESSION_REQUIRED");
+  const preflightTaskId = `storyai-credential-check-${randomUUID()}`;
+  const response = await fetch(`${SEEDANCE_BASE_URL}/v1/flow/jobs/${encodeURIComponent(preflightTaskId)}`, {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "X-MaiVideo-Auth-Token": token,
+      Accept: "application/json",
+    },
+    cache: "no-store",
+    signal: AbortSignal.timeout(15_000),
+  }).catch(() => null);
+  if (!response) throw new Error("SEEDANCE_CONNECTION_FAILED");
+  if (response.status === 403) throw new Error("SEEDANCE_API_KEY_SESSION_MISMATCH");
+  if (response.status === 401) throw new Error("MAIVIDEO_SESSION_INVALID");
+  // A random preflight task must not exist. 404 means the gateway accepted
+  // both credentials and correctly found no task; no video/credit is created.
+  if (response.status === 404 || response.ok) return;
+  if (response.status >= 500) throw new Error(`SEEDANCE_SERVICE_UNAVAILABLE_${response.status}`);
+  throw new Error(`SEEDANCE_VALIDATION_REJECTED_${response.status}`);
+}
+
+export async function addSeedanceAccountForUser(name: string, apiKey: string, userId: string, maiVideoSessionToken = "") {
   const normalizedName = name.trim().slice(0, 80);
   const normalizedKey = apiKey.trim();
+  const normalizedSessionToken = maiVideoSessionToken.trim();
   if (!normalizedName || !normalizedKey) throw new Error("SEEDANCE_ACCOUNT_INPUT_REQUIRED");
   const encryptedKey = encryptApiKey(normalizedKey);
+  const encryptedSessionToken = normalizedSessionToken ? encryptApiKey(normalizedSessionToken) : undefined;
   const createdAt = new Date().toISOString();
   return updateAccountFile((data) => {
     const account = {
@@ -111,6 +136,7 @@ export async function addSeedanceAccountForUser(name: string, apiKey: string, us
       ownerId: userId,
       name: normalizedName,
       apiKey: encryptedKey,
+      ...(encryptedSessionToken ? { maiVideoSessionToken: encryptedSessionToken } : {}),
       lastFour: normalizedKey.slice(-4),
       createdAt,
     };
@@ -121,18 +147,20 @@ export async function addSeedanceAccountForUser(name: string, apiKey: string, us
   });
 }
 
-export async function addSeedanceAccount(name: string, apiKey: string) {
+export async function addSeedanceAccount(name: string, apiKey: string, maiVideoSessionToken = "") {
   const userId = await getCurrentUserId();
   await claimLegacySeedanceAccounts(userId);
-  return addSeedanceAccountForUser(name, apiKey, userId);
+  return addSeedanceAccountForUser(name, apiKey, userId, maiVideoSessionToken);
 }
 
-export async function saveDefaultSeedanceApiKey(apiKey: string) {
+export async function saveDefaultSeedanceApiKey(apiKey: string, maiVideoSessionToken = "") {
   const userId = await getCurrentUserId();
   await claimLegacySeedanceAccounts(userId);
   const normalizedKey = apiKey.trim();
+  const normalizedSessionToken = maiVideoSessionToken.trim();
   if (!normalizedKey) throw new Error("SEEDANCE_ACCOUNT_INPUT_REQUIRED");
   const encryptedKey = encryptApiKey(normalizedKey);
+  const encryptedSessionToken = normalizedSessionToken ? encryptApiKey(normalizedSessionToken) : undefined;
   const createdAt = new Date().toISOString();
 
   return updateAccountFile((data) => {
@@ -143,6 +171,7 @@ export async function saveDefaultSeedanceApiKey(apiKey: string) {
     if (account) {
       account.name = "Seedance";
       account.apiKey = encryptedKey;
+      if (encryptedSessionToken) account.maiVideoSessionToken = encryptedSessionToken;
       account.lastFour = normalizedKey.slice(-4);
     } else {
       account = {
@@ -150,6 +179,7 @@ export async function saveDefaultSeedanceApiKey(apiKey: string) {
         ownerId: userId,
         name: "Seedance",
         apiKey: encryptedKey,
+        ...(encryptedSessionToken ? { maiVideoSessionToken: encryptedSessionToken } : {}),
         lastFour: normalizedKey.slice(-4),
         createdAt,
       };
@@ -169,6 +199,35 @@ export async function getSeedanceApiKey(accountId?: string, userIdOverride?: str
   const account = userAccounts.find((item) => item.id === selectedId);
   if (!account) throw new Error(accountId?.trim() ? "SEEDANCE_ACCOUNT_NOT_FOUND" : "SEEDANCE_ACCOUNT_REQUIRED");
   return decryptApiKey(account.apiKey);
+}
+
+/**
+ * Resolve the MaiVideo session token paired with the selected API key.
+ * Older saved accounts have no paired token, so bind the authenticated session
+ * supplied by the current request once and keep it encrypted beside the key.
+ */
+export async function getSeedanceApiSessionToken(accountId?: string, userIdOverride?: string, currentSessionToken = "") {
+  const userId = userIdOverride?.trim() || await getCurrentUserId();
+  await claimLegacySeedanceAccounts(userId);
+  const selectedId = accountId?.trim() || "";
+  const data = await readAccountFile();
+  const userAccounts = data.accounts.filter((item) => item.ownerId === userId);
+  const resolvedId = selectedId || data.defaultAccountByUser?.[userId] || "";
+  const account = userAccounts.find((item) => item.id === resolvedId);
+  if (!account) throw new Error(selectedId ? "SEEDANCE_ACCOUNT_NOT_FOUND" : "SEEDANCE_ACCOUNT_REQUIRED");
+
+  const current = currentSessionToken.trim();
+  if (current && (!account.maiVideoSessionToken || decryptApiKey(account.maiVideoSessionToken) !== current)) {
+    const encryptedSessionToken = encryptApiKey(current);
+    await updateAccountFile((latest) => {
+      const ownedAccount = latest.accounts.find((item) => item.ownerId === userId && item.id === account.id);
+      if (ownedAccount) ownedAccount.maiVideoSessionToken = encryptedSessionToken;
+    });
+    return current;
+  }
+  if (current) return current;
+  if (account.maiVideoSessionToken) return decryptApiKey(account.maiVideoSessionToken);
+  return "";
 }
 
 export async function setDefaultSeedanceAccount(accountId: string) {

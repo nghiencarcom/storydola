@@ -5,6 +5,7 @@ import type { ProjectCharacter, StoryProject } from "../../../../lib/project-typ
 import { characterReferencePrompt } from "../../../../lib/ai-drama-reference-prompts";
 import { normalizeEntityName } from "../../../../lib/entity-name";
 import { downloadMaiVideoLibraryImage, MaiVideoLibraryError } from "../../../../lib/maivideo-media-library";
+import { readMaiVideoAuthCookie, resolveMaiVideoAuthBaseUrl } from "../../../../lib/maivideo-auth-shared";
 import { readProjectScenes, sceneMediaLocalPath } from "../../../../lib/scene-store";
 import { makeActivity, markRenderStale, now, readChunkOutput, readData, saveChunkOutput, updateData } from "../../../../lib/server-store";
 import { resolveProjectSceneVoice } from "../../../../lib/project-tts-voice";
@@ -221,7 +222,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   let imageName: string;
   if (maivideoMediaId) {
     try {
-      const downloaded = await downloadMaiVideoLibraryImage(maivideoMediaId);
+      const downloaded = await downloadMaiVideoLibraryImage(maivideoMediaId, { token: readMaiVideoAuthCookie(request.headers.get("cookie")), baseUrl: resolveMaiVideoAuthBaseUrl(request) });
       bytes = downloaded.bytes;
       imageName = downloaded.image.fileName || downloaded.image.name;
     } catch (cause) {

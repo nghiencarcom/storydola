@@ -37,6 +37,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       projectSlug: slug,
       chunkId: chunk.id,
       scene,
+      projectScenes: scenes,
       characters: project.characters || [],
       locations: project.locations || [],
       sceneIndex: scene.sceneIndex,

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { generateMaiVideoImageForScene } from "../../../../../../lib/media-provider";
-import { resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
+import { isFlowImageModel, isMuseImageModel, resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
+import { readMaiVideoAuthCookie } from "../../../../../../lib/maivideo-auth-shared";
 import { chunkForScene, findProjectScene, previousSceneContinuityReference } from "../../../../../../lib/scene-store";
 import { saveGeneratedSceneMedia } from "../../../../../../lib/scene-media-output";
 import { readData } from "../../../../../../lib/server-store";
@@ -11,7 +12,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-export async function POST(_request: Request, context: { params: Promise<{ slug: string; sceneId: string }> }) {
+export async function POST(request: Request, context: { params: Promise<{ slug: string; sceneId: string }> }) {
   const { slug, sceneId } = await context.params;
   const data = await readData();
   const project = data.projects.find((item) => item.slug === slug);
@@ -24,6 +25,12 @@ export async function POST(_request: Request, context: { params: Promise<{ slug:
 
   const sceneSettings = asRecord(scene.mediaGeneration || scene.media_generation) as Record<string, unknown> | null;
   const mediaGeneration = resolveMediaGenerationSettings({ ...project.mediaGeneration, ...sceneSettings });
+  const providerAuthToken = isMuseImageModel(mediaGeneration.imageModel) || isFlowImageModel(mediaGeneration.imageModel)
+    ? readMaiVideoAuthCookie(request.headers.get("cookie"))
+    : "";
+  if ((isMuseImageModel(mediaGeneration.imageModel) || isFlowImageModel(mediaGeneration.imageModel)) && !providerAuthToken) {
+    return NextResponse.json({ code: "PROVIDER_SESSION_REQUIRED", message: "Hãy đăng nhập MaiVideo để dùng API ảnh Muse.ai hoặc Flow." }, { status: 401 });
+  }
   try {
     const media = await generateMaiVideoImageForScene({
       projectSlug: slug,
@@ -34,6 +41,7 @@ export async function POST(_request: Request, context: { params: Promise<{ slug:
       sceneIndex: scene.sceneIndex,
       aspectRatio: project.aspectRatio,
       mediaGeneration,
+      providerAuthToken,
       presetId: project.presetId,
       contentGenre: project.contentGenre,
       secondaryGenres: project.secondaryGenres,
