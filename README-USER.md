@@ -4,9 +4,17 @@ StoryAI chạy trực tiếp trên máy, mở giao diện trong trình duyệt t
 
 ## Cài một lần
 
-1. Cài Node.js 22 trở lên và Git for Windows.
-2. Cài FFmpeg nếu cần ghép và xuất video MP4; lệnh `ffmpeg` và `ffprobe` cần dùng được trong PowerShell.
-3. Mở PowerShell tại thư mục muốn đặt StoryAI rồi chạy:
+Mở PowerShell và cài Node.js, Git for Windows, FFmpeg/FFprobe bằng WinGet:
+
+```powershell
+winget install --id OpenJS.NodeJS.LTS --exact
+winget install --id Git.Git --exact
+winget install --id Gyan.FFmpeg --exact
+```
+
+Đóng rồi mở lại PowerShell để nạp `PATH` mới. Máy cần có WinGet (Windows Package Manager/App Installer). Nếu chưa có WinGet, cài **App Installer** từ Microsoft Store trước. Các lệnh FFmpeg cần chạy được trong PowerShell.
+
+Sau đó mở PowerShell tại thư mục muốn đặt StoryAI và chạy:
 
 ```powershell
 git clone https://github.com/nghiencarcom/storydola.git StoryAI
@@ -14,7 +22,7 @@ cd StoryAI
 npm start
 ```
 
-Lần chạy đầu sẽ tự cài thư viện, build ứng dụng, tạo file `.env` cùng khóa mã hóa riêng cho máy, rồi mở trình duyệt. Người dùng đăng nhập bằng tài khoản MaiVideo.
+Lần chạy đầu sẽ tự cài thư viện npm, build ứng dụng, tạo file `.env` cùng khóa mã hóa riêng cho máy, rồi mở trình duyệt. Người dùng đăng nhập bằng tài khoản MaiVideo.
 
 ## Mở ứng dụng và cập nhật
 
