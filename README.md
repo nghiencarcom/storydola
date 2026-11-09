@@ -24,6 +24,13 @@ The first start installs dependencies, builds the app, creates local configurati
 
 See [README-USER.md](README-USER.md) for setup, updates, and local data details.
 
+## Writing plugins and trend guides
+
+- [US drama writing plugin](plugins/us-phim.zip)
+- [Vietnamese drama writing plugin](plugins/viet-phim.zip)
+- [Trend bank (2005–2026)](plugins/drama-viet/references/trend-bank-2005-2026.md)
+- [Trend vocabulary](plugins/drama-viet/references/trend-vocabulary.md)
+
 ## Local data
 
 Projects, media, renders, and `.env` stay on the user's computer. Keep `data/` and `.env` backed up together; the encryption key in `.env` is needed to read saved API credentials.
