@@ -169,7 +169,9 @@ export function scoreDialogueTiming(segments: DialogueSegment[], sceneDurationSe
 
   for (const [index, cue] of spoken.entries()) {
     const units = countScriptWords(cue.text);
-    const expectedMs = estimateDialogueDurationMs(cue.text, cue.deliveryPace);
+    const recordedAudioMs = Number(cue.audio?.durationMs);
+    const hasRecordedAudioDuration = Number.isFinite(recordedAudioMs) && recordedAudioMs > 0;
+    const expectedMs = hasRecordedAudioDuration ? recordedAudioMs : estimateDialogueDurationMs(cue.text, cue.deliveryPace);
     const allocatedMs = cue.endMs === undefined ? undefined : cue.endMs - cue.startMs;
     estimatedSpeechMs += expectedMs;
     cueUnits.push(units);
@@ -186,7 +188,7 @@ export function scoreDialogueTiming(segments: DialogueSegment[], sceneDurationSe
     const timingRatio = allocatedMs / Math.max(1, expectedMs);
     if (timingRatio < 0.65) {
       score -= 25;
-      issues.push(`Lượt thoại ${index + 1} được cấp ${(allocatedMs / 1000).toFixed(2)}s, ngắn hơn thời lượng đọc ước tính ${(expectedMs / 1000).toFixed(2)}s.`);
+      issues.push(`Lượt thoại ${index + 1} được cấp ${(allocatedMs / 1000).toFixed(2)}s, ngắn hơn ${hasRecordedAudioDuration ? "audio TTS" : "thời lượng đọc ước tính"} ${(expectedMs / 1000).toFixed(2)}s.`);
     } else if (timingRatio < 0.82) {
       score -= 14;
       issues.push(`Lượt thoại ${index + 1} hơi gấp so với độ dài câu và nhịp ${cue.deliveryPace || "tự nhiên"}.`);

@@ -4290,7 +4290,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                   <div className={`scene-ai-card ${sceneAiReviewTone(selectedAiReview.status)}`}>
                     <div className="scene-ai-heading"><div><small>AI PRE-CHECK</small><strong>{sceneAiReviewLabel(selectedAiReview.status)}</strong></div><span>{selectedAiReview.score}/100</span></div>
                     <p className="scene-ai-summary">{selectedAiReview.summary}</p>
-                    {project.presetId === "ai-drama" && selectedAiReview.dialogueTimingScore !== undefined && <div className="scene-ai-dialogue-score"><strong>Khớp thời lượng chia đoạn thoại</strong><span>{selectedAiReview.dialogueTimingScore}/100</span><small>Ước lượng theo độ dài từng câu, nhịp đọc, timecode và khoảng nghỉ.</small></div>}
+                    {project.presetId === "ai-drama" && selectedAiReview.dialogueTimingScore !== undefined && <div className="scene-ai-dialogue-score"><strong>Khớp thời lượng chia đoạn thoại</strong><span>{selectedAiReview.dialogueTimingScore}/100</span><small>Dùng thời lượng audio TTS nếu có; nếu chưa có thì ước lượng theo độ dài câu, nhịp đọc, timecode và khoảng nghỉ.</small></div>}
                     {Object.keys(selectedAiReview.checks).length > 0 && <div className="scene-ai-checks">{Object.entries(selectedAiReview.checks).map(([key, value]) => <span key={key} className={`scene-ai-check ${value}`}><i />{sceneAiCheckLabel(key)}: {value === "pass" ? "đạt" : value === "warning" ? "cảnh báo" : "lỗi"}</span>)}</div>}
                     {selectedAiReview.issues.length > 0 && <ul className="scene-ai-issues">{selectedAiReview.issues.map((issue, index) => <li key={`${issue}-${index}`}>{issue}</li>)}</ul>}
                   </div>
