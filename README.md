@@ -26,8 +26,8 @@ See [README-USER.md](README-USER.md) for setup, updates, and local data details.
 
 ## Writing plugins and trend guides
 
-- [PhimUS writing plugin](plugins/PhimUS.zip)
-- [PhimViet writing plugin](plugins/PhimViet.zip)
+- [US Everyday Drama Writer](plugins/PhimUS.zip)
+- [Drama Đời Thường Việt](plugins/PhimViet.zip)
 - [Trend bank (2005–2026)](plugins/drama-viet/references/trend-bank-2005-2026.md)
 - [Trend vocabulary](plugins/drama-viet/references/trend-vocabulary.md)
 
