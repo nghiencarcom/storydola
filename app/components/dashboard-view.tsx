@@ -477,6 +477,7 @@ function sceneAiReview(scene: ScenePreview): SceneAiReview {
   return {
     status: ["passed", "needs_changes", "error"].includes(status) ? status as SceneAiReviewStatus : "pending",
     score: Number.isFinite(Number(raw.score)) ? Math.max(0, Math.min(100, Number(raw.score))) : 0,
+    dialogueTimingScore: Number.isFinite(Number(raw.dialogueTimingScore)) ? Math.max(0, Math.min(100, Number(raw.dialogueTimingScore))) : undefined,
     summary: String(raw.summary || "AI chưa đánh giá cảnh này."),
     issues: Array.isArray(raw.issues) ? raw.issues.map((issue) => String(issue)).filter(Boolean) : [],
     checks: raw.checks && typeof raw.checks === "object" ? raw.checks : {},
@@ -488,6 +489,11 @@ function sceneAiReview(scene: ScenePreview): SceneAiReview {
 
 function sceneAiReviewLabel(status: SceneAiReviewStatus) {
   return status === "passed" ? "AI đạt" : status === "needs_changes" ? "AI cần sửa" : status === "error" ? "AI lỗi" : "Chờ AI";
+}
+
+function sceneAiCheckLabel(key: string) {
+  const labels: Record<string, string> = { timing: "Thời lượng", voiceover: "Thoại", dialogue_timing: "Nhịp thoại", narrative: "Kịch bản", continuity: "Liên tục", prompt: "Prompt", camera: "Camera", media: "Media" };
+  return labels[key] || key.replaceAll("_", " ");
 }
 
 function sceneAiReviewTone(status: SceneAiReviewStatus) {
@@ -4132,7 +4138,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                     <span className="scene-table-cell scene-table-ident" role="cell"><span className="scene-list-id">{sceneNumberLabel(scene)}</span>{scene.referenceImagePreviewUrl && <img className="scene-list-reference" src={scene.referenceImagePreviewUrl} alt="" loading="lazy" />}<small>{scene.chunkId}</small></span>
                     <span className="scene-table-cell scene-table-copy" role="cell"><strong>{description}</strong><small>{compactSceneText(summary || "Chưa có thoại hoặc prompt", 160)}</small></span>
                     <span className="scene-table-cell scene-table-profiles" role="cell"><strong>{characterIds.length} nhân vật</strong><small>{location?.name || "Chưa gán bối cảnh"}</small></span>
-                    <span className="scene-table-cell scene-table-status" role="cell"><span className={`scene-ai-badge ${sceneAiReviewTone(aiReview.status)}`}>{sceneAiReviewLabel(aiReview.status)}</span><small>{aiReview.score ? `${aiReview.score}/100` : "Chưa có điểm"}</small></span>
+                    <span className="scene-table-cell scene-table-status" role="cell"><span className={`scene-ai-badge ${sceneAiReviewTone(aiReview.status)}`}>{sceneAiReviewLabel(aiReview.status)}</span><small>{aiReview.score ? `${aiReview.score}/100` : "Chưa có điểm"}</small>{project.presetId === "ai-drama" && aiReview.dialogueTimingScore !== undefined && <small>Nhịp thoại {aiReview.dialogueTimingScore}/100</small>}</span>
                     <span className="scene-table-cell scene-table-status" role="cell"><span className={`scene-review-badge ${sceneReviewTone(review)}`}>{sceneReviewLabel(review)}</span></span>
                     <span className="scene-table-cell scene-table-status" role="cell"><strong>{sceneMediaKindLabel(media, project.presetId === "ai-drama")}</strong><small>{sceneMediaReady(media, project.presetId === "ai-drama") ? "Sẵn sàng" : media?.status === "failed" ? "Lỗi" : media?.status === "ready" ? "Cần tạo video" : "Chưa tạo"}</small></span>
                     <span className="scene-table-cell scene-table-status" role="cell"><span className={`scene-tts-badge ${ttsReady ? "ready" : ttsPending ? "pending" : "not-needed"}`}>{project.presetId === "ai-drama" ? `${readyDialogueSegments}/${dialogueSegments.length}` : audio.localPath ? "Có TTS" : voice ? "Chưa TTS" : "Không lời"}</span></span>
@@ -4284,7 +4290,8 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                   <div className={`scene-ai-card ${sceneAiReviewTone(selectedAiReview.status)}`}>
                     <div className="scene-ai-heading"><div><small>AI PRE-CHECK</small><strong>{sceneAiReviewLabel(selectedAiReview.status)}</strong></div><span>{selectedAiReview.score}/100</span></div>
                     <p className="scene-ai-summary">{selectedAiReview.summary}</p>
-                    {Object.keys(selectedAiReview.checks).length > 0 && <div className="scene-ai-checks">{Object.entries(selectedAiReview.checks).map(([key, value]) => <span key={key} className={`scene-ai-check ${value}`}><i />{key}: {value === "pass" ? "đạt" : value === "warning" ? "cảnh báo" : "lỗi"}</span>)}</div>}
+                    {project.presetId === "ai-drama" && selectedAiReview.dialogueTimingScore !== undefined && <div className="scene-ai-dialogue-score"><strong>Khớp thời lượng chia đoạn thoại</strong><span>{selectedAiReview.dialogueTimingScore}/100</span><small>Ước lượng theo độ dài từng câu, nhịp đọc, timecode và khoảng nghỉ.</small></div>}
+                    {Object.keys(selectedAiReview.checks).length > 0 && <div className="scene-ai-checks">{Object.entries(selectedAiReview.checks).map(([key, value]) => <span key={key} className={`scene-ai-check ${value}`}><i />{sceneAiCheckLabel(key)}: {value === "pass" ? "đạt" : value === "warning" ? "cảnh báo" : "lỗi"}</span>)}</div>}
                     {selectedAiReview.issues.length > 0 && <ul className="scene-ai-issues">{selectedAiReview.issues.map((issue, index) => <li key={`${issue}-${index}`}>{issue}</li>)}</ul>}
                   </div>
                   <div className="scene-qa-card">
@@ -4462,7 +4469,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
               updateEpisodeScriptDraft(currentTemplate);
             }}><Icon name="file" size={14} />Chèn lại mẫu tập</button>
           </div>
-          <div className="episode-script-import-note"><Icon name="help" size={15} /><span>Mẫu tạo scene ID liên tục theo phạm vi tập, mặc định 15 giây/cảnh. ID có thể nằm trong <code>id</code> hoặc <code>scene_id</code> (ví dụ <code>S081</code>, <code>A03-S081</code>, hoặc số <code>81</code>). Hãy thay các hướng dẫn trong dấu [ ] bằng nội dung kịch bản. Cảnh im lặng dùng <code>dialogue_mode: "visual_led"</code>, <code>dialogue_or_voiceover: ""</code> và <code>dialogue_segments: []</code>; không đặt câu hướng dẫn vào trường thoại. Với AI Drama, chỉ cảnh <code>dialogue_led</code> cần tối thiểu 10 từ/5 giây, 20 từ/10 giây, 30 từ/15 giây; mục tiêu lần lượt 10–15, 20–30, 30–45 từ, tối đa 3 từ/giây. Hook mở tập xuất hiện trong 0–5 giây; end hook tạo hệ quả nối sang tập kế.</span></div>
+          <div className="episode-script-import-note"><Icon name="help" size={15} /><span>Mẫu tạo scene ID liên tục theo phạm vi tập, mặc định 15 giây/cảnh. ID có thể nằm trong <code>id</code> hoặc <code>scene_id</code> (ví dụ <code>S081</code>, <code>A03-S081</code>, hoặc số <code>81</code>). Hãy thay các hướng dẫn trong dấu [ ] bằng nội dung kịch bản. Cảnh im lặng dùng <code>dialogue_mode: "visual_led"</code>, <code>dialogue_or_voiceover: ""</code> và <code>dialogue_segments: []</code>; không đặt câu hướng dẫn vào trường thoại. Với AI Drama, viết thoại trước rồi chia một cue cho mỗi lượt người nói; tính start/end riêng theo độ dài câu, nhịp đọc và khoảng nghỉ. Không ép số từ tối thiểu hay thời lượng cue bằng nhau; tối đa 3 đơn vị đọc/giây, trần 3,5. Hook mở tập xuất hiện trong 0–5 giây; end hook tạo hệ quả nối sang tập kế.</span></div>
           <label className="episode-script-json-field"><span>JSON scene-script.v1 · một tập</span><textarea spellCheck={false} aria-label="JSON kịch bản của một tập" value={episodeScriptDraft} onChange={(event) => updateEpisodeScriptDraft(event.target.value)} disabled={importingScripts} /></label>
           {runMessage && <div className={"run-message " + runMessage.tone} role={runMessage.tone === "error" ? "alert" : "status"}><span><Icon name={runMessage.tone === "success" ? "check" : "alert"} size={13} /></span>{runMessage.text}</div>}
           <div className="character-setup-actions"><button className="secondary-button" type="button" onClick={() => setEpisodeScriptEditorOpen(false)} disabled={importingScripts}>Để sau</button><button className="primary-button" type="button" onClick={() => void importEpisodeScriptDraft()} disabled={importingScripts || !episodeScriptDraft.trim()}><Icon name={importingScripts ? "clock" : "file"} size={15} />{importingScripts ? "Đang nhập tập…" : "Nhập kịch bản tập này"}</button><button className="secondary-button" type="button" onClick={() => void copyEpisodeScriptDraft()} disabled={importingScripts || !episodeScriptDraft.trim()} title="Sao chép JSON hiện có trong trình soạn thảo"><Icon name="copy" size={15} />Copy JSON</button></div>

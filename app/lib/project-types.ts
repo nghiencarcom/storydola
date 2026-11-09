@@ -131,6 +131,8 @@ export type DialogueSegmentAudio = {
   createdAt: string;
 };
 
+export type DialogueDeliveryPace = "measured" | "natural" | "brisk";
+
 /** One independently voiced, scene-local line of dialogue. */
 export type DialogueSegment = {
   id: string;
@@ -138,8 +140,14 @@ export type DialogueSegment = {
   speakerName?: string;
   text: string;
   startMs: number;
-  /** Optional subtitle target end; the audio itself keeps its natural duration. */
+  /** Scene-local cue end time; generated audio keeps its natural duration. */
   endMs?: number;
+  /** Intended acting pace; timing estimates use this when supplied. */
+  deliveryPace?: DialogueDeliveryPace;
+  /** Intentional pause after this line, before the next speaker/beat. */
+  pauseAfterMs?: number;
+  /** Whether overlap with the next cue is an intentional interruption. */
+  intentionalOverlap?: boolean;
   audio?: DialogueSegmentAudio;
   /** Translated line text keyed by target voice language, e.g. en or ja. */
   translations?: Record<string, string>;
@@ -318,6 +326,8 @@ export type RenderSettings = {
 export type SceneAiReview = {
   status: SceneAiReviewStatus;
   score: number;
+  /** Separate 0–100 fit score for per-line dialogue cue timing. */
+  dialogueTimingScore?: number;
   summary: string;
   issues: string[];
   checks: Record<string, SceneAiCheckStatus>;

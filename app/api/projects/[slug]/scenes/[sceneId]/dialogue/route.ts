@@ -41,6 +41,17 @@ function canonicalizeSegments(value: unknown, existing: DialogueSegment[], chara
     if (!Number.isFinite(startMs) || startMs < 0 || startMs >= durationMs) throw new Error("DIALOGUE_START_INVALID");
     if (endValue !== undefined && (!Number.isFinite(endValue) || endValue <= startMs || endValue > durationMs)) throw new Error("DIALOGUE_END_INVALID");
     const old = oldById.get(id);
+    const rawPace = String(record.deliveryPace ?? record.delivery_pace ?? old?.deliveryPace ?? "").trim().toLowerCase();
+    const deliveryPace = ["measured", "natural", "brisk"].includes(rawPace) ? rawPace as DialogueSegment["deliveryPace"] : undefined;
+    const pauseRaw = record.pauseAfterMs ?? record.pause_after_ms;
+    const pauseSecRaw = record.pauseAfterSec ?? record.pause_after_sec;
+    const pauseAfterMs = pauseRaw !== undefined && pauseRaw !== null && pauseRaw !== ""
+      ? Math.round(Number(pauseRaw))
+      : pauseSecRaw !== undefined && pauseSecRaw !== null && pauseSecRaw !== ""
+        ? Math.round(Number(pauseSecRaw) * 1000)
+        : old?.pauseAfterMs;
+    if (pauseAfterMs !== undefined && (!Number.isFinite(pauseAfterMs) || pauseAfterMs < 0 || pauseAfterMs > 5_000)) throw new Error("DIALOGUE_PAUSE_INVALID");
+    const intentionalOverlap = record.intentionalOverlap === true || record.intentional_overlap === true || old?.intentionalOverlap === true;
     const sourceTextUnchanged = old?.text === text;
     const speakerUnchanged = old?.speakerCharacterId === (speakerCharacterId || undefined);
     const audioUnchanged = sourceTextUnchanged && speakerUnchanged;
@@ -57,6 +68,9 @@ function canonicalizeSegments(value: unknown, existing: DialogueSegment[], chara
       text,
       startMs,
       ...(endValue !== undefined ? { endMs: endValue } : {}),
+      ...(deliveryPace ? { deliveryPace } : {}),
+      ...(pauseAfterMs !== undefined ? { pauseAfterMs } : {}),
+      ...(intentionalOverlap ? { intentionalOverlap: true } : {}),
       ...(audioUnchanged && old?.audio ? { audio: old.audio } : {}),
       ...(translations ? { translations } : {}),
       ...(translatedAudio ? { translatedAudio } : {}),
@@ -71,7 +85,9 @@ function hasDialogueSourceChanges(existing: DialogueSegment[], next: DialogueSeg
     const candidate = next[index];
     return !candidate || segment.id !== candidate.id || segment.text !== candidate.text
       || segment.speakerCharacterId !== candidate.speakerCharacterId || segment.speakerName !== candidate.speakerName
-      || segment.startMs !== candidate.startMs || segment.endMs !== candidate.endMs;
+      || segment.startMs !== candidate.startMs || segment.endMs !== candidate.endMs
+      || segment.deliveryPace !== candidate.deliveryPace || segment.pauseAfterMs !== candidate.pauseAfterMs
+      || segment.intentionalOverlap !== candidate.intentionalOverlap;
   });
 }
 
@@ -231,6 +247,7 @@ export async function PUT(request: Request, context: { params: Promise<{ slug: s
       DIALOGUE_SPEAKER_INVALID: "Có người thoại không thuộc Character Bible của project.",
       DIALOGUE_START_INVALID: "Thời điểm bắt đầu phải nằm trong khoảng 0–15 giây.",
       DIALOGUE_END_INVALID: "Thời điểm kết thúc phải sau lúc bắt đầu và không vượt quá 15 giây.",
+      DIALOGUE_PAUSE_INVALID: "Khoảng nghỉ sau câu phải nằm trong khoảng 0–5 giây.",
     };
     return NextResponse.json({ message: messages[code] || "Không thể lưu timeline lời thoại." }, { status: 400 });
   }

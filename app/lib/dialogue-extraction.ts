@@ -76,7 +76,7 @@ export async function extractSceneDialogueAndDetails({
 
 Do not change the story, add plot facts, or invent dialogue. Preserve the meaning, intent, and tone of source_dialogue. Split it into a separate cue for each actual speaker turn. If the source contains one utterance by one speaker, return exactly one cue. Use only the canonical speaker names from the Character Bible or NARRATOR when the speaker cannot be identified. Do not guess a character solely because they appear in scene_characters.
 
-For each cue, translate or adapt the spoken line into the selected video language, ${voiceLanguagePromptLabel(language || "vi")}, if source_dialogue uses another language. Keep all dialogue_segments.text in that selected video language; do not fall back to Vietnamese unless Vietnamese is selected. Estimate natural speech timecodes for that language from the start of this scene. Cues must be chronological, must not overlap, must stay in 0–${durationSec} seconds, and should leave a short pause between turns. Keep canonical character names in the selected video language where suitable.
+For each cue, translate or adapt the spoken line into the selected video language, ${voiceLanguagePromptLabel(language || "vi")}, if source_dialogue uses another language. Keep all dialogue_segments.text in that selected video language; do not fall back to Vietnamese unless Vietnamese is selected. Estimate each cue independently from that line’s read units, delivery pace, punctuation, and a motivated pause; longer lines need longer reading windows. Target at most 3 read units/second and never exceed 3.5. Cues must be chronological, must not overlap, and must stay in 0–${durationSec} seconds. Do not assign equal durations to lines of visibly different lengths. Keep canonical character names in the selected video language where suitable.
 
 Write all production descriptions in English, including acting_beat, blocking, shot_size, camera_movement, eye_line_action, and video_prompt. Keep the first five notes concise. Treat image_prompt as the literal opening frame at 0 seconds and the authority for location, composition, lighting, palette, visible props, and initial blocking. Character reference images are binding identity and costume references. Base details only on the scene purpose, beat, image_prompt, and existing_video_prompt. Never select a voice.
 ${AI_DRAMA_VIDEO_PROMPT_GUIDANCE}
@@ -84,7 +84,7 @@ If dialogue ends before the scene duration, continue purposeful silent performan
 Keep the visual prompt suitable for the platform and age-appropriate: use modest clothing and express tension through performance, distance, framing, and reactions. If the source implies an unsafe event, keep it off-screen and suggest it through reactions or the setting. In video_prompt, show only speaker names and cue timecodes; keep the exact spoken words in dialogue_segments and do not copy them into the visual prompt.
 
 Return this shape:
-{"scene_id":"${sceneId}","dialogue_segments":[{"speaker_character":"Canonical Character Name or NARRATOR","text":"verbatim utterance","start_sec":0.0,"end_sec":2.5}],"acting_beat":"...","blocking":"...","shot_size":"...","camera_movement":"...","eye_line_action":"...","video_prompt":"..."}
+{"scene_id":"${sceneId}","dialogue_segments":[{"speaker_character":"Canonical Character Name or NARRATOR","text":"verbatim utterance","start_sec":0.2,"end_sec":1.35,"delivery_pace":"natural","pause_after_sec":0.25}],"acting_beat":"...","blocking":"...","shot_size":"...","camera_movement":"...","eye_line_action":"...","video_prompt":"..."}
 
 Character Bible:
 ${JSON.stringify(cast)}
@@ -112,7 +112,7 @@ ${JSON.stringify(compactScene)}
       endMs,
       audio: undefined,
     });
-    cursorMs = endMs + (index < parsed.length - 1 ? 120 : 0);
+    cursorMs = endMs + (index < parsed.length - 1 ? cue.pauseAfterMs ?? 120 : 0);
   }
 
   const details: Record<string, string> = {};

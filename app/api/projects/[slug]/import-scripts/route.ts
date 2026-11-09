@@ -11,7 +11,6 @@ import type { ProjectChunk, StoryProject, ProjectVideoPublishingPackage, VideoPu
 import { normalizeProjectStyleSettings } from "../../../../lib/visual-styles";
 import { isAiDramaSceneDuration } from "../../../../lib/ai-drama-scene-timing";
 import { normalizeContentGenre, normalizeSecondaryGenres, normalizeStorySetting } from "../../../../lib/content-genres";
-import { countScriptWords } from "../../../../lib/script-utils";
 
 export const runtime = "nodejs";
 
@@ -53,7 +52,6 @@ function validateEpisode(value: unknown, requireDiscreteDramaDurations = false):
 
   const scenes: JsonRecord[] = [];
   const numbers: number[] = [];
-  const dialogueIssues: string[] = [];
   for (let index = 0; index < payload.scenes.length; index += 1) {
     const scene = asRecord(payload.scenes[index]);
     if (!scene) return { message: `${chunkId}: cảnh thứ ${index + 1} không phải object.` };
@@ -72,24 +70,6 @@ function validateEpisode(value: unknown, requireDiscreteDramaDurations = false):
     const sceneDuration = scene.end_sec - scene.start_sec;
     if (sceneDuration > 15.01) return { message: `${id}: thời lượng cảnh vượt quá 15 giây.` };
     if (requireDiscreteDramaDurations && !isAiDramaSceneDuration(sceneDuration)) return { message: `${id}: AI Drama chỉ nhận thời lượng cảnh 5, 10 hoặc 15 giây.` };
-    const dialogueMode = String(scene.dialogue_mode ?? scene.dialogueMode ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
-    const dialogueSegments = Array.isArray(scene.dialogue_segments) ? scene.dialogue_segments : Array.isArray(scene.dialogueSegments) ? scene.dialogueSegments : [];
-    const dialogueSpeakers = new Set(dialogueSegments.map((item) => {
-      const segment = asRecord(item);
-      return String(segment?.speaker_character ?? segment?.speakerCharacter ?? segment?.speaker_character_id ?? segment?.speakerCharacterId ?? "").trim();
-    }).filter(Boolean));
-    const isDialogueLed = dialogueMode === "dialogue_led" || (!dialogueMode && dialogueSpeakers.size >= 2);
-    if (requireDiscreteDramaDurations && isDialogueLed) {
-      const cueText = dialogueSegments.map((item) => asRecord(item)?.text).filter((text): text is string => typeof text === "string").join(" ").trim();
-      const spokenText = cueText || (typeof scene.dialogue_or_voiceover === "string" ? scene.dialogue_or_voiceover : "");
-      const words = countScriptWords(spokenText);
-      const allowedDuration = [5, 10, 15].find((duration) => Math.abs(duration - sceneDuration) < 0.001) || sceneDuration;
-      const minimumWords = allowedDuration === 5 ? 10 : allowedDuration === 10 ? 20 : 30;
-      const maximumWords = allowedDuration * 3;
-      const expectedRange = allowedDuration === 5 ? "10–15" : allowedDuration === 10 ? "20–30" : "30–45";
-      if (words < minimumWords) dialogueIssues.push(`${id}: ${words}/${minimumWords} từ tối thiểu, mục tiêu ${expectedRange} từ cho ${allowedDuration}s`);
-      else if (words > maximumWords) dialogueIssues.push(`${id}: ${words} từ, vượt mức ${expectedRange} từ cho ${allowedDuration}s (tối đa 3 từ/giây)`);
-    }
     const declaredDuration = scene.duration_sec ?? scene.durationSec;
     if (requireDiscreteDramaDurations && declaredDuration !== undefined
       && (!isAiDramaSceneDuration(declaredDuration) || Math.abs(Number(declaredDuration) - sceneDuration) >= 0.001)) {
@@ -102,12 +82,6 @@ function validateEpisode(value: unknown, requireDiscreteDramaDurations = false):
     if (scene.media_type !== "image" && scene.media_type !== "video") return { message: `${id}: media_type chỉ nhận image hoặc video.` };
     if (!Array.isArray(scene.risk_flags) || scene.risk_flags.some((flag) => typeof flag !== "string")) return { message: `${id}: risk_flags phải là mảng chuỗi.` };
     scenes.push({ ...scene, id });
-  }
-
-  if (dialogueIssues.length) {
-    const visibleIssues = dialogueIssues.slice(0, 10).join("; ");
-    const moreIssues = dialogueIssues.length > 10 ? `; và ${dialogueIssues.length - 10} cảnh khác` : "";
-    return { message: `Kịch bản ${chunkId} chưa đạt nhịp thoại dialogue_led: ${visibleIssues}${moreIssues}. visual_led/im lặng có chủ đích được miễn.` };
   }
 
   for (let index = 1; index < numbers.length; index += 1) {
