@@ -1,40 +1,35 @@
-# Cài StoryAI trên máy cá nhân
+# Chạy StoryAI trên Windows bằng npm
 
-Gói này chạy StoryAI bằng Docker. Project, ảnh, video và file render được lưu trong thư mục `data/` cạnh launcher trên chính máy cài ứng dụng. Mỗi máy có bộ dữ liệu riêng.
+StoryAI chạy trực tiếp trên máy, mở giao diện trong trình duyệt tại `http://localhost:3011`. Cách này không cần Docker.
 
-## Yêu cầu
+## Cài một lần
 
-- Windows hoặc macOS: cài Docker Desktop và mở Docker Desktop trước khi chạy StoryAI.
-- Linux: cài Docker Engine và Docker Compose v2.
-- Máy có kết nối Internet khi cài lần đầu và khi tải bản cập nhật.
-- Người dùng đăng nhập bằng tài khoản MaiVideo.
+1. Cài Node.js 22 trở lên và Git for Windows.
+2. Cài FFmpeg nếu cần ghép và xuất video MP4; lệnh `ffmpeg` và `ffprobe` cần dùng được trong PowerShell.
+3. Mở PowerShell tại thư mục muốn đặt StoryAI rồi chạy:
 
-## Khởi chạy
+```powershell
+git clone https://github.com/nghiencarcom/storydola.git StoryAI
+cd StoryAI
+npm start
+```
 
-1. Giải nén gói vào một thư mục ổn định trên máy.
-2. Windows: mở `Start StoryAI.bat`.
-3. macOS: mở `Start StoryAI.command`. Nếu macOS chặn lần đầu, nhấp phải file và chọn **Open**.
-4. Linux: chạy `./scripts/start-storyai.sh` trong thư mục đã giải nén.
-5. Lần đầu chạy sẽ tạo file `.env` và sinh khóa mã hóa riêng cho máy. Cấu hình đã trỏ tới image StoryAI công khai; bạn chỉ cần sửa `STORYAI_IMAGE` trong `.env` nếu người phát hành cung cấp registry khác.
-6. Launcher tải image mới nhất, khởi động ứng dụng và mở trình duyệt tại `http://localhost:3011`.
+Lần chạy đầu sẽ tự cài thư viện, build ứng dụng, tạo file `.env` cùng khóa mã hóa riêng cho máy, rồi mở trình duyệt. Người dùng đăng nhập bằng tài khoản MaiVideo.
 
-Nếu image nằm trong GHCR riêng tư, đăng nhập một lần bằng `docker login ghcr.io` trước khi chạy launcher. Để người dùng không cần tài khoản GitHub, người phát hành cần đặt package container ở chế độ public.
+## Mở ứng dụng và cập nhật
 
-## Cập nhật và dừng
+Mỗi lần muốn mở StoryAI, vào thư mục `StoryAI` trong PowerShell và chạy `npm start`. Với bản clone sạch trên nhánh `main`, lệnh này kiểm tra và tải mã mới từ GitHub, cài lại thư viện nếu cần, build khi mã nguồn thay đổi rồi khởi động ứng dụng. Cần có Internet để kiểm tra bản cập nhật.
 
-Mỗi lần mở launcher, StoryAI kiểm tra registry và tải image mới nếu có, rồi khởi động lại ứng dụng. Khi đang làm việc, lưu nội dung trước khi chạy launcher để cập nhật. Mã nguồn mới chỉ tới máy người dùng sau khi người phát hành đẩy bản cập nhật lên nhánh chính và workflow xuất bản image hoàn tất.
-
-Windows: `Stop StoryAI.bat`. macOS: `Stop StoryAI.command`. Linux: `./scripts/stop-storyai.sh`. Lệnh dừng giữ nguyên thư mục `data/`.
+Giữ cửa sổ Terminal mở trong lúc sử dụng. Nhấn `Ctrl+C` để dừng ứng dụng. Nếu đã sửa mã nguồn trực tiếp, launcher sẽ bỏ qua cập nhật tự động để giữ các chỉnh sửa đó.
 
 ## Dữ liệu và cấu hình
 
-- Mỗi máy lưu dữ liệu cục bộ riêng trong thư mục `data/` cạnh launcher.
-- Image được cập nhật độc lập với thư mục dữ liệu, nên nâng cấp ứng dụng không thay project và media.
-- Giữ file `.env` an toàn. Không gửi file này hoặc thư mục `data/` công khai; `.env` chứa khóa và tùy chọn API.
-- Không xóa hoặc đổi `SEEDANCE_CREDENTIALS_ENCRYPTION_KEY` sau khi đã lưu API key trong ứng dụng. Hãy sao lưu cả khóa này khi sao lưu dữ liệu.
-- Ảnh đã chọn từ MaiVideo Media Library được tải về thư mục `data/` của StoryAI. Thư viện gốc vẫn thuộc tài khoản MaiVideo.
-- Các tích hợp HTMLVideo và OmniVoice mặc định tìm dịch vụ trên máy cài Docker tại cổng 3000 và 8000. Nếu không dùng các tích hợp này, có thể để nguyên. Trên Linux hoặc khi dịch vụ ở máy khác, sửa `STORYAI_HTMLVIDEO_BASE_URL` và `STORYAI_OMNIVOICE_BASE_URL` trong `.env` thành URL truy cập được từ Docker.
+- Mỗi máy lưu project, media và file render riêng trong thư mục `data/` cạnh mã nguồn; dữ liệu không tự đồng bộ giữa các máy.
+- File `.env` và thư mục `data/` không bị ghi đè khi cập nhật. Không xóa hoặc đổi `SEEDANCE_CREDENTIALS_ENCRYPTION_KEY` sau khi đã lưu API key.
+- Sao lưu cả `data/` và `.env`. Khi chuyển sang máy khác, chép chúng vào thư mục StoryAI mới để khôi phục dữ liệu và giữ nguyên khóa mã hóa.
+- Ảnh chọn từ MaiVideo Media Library được tải về thư mục `data/` local; thư viện gốc vẫn thuộc tài khoản MaiVideo.
+- Tính năng render MP4 cần FFmpeg và FFprobe trong `PATH`. Các tích hợp HTMLVideo và OmniVoice mặc định tìm dịch vụ local ở cổng 3000 và 8000.
 
-## Chuyển sang máy khác
+## Tải mã nguồn ZIP
 
-Sao chép thư mục `data/` và file `.env` sang gói cài đặt trên máy mới. Giữ nguyên `SEEDANCE_CREDENTIALS_ENCRYPTION_KEY` để mở lại API key đã lưu. Nếu chỉ cài gói mới mà không chép `data/`, StoryAI sẽ bắt đầu với dữ liệu trống.
+Có thể tải **Source code (zip)** từ [GitHub Releases](https://github.com/nghiencarcom/storydola/releases). Giải nén, cài thư viện bằng `npm ci`, rồi chạy `npm start`. Bản ZIP không có metadata Git nên không tự tải cập nhật; dùng `git clone` ở hướng dẫn trên để nhận cập nhật tự động.

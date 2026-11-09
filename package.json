@@ -5,9 +5,9 @@
   "scripts": {
     "dev": "next dev -p 3011",
     "build": "next build",
-    "start": "./scripts/start-supervised.sh",
+    "start": "node scripts/start-storyai.js",
     "start:server": "node scripts/start-next-server.js",
-    "start:supervised": "./scripts/start-supervised.sh",
+    "start:supervised": "node scripts/start-storyai.js",
     "lint": "next lint"
   },
   "dependencies": {

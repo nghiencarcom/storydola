@@ -1,28 +1,27 @@
-# Phát hành StoryAI cho người dùng
+# StoryAI distribution
 
-## Phân phối hiện tại
+## Direct Windows use with npm
 
-- Mã nguồn: `https://github.com/nghiencarcom/storydola`.
-- Container công khai: `ghcr.io/nghiencarcom/storydola:latest`.
-- Mỗi lần cập nhật nhánh `main`, GitHub Actions tự build và xuất bản image `latest`.
-- Cấu hình mặc định đã trỏ vào image này. Người dùng tải mã nguồn hoặc gói cài đặt, giải nén và chạy launcher theo `README-USER.md`.
-- Launcher kiểm tra image mới mỗi lần mở ứng dụng. Dữ liệu trong `data/` và cấu hình `.env` ở lại trên máy người dùng khi cập nhật.
+Recommended for users who want to run StoryAI directly in a terminal without Docker.
 
-## Tạo gói cài đặt có phiên bản
+Requirements: Node.js 22 or newer, Git for Windows, and FFmpeg/FFprobe in `PATH` for MP4 rendering.
 
-Trong bản sao Git của repository, tạo và đẩy tag phiên bản:
-
-```sh
-git tag v0.1.0
-git push origin v0.1.0
+```powershell
+git clone https://github.com/nghiencarcom/storydola.git StoryAI
+cd StoryAI
+npm start
 ```
 
-Workflow sẽ build image có tag tương ứng và tạo GitHub Release chứa `storyai-installer.zip`. Người dùng tải ZIP từ mục Releases, cài Docker Desktop hoặc Docker Engine, giải nén rồi chạy launcher cho hệ điều hành của họ.
+`npm start` creates local `.env` and its encryption key on first run, installs dependencies if needed, builds the production app, and serves it at `http://localhost:3011`. On later starts, it fast-forwards a clean clone on `main` to the latest commit, then reinstalls dependencies or rebuilds only when required. If the source folder contains local tracked changes, the updater skips `git pull` to preserve them.
 
-## Dữ liệu và cập nhật
+## Optional Docker distribution
 
-- Mỗi máy có dữ liệu riêng trong thư mục `data/`; dữ liệu không tự đồng bộ giữa các máy.
-- Sao lưu `data/` và `.env` riêng. Giữ nguyên `SEEDANCE_CREDENTIALS_ENCRYPTION_KEY` để đọc lại các API key đã mã hóa.
-- Push mã nguồn lên `main` sẽ xuất bản image mới. Người dùng chạy lại launcher để tải image đó và khởi động phiên bản mới.
-- Nếu image không tải được, launcher thử chạy image đã có. Nếu image mới không vượt health check, launcher khôi phục image trước đó; thư mục dữ liệu được giữ nguyên.
-- Chỉ chạy một container với mỗi thư mục `data/`. Mặc định ứng dụng chỉ truy cập từ máy cài đặt ở `http://localhost:3011`.
+The public GHCR image remains available at `ghcr.io/nghiencarcom/storydola:latest`. The release asset `storyai-installer.zip` is for Docker-based installs. Users following the direct npm method should clone the repository as described above; downloading GitHub's source ZIP does not include Git metadata and therefore cannot auto-update.
+
+## Data and updates
+
+- Each user keeps projects, media, renders, and API credentials in local `data/` and `.env` files.
+- Git ignores those local files, so pulling source updates leaves them in place.
+- Back up `data/` and `.env` together. Keep `SEEDANCE_CREDENTIALS_ENCRYPTION_KEY` unchanged to read saved API credentials.
+- npm-based updates are checked when the user runs `npm start`; running instances do not hot-swap code in the background.
+- Docker-based installations check the image when their launcher runs.
