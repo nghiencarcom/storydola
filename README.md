@@ -28,6 +28,9 @@ See [README-USER.md](README-USER.md) for setup, updates, and local data details.
 
 - [PhimUS](plugins/PhimUS.zip)
 - [PhimViet](plugins/PhimViet.zip)
+
+Cả hai plugin tự đánh giá hook, xung đột, logic, nhịp kể, lời thoại và TTS; chúng tự sửa tối đa hai lượt trước khi trả kịch bản.
+
 - [Trend bank (2005–2026)](plugins/drama-viet/references/trend-bank-2005-2026.md)
 - [Trend vocabulary](plugins/drama-viet/references/trend-vocabulary.md)
 
