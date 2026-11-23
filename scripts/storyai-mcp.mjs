@@ -1,18 +1,39 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { isIP } from "node:net";
 import { z } from "zod";
 
 const token = process.env.STORYAI_MCP_TOKEN?.trim() || "";
 const configuredBaseUrl = process.env.STORYAI_URL?.trim() || "http://127.0.0.1:3012";
 
+function isPrivateNetworkAddress(host) {
+  const version = isIP(host);
+  if (version === 4) {
+    const [first, second] = host.split(".").map(Number);
+    return first === 10
+      || first === 127
+      || (first === 172 && second >= 16 && second <= 31)
+      || (first === 192 && second === 168)
+      || (first === 169 && second === 254)
+      || (first === 100 && second >= 64 && second <= 127);
+  }
+  if (version === 6) {
+    const normalized = host.toLowerCase();
+    return normalized === "::1" || normalized.startsWith("fc") || normalized.startsWith("fd") || /^fe[89ab]/.test(normalized);
+  }
+  return host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local");
+}
+
 function resolveBaseUrl(value) {
   const url = new URL(value);
   const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  if (!(["localhost", "127.0.0.1", "::1"].includes(host)) || !["http:", "https:"].includes(url.protocol)) {
-    throw new Error("STORYAI_URL must point to the local StoryAI server on localhost.");
-  }
+  if (!["http:", "https:"].includes(url.protocol)) throw new Error("STORYAI_URL must use HTTP or HTTPS.");
   if (url.username || url.password || url.search || url.hash) throw new Error("STORYAI_URL must not contain credentials, query parameters, or a fragment.");
+  if (url.pathname !== "/") throw new Error("STORYAI_URL must point to the root of the StoryAI server.");
+  if (url.protocol === "http:" && !isPrivateNetworkAddress(host)) {
+    throw new Error("For a remote StoryAI server, STORYAI_URL must use HTTPS. HTTP is allowed only for localhost or a private LAN address.");
+  }
   return url.origin;
 }
 

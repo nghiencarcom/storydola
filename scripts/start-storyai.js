@@ -229,26 +229,143 @@ function portFromConfig() {
   return Number(match?.[1] || 3012);
 }
 
-function assertPortAvailable(port) {
+function bindHostFromConfig() {
+  if (process.env.STORYAI_BIND_HOST?.trim()) return process.env.STORYAI_BIND_HOST.trim();
+  const envFile = path.join(projectRoot, ".env");
+  const content = fs.existsSync(envFile) ? fs.readFileSync(envFile, "utf8") : "";
+  const match = content.match(/^STORYAI_BIND_HOST=(.*)\s*$/m);
+  const configuredHost = match?.[1]?.trim().replace(/^(?:"([^"]*)"|'([^']*)')$/, (_, doubleQuoted, singleQuoted) => doubleQuoted ?? singleQuoted) || "127.0.0.1";
+  const value = configuredHost.replace(/^\[|\]$/g, "");
+  if (!/^[A-Za-z0-9.:[\]_-]+$/.test(value)) throw new Error("STORYAI_BIND_HOST must be a hostname or IP address.");
+  return value;
+}
+
+function healthCheckHost(bindHost) {
+  return bindHost === "0.0.0.0" || bindHost === "::" || bindHost === "[::]" ? "127.0.0.1" : bindHost;
+}
+
+function urlHost(host) {
+  return net.isIP(host.replace(/^\[|\]$/g, "")) === 6 && !host.startsWith("[") ? `[${host}]` : host;
+}
+
+function listeningProcessIds(port) {
+  if (isWindows) {
+    const output = capture("netstat.exe", ["-ano", "-p", "tcp"]);
+    return [...new Set(output.split(/\r?\n/).flatMap((line) => {
+      const columns = line.trim().split(/\s+/);
+      const stateIndex = columns.indexOf("LISTENING");
+      if (stateIndex < 0 || !columns[1]?.endsWith(`:${port}`)) return [];
+      const pid = columns[stateIndex + 1];
+      return /^\d+$/.test(pid || "") ? [pid] : [];
+    }))];
+  }
+  return [...new Set(capture("lsof", ["-nP", "-t", `-iTCP:${port}`, "-sTCP:LISTEN"]).split(/\s+/).filter((pid) => /^\d+$/.test(pid)))];
+}
+
+function processInfo(pid) {
+  if (isWindows) {
+    const command = `$p = Get-CimInstance Win32_Process -Filter 'ProcessId = ${Number(pid)}' -ErrorAction SilentlyContinue; if ($p) { [pscustomobject]@{ ParentProcessId = $p.ParentProcessId; CommandLine = $p.CommandLine } | ConvertTo-Json -Compress }`;
+    const output = capture("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command]);
+    try {
+      const value = JSON.parse(output);
+      return { parentPid: Number(value.ParentProcessId), command: String(value.CommandLine || "") };
+    } catch {
+      return undefined;
+    }
+  }
+  const output = capture("ps", ["-o", "ppid=,command=", "-p", String(pid)]);
+  const match = output.match(/^(\d+)\s+([\s\S]+)$/);
+  return match ? { parentPid: Number(match[1]), command: match[2] } : undefined;
+}
+
+function findStoryAISupervisor(listenerPid) {
+  let pid = Number(listenerPid);
+  const visited = new Set();
+  for (let depth = 0; pid > 1 && depth < 16 && !visited.has(pid); depth += 1) {
+    visited.add(pid);
+    const info = processInfo(pid);
+    if (!info) return undefined;
+    if (/scripts[\\/]start-storyai\.js(?:\s|$)/i.test(info.command)) return pid;
+    pid = info.parentPid;
+  }
+  return undefined;
+}
+
+function assertPortAvailable(port, bindHost) {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
     server.once("error", (error) => {
-      if (error.code === "EADDRINUSE") reject(new Error(`Port ${port} is already in use. Stop the other StoryAI process or change PORT in .env.`));
+      if (error.code === "EADDRINUSE") {
+        const occupied = new Error(`Port ${port} is already in use.`);
+        occupied.code = "EADDRINUSE";
+        reject(occupied);
+      }
       else reject(error);
     });
-    server.listen(port, "127.0.0.1", () => server.close(resolve));
+    server.listen(port, bindHost, () => server.close(resolve));
   });
 }
 
-async function isStoryAIAlreadyRunning(port) {
+async function isStoryAIAlreadyRunning(port, bindHost) {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/login`, { signal: AbortSignal.timeout(1500) });
+    const host = urlHost(healthCheckHost(bindHost));
+    const response = await fetch(`http://${host}:${port}/login`, { signal: AbortSignal.timeout(1500) });
     if (!response.ok) return false;
     const html = await response.text();
     return /<title>\s*StoryAI\b/i.test(html);
   } catch {
     return false;
   }
+}
+
+async function waitUntilPortIsFree(port, bindHost, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await assertPortAvailable(port, bindHost);
+      return true;
+    } catch (error) {
+      if (error.code !== "EADDRINUSE") throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+  return false;
+}
+
+async function stopPreviousStoryAI(port, bindHost) {
+  try {
+    await assertPortAvailable(port, bindHost);
+    return;
+  } catch (error) {
+    if (error.code !== "EADDRINUSE") throw error;
+  }
+
+  if (!(await isStoryAIAlreadyRunning(port, bindHost))) {
+    throw new Error(`Port ${port} is occupied by another application. Stop it or change PORT in .env.`);
+  }
+
+  const listeners = listeningProcessIds(port);
+  const supervisors = [...new Set(listeners.map(findStoryAISupervisor).filter(Boolean))];
+  if (!supervisors.length) {
+    throw new Error(`StoryAI is using port ${port}, but its launcher process could not be identified safely. Stop that StoryAI process manually, then run npm start again.`);
+  }
+
+  for (const pid of supervisors) {
+    log(`Stopping previous StoryAI supervisor (PID ${pid}) to reuse port ${port}.`);
+    if (isWindows) {
+      const result = spawnSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+      if (result.error) throw new Error(`Could not stop the previous StoryAI process: ${result.error.message}`);
+    } else {
+      try { process.kill(pid, "SIGTERM"); } catch (error) {
+        if (error.code !== "ESRCH") throw error;
+      }
+    }
+  }
+
+  if (!(await waitUntilPortIsFree(port, bindHost))) {
+    throw new Error(`The previous StoryAI process did not release port ${port}. Stop it manually, then run npm start again.`);
+  }
+  log(`Previous StoryAI process stopped; port ${port} is free.`);
 }
 
 function openBrowser(url) {
@@ -281,10 +398,11 @@ function stop(signal) {
 process.once("SIGINT", () => stop("Ctrl+C"));
 process.once("SIGTERM", () => stop("SIGTERM"));
 
-async function serve(port) {
-  const url = `http://localhost:${port}`;
+async function serve(port, bindHost) {
+  const url = `http://${urlHost(healthCheckHost(bindHost))}:${port}`;
   process.env.PORT = String(port);
-  process.env.HOSTNAME = "127.0.0.1";
+  process.env.STORYAI_BIND_HOST = bindHost;
+  process.env.HOSTNAME = bindHost;
   log(`StoryAI is starting at ${url}. Press Ctrl+C to stop.`);
 
   while (!stopping) {
@@ -341,22 +459,12 @@ async function main() {
   const appVersion = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8")).version;
   const gitCommit = capture("git", ["rev-parse", "--short", "HEAD"]) || "source archive";
   log(`Runtime: StoryAI ${appVersion}; Node.js ${process.versions.node}; ${process.platform}/${process.arch}; Git ${gitCommit}.`);
+  const port = portFromConfig();
+  const bindHost = bindHostFromConfig();
+  await stopPreviousStoryAI(port, bindHost);
   ensureDependencies();
   ensureProductionBuild();
-
-  const port = portFromConfig();
-  try {
-    await assertPortAvailable(port);
-  } catch (error) {
-    if (await isStoryAIAlreadyRunning(port)) {
-      const url = `http://localhost:${port}`;
-      log(`StoryAI is already running at ${url}.`);
-      openBrowser(url);
-      return;
-    }
-    throw error;
-  }
-  await serve(port);
+  await serve(port, bindHost);
 }
 
 main().catch((error) => {

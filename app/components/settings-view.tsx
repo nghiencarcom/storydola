@@ -367,6 +367,7 @@ export function SettingsView() {
         {agentAccessLoading && <p role="status">Đang đọc trạng thái token và cấu hình CLI…</p>}
         {agentAccessNotice && <div className={`seedance-account-notice ${agentAccessNotice.tone}`} role="status">{agentAccessNotice.text}</div>}
         <small className="seedance-key-help">Cấu hình được ghi trên máy chạy StoryAI vào thư mục CLI tương ứng. Sau khi kết nối, hãy khởi động lại terminal/agent. Tạo token mới sẽ yêu cầu cập nhật lại các CLI đã cài.</small>
+        <small className="seedance-key-help">CLI trên máy khác cần cấu hình thủ công: trên máy chạy StoryAI đặt STORYAI_BIND_HOST=0.0.0.0 trong .env rồi chạy lại npm start; trên máy CLI, cài repo bằng npm ci và đặt STORYAI_URL=http://&lt;IP-máy-StoryAI&gt;:3012 cùng STORYAI_MCP_TOKEN vào cấu hình MCP, dùng đường dẫn scripts/storyai-mcp.mjs trong bản clone ở máy đó. Chỉ dùng HTTP trong mạng riêng; truy cập qua Internet cần HTTPS. Token chỉ hiện một lần khi tạo.</small>
       </section>
       <section className="settings-card settings-card-wide panel-card" id="maivideo-api-keys">
         <div className="section-kicker">MAIVIDEO</div>
