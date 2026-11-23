@@ -2433,8 +2433,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .timelapse-library-modal > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: auto; padding: 14px 20px; border-top: 1px solid #eef1f5; color: #8792a3; font-size: 11px; }
 .timelapse-library-modal > footer > div { display: flex; gap: 8px; }
 @media (max-width: 1050px) { .timelapse-transition-content { grid-template-columns: 1fr; } .timelapse-video-preview, .timelapse-video-placeholder { min-height: 210px; } }
+@media (max-width: 1200px) {
+  .timelapse-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .timelapse-batch-setting { grid-column: 1 / -1; }
+  .timelapse-batch-setting .primary-button { width: 100%; min-width: 0; max-width: 100%; height: auto; min-height: 44px; padding: 9px 12px; line-height: 1.25; white-space: normal; text-align: center; }
+}
 @media (max-width: 760px) { .timelapse-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .timelapse-section-heading { align-items: flex-start; } .timelapse-count-pill { font-size: 9px; } .timelapse-toolbar { align-items: flex-start; flex-direction: column; } .timelapse-json-actions > span { flex-basis: 100%; margin-left: 0; } }
-@media (max-width: 560px) { .timelapse-page-heading { align-items: flex-start; flex-direction: column; } .timelapse-card { padding: 14px; } .timelapse-image-list { grid-template-columns: repeat(2, minmax(0, 1fr)); } .timelapse-settings-grid { grid-template-columns: 1fr 1fr; gap: 9px; } .timelapse-transition-card { padding: 12px; } .timelapse-pair-images { grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr); gap: 4px; } .timelapse-json-footer { align-items: stretch; flex-direction: column; } .timelapse-json-footer .primary-button { width: 100%; } .timelapse-modal-backdrop { padding: 10px; } .timelapse-library-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 12px; } }
+@media (max-width: 560px) { .timelapse-page-heading { align-items: flex-start; flex-direction: column; } .timelapse-section-heading { align-items: flex-start; flex-direction: column; gap: 9px; } .timelapse-section-heading > div { width: 100%; } .timelapse-card { padding: 14px; } .timelapse-image-list { grid-template-columns: repeat(2, minmax(0, 1fr)); } .timelapse-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; } .timelapse-transition-card { padding: 12px; } .timelapse-pair-images { grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr); gap: 4px; } .timelapse-json-footer { align-items: stretch; flex-direction: column; } .timelapse-json-footer .primary-button { width: 100%; } .timelapse-modal-backdrop { padding: 10px; } .timelapse-library-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 12px; } }
 @media (max-width: 760px) { .timelapse-page-wrap { padding: 16px 16px 24px; } .timelapse-hero { align-items: flex-start; flex-direction: column; padding: 18px; } .timelapse-hero-aside { justify-items: start; width: 100%; } .timelapse-json-inline-head { align-items: flex-start; flex-direction: column; } .timelapse-toolbar { align-items: flex-start; flex-direction: column; } }
 @media (max-width: 560px) { .timelapse-page-wrap { padding: 11px 10px 20px; } .timelapse-hero { gap: 16px; padding: 16px; } .timelapse-hero-stats { flex-wrap: wrap; } .timelapse-transition-config, .timelapse-json-inline { padding: 11px; } .timelapse-json-inline .timelapse-json-actions { flex-wrap: wrap; } .timelapse-workflow-card > .timelapse-output-section { margin-top: 18px; padding-top: 15px; } }
 
@@ -3005,11 +3010,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (max-width: 1080px) {
   .sales-ugc-content-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sales-ugc-content-grid > .form-field:last-child { grid-column: 1 / -1; }
+  .sales-video-model-fields.is-ugc { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 1180px) {
   .sales-reference-assets-layout {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-template-areas: "character-title product-primary-title" "character product-primary" "product-secondary-title product-secondary" "product-help product-help";
+    grid-template-areas: "character-title product-primary-title" "character product-primary" "product-secondary-title product-secondary-title" "product-secondary product-secondary" "product-help product-help";
   }
 }
 @media (max-width: 760px) {
