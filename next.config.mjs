@@ -7,7 +7,7 @@ const nextConfig = {
   // projects, media, and API credentials, so they must stay in the persistent
   // runtime data directory and must not enter Next.js deployment traces.
   outputFileTracingExcludes: {
-    "/*": ["./data/**/*"],
+    "/*": ["./data/**/*", "./.git/**/*"],
   },
   experimental: {
     // Sales-video accepts up to 100 MiB of files plus multipart form overhead.

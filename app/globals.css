@@ -1838,11 +1838,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .new-project-view.ai-drama-view .ai-drama-sticky-heading { top: 64px; }
 }
 @media (max-width: 1180px) {
+  .new-project-view.ai-drama-view .ai-drama-sticky-heading { flex-wrap: wrap; }
+  .new-project-view.ai-drama-view .page-heading-actions { width: 100%; flex: 1 1 100%; flex-wrap: wrap; justify-content: flex-start; }
   .new-project-view.ai-drama-view .ai-drama-output-section .content-output-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (max-width: 760px) {
   .new-project-view.ai-drama-view .ai-drama-sticky-heading { align-items: center; flex-wrap: wrap; gap: 8px 12px; }
-  .new-project-view.ai-drama-view .page-heading-actions { width: auto; margin-left: auto; }
+  .new-project-view.ai-drama-view .page-heading-actions { width: 100%; flex: 1 1 100%; margin-left: 0; }
   .new-project-view.ai-drama-view .ai-drama-output-section .content-output-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .new-project-view.ai-drama-view .ai-drama-genre-settings { grid-template-columns: minmax(0, 1fr); }
 }

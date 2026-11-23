@@ -175,21 +175,20 @@ function runProcess(executable: string, args: string[], cwd: string, stdinText: 
     let stdout = "";
     let stderr = "";
     let settled = false;
-    let timer: NodeJS.Timeout | undefined;
-    const finish = (cause?: Error, value?: { stdout: string; stderr: string }) => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      if (cause) reject(cause);
-      else resolve(value || { stdout, stderr });
-    };
-    timer = setTimeout(() => {
+    const timer = setTimeout(() => {
       child.kill("SIGTERM");
       setTimeout(() => child.kill("SIGKILL"), 4_000).unref();
       const error = new Error("AGENT_RUN_TIMEOUT: Coding agent did not finish in time.");
       error.name = "AGENT_RUN_TIMEOUT";
       finish(error);
     }, timeoutMs);
+    function finish(cause?: Error, value?: { stdout: string; stderr: string }) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (cause) reject(cause);
+      else resolve(value || { stdout, stderr });
+    }
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {

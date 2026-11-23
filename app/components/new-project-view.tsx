@@ -798,9 +798,17 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
           {!isNewAiDrama && <p className="heading-subtitle">{fixedPresetId ? `Luồng tạo riêng cho ${STORY_PRESETS[fixedPresetId].label}; loại dự án được cố định từ lúc tạo.` : "Chọn cấu hình trước khi bước vào màn hình sử dụng."}</p>}
         </div>
         <div className="page-heading-actions">
-          {isNewAiDrama && <button className="primary-button" form="project-setup-form" type="submit" disabled={saving}>
-            <Icon name="save" size={16} />{saving ? "Đang tạo project…" : "Tạo project"}
-          </button>}
+          {isNewAiDrama && <>
+            <a className="secondary-button" href="https://story.maivideo.top/gpt-config/maivideo-drama-writer.zip" download>
+              <Icon name="download" size={16} />Tải Plugin
+            </a>
+            <a className="secondary-button" href="https://story.maivideo.top/gpt-config/maivideo-drama-writer-skill.zip" download>
+              <Icon name="download" size={16} />Tải skill viết kịch bản
+            </a>
+            <button className="primary-button" form="project-setup-form" type="submit" disabled={saving}>
+              <Icon name="save" size={16} />{saving ? "Đang tạo project…" : "Tạo project"}
+            </button>
+          </>}
           <Link className="secondary-button" href={projectSlug ? `/projects/${projectSlug}` : "/projects"}>Hủy</Link>
         </div>
       </section>

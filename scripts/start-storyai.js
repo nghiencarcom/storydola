@@ -47,7 +47,8 @@ function ensureLocalConfig() {
   const envPath = path.join(projectRoot, ".env");
   const examplePath = path.join(projectRoot, ".env.example");
   if (!fs.existsSync(envPath)) {
-    fs.copyFileSync(examplePath, envPath, { mode: 0o600 });
+    fs.copyFileSync(examplePath, envPath);
+    fs.chmodSync(envPath, 0o600);
     log("Created .env from .env.example.");
   }
 

@@ -9,12 +9,12 @@
     "start:server": "PORT=${PORT:-3012} node scripts/start-next-server.js",
     "start:supervised": "PORT=${PORT:-3012} ./scripts/start-supervised.sh",
     "mcp": "node scripts/storyai-mcp.mjs",
-    "lint": "next lint"
+    "lint": "eslint ."
   },
   "dependencies": {
     "@fal-ai/client": "^1.11.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "next": "16.2.12",
+    "next": "16.4.6",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "sharp": "^0.35.5",
@@ -24,6 +24,8 @@
     "@types/node": "20.19.43",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
+    "eslint": "10.15.0",
+    "eslint-config-next": "16.4.6",
     "typescript": "6.0.3"
   }
 }
