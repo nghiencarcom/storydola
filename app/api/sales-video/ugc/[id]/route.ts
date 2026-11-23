@@ -197,7 +197,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   form.set("duration", String(duration));
   form.set("ratio", details.ratio || "9:16");
   form.set("model", details.videoModelId || "");
-  form.set("contentStyle", details.contentStyle || "problem-solution");
   form.set("claimCategory", details.claimCategory || "general");
   form.set("prompt", promptSegments[0].prompt);
   form.set("promptSegments", JSON.stringify(promptSegments));

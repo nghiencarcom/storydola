@@ -21,54 +21,15 @@ export const salesVideoTemplates = [
 
 export const salesVideoDurations = [10, 15, 20, 25, 30, 45, 60] as const;
 export const salesVideoRatios = ["9:16", "16:9"] as const;
-export const salesVideoContentStyles = [
-  { id: "problem-solution", label: "Hỏi vấn đề – đáp giải pháp", framework: "PAS · Problem – Agitate – Solution", uiSummary: "Một người hỏi nêu rắc rối thật → người dẫn làm rõ bất tiện → đưa giải pháp có căn cứ. Chỉ kiểu này dùng hai vai; nếu có một ảnh nhân vật, người hỏi ở ngoài khung hình.", guidance: "Mở bằng một người hỏi nêu vấn đề đời thường; làm rõ bất tiện bằng một câu ngắn rồi người giới thiệu đưa giải pháp, minh họa một tính năng có căn cứ và nêu giới hạn phù hợp. Giữ hội thoại tự nhiên, không xúc phạm hay hù dọa." },
-  { id: "review", label: "Review / đánh giá cân bằng", framework: "BAB · Before – After – Bridge", uiSummary: "Tình huống ban đầu → điều muốn cải thiện → trải nghiệm thật → nhận xét cân bằng. Nếu chưa có trải nghiệm, kể theo tình huống giả định và không nhận đã dùng.", guidance: "Kể từ tình huống trước khi dùng, điều người dùng muốn cải thiện, rồi nối sang trải nghiệm/đánh giá thực tế và điểm cần cân nhắc. Chỉ khẳng định kết quả sau khi dùng nếu có ghi chép trải nghiệm thật; nếu chưa có, dùng tình huống giả định có điều kiện, không giả làm khách hàng." },
-  { id: "how-to", label: "Hướng dẫn sử dụng", framework: "FAB · Feature – Advantage – Benefit", uiSummary: "Tính năng đã xác minh → thao tác/lợi thế → ích lợi trong tình huống cụ thể. Chỉ hướng dẫn bước có căn cứ và minh họa được.", guidance: "Với mỗi bước, nối tính năng đã xác minh với lợi thế thao tác và lợi ích cụ thể cho người dùng. Người dẫn vừa nói vừa minh họa đúng thao tác; không bịa hướng dẫn hoặc hiệu quả." },
-  { id: "before-buy", label: "Cân nhắc trước khi mua", framework: "AIDA · Attention – Interest – Desire – Action", uiSummary: "Nhu cầu → thông tin liên quan → ai có thể thấy phù hợp → điều cần kiểm tra và lời mời cân nhắc nhẹ.", guidance: "Thu hút bằng một nhu cầu thật, giúp người xem hiểu điểm liên quan, gợi hình dung sản phẩm phù hợp với ai và kết bằng lời mời kiểm tra/so sánh nhẹ nhàng. Nêu cả điều kiện cần cân nhắc, không gây áp lực mua." },
-  { id: "after-buy", label: "Mở hộp / ấn tượng ban đầu", framework: "PPP · Promise – Picture – Proof", uiSummary: "Kỳ vọng có căn cứ → chi tiết mở hộp/bắt đầu dùng nhìn thấy → bằng chứng từ nguồn hoặc trải nghiệm đã nhập. Chưa có trải nghiệm thì không gọi là review sau mua.", guidance: "Nêu kỳ vọng có căn cứ, mô tả khoảnh khắc mở hộp/bắt đầu sử dụng rồi đưa bằng chứng nhìn thấy hoặc trải nghiệm thật người dùng đã cung cấp. Nếu chưa có trải nghiệm, chỉ gọi đó là mở hộp/ấn tượng ban đầu; không tự nhận đã mua hoặc dùng." },
-  { id: "comparison", label: "So sánh theo tiêu chí", framework: "4P · Promise – Picture – Proof – Push", uiSummary: "Giá trị → tình huống dùng → bằng chứng/tiêu chí chung → để người xem tự chọn theo nhu cầu. Không tự dựng đối thủ hoặc số liệu.", guidance: "Đặt lời hứa giá trị có căn cứ, hình dung tình huống sử dụng, đưa bằng chứng/tiêu chí kiểm tra rồi kết bằng lời mời chọn theo nhu cầu. Chỉ so sánh đối thủ khi có dữ liệu cùng tiêu chí; nếu thiếu, không kết luận thắng thua." },
-] as const;
 export const salesVideoClaimCategories = [
   { id: "general", label: "Thông tin sản phẩm thông thường" },
   { id: "health", label: "Sức khỏe / chăm sóc sức khỏe" },
   { id: "finance", label: "Tài chính / đầu tư" },
 ] as const;
-export type SalesVideoContentStyle = typeof salesVideoContentStyles[number]["id"];
 export type SalesVideoClaimCategory = typeof salesVideoClaimCategories[number]["id"];
 
-export function salesVideoContentStyleGuidance(id: string) {
-  return salesVideoContentStyles.find((style) => style.id === id)?.guidance || salesVideoContentStyles[0].guidance;
-}
-
-export function salesVideoContentFramework(id: string) {
-  return salesVideoContentStyles.find((style) => style.id === id)?.framework || salesVideoContentStyles[0].framework;
-}
-
-export function salesVideoScriptStyleGuidance(id: string) {
-  if (id === "problem-solution") {
-    return "DÙNG PAS VÀ HỎI ĐÁP HAI VAI: Người hỏi ở ngoài khung hình nêu Problem, có thể nhấn nhẹ Agitate bằng hệ quả đời thường; người trả lời là nhân vật trong ảnh, đưa Solution bằng thông tin đã xác minh và minh họa. Kết bằng lưu ý/CTA ngắn. Mỗi lượt trên một dòng riêng, gắn nhãn ‘Người hỏi (ngoài khung hình):’ hoặc ‘Người trả lời:’. Không tạo thêm khuôn mặt.";
-  }
-  const instructions: Record<string, string> = {
-    review: "DÙNG BAB VÀ MỘT NGƯỜI DẪN: Đi từ tình huống trước khi dùng → thay đổi mong muốn → trải nghiệm thật làm cầu nối, kèm nhận xét cân bằng. Nếu chưa có trải nghiệm do người dùng nhập, chuyển thành tình huống giả định (‘nếu bạn…’) và đánh giá tính năng/điểm cần cân nhắc; tuyệt đối không tự xưng đã dùng hoặc khẳng định kết quả. Không hỏi đáp, không gắn nhãn vai.",
-    "how-to": "DÙNG FAB VÀ MỘT NGƯỜI DẪN: Hướng dẫn từng bước ngắn; nói tính năng nào được dùng, thao tác đó có lợi thế gì và giúp ích gì trong tình huống cụ thể. Chỉ hướng dẫn thao tác có căn cứ. Không hỏi đáp, không gắn nhãn vai.",
-    "before-buy": "DÙNG AIDA VÀ MỘT NGƯỜI DẪN: Hook vào nhu cầu → giải thích điều liên quan → giúp người xem tự hình dung độ phù hợp dựa trên nguồn → CTA nhẹ để kiểm tra/so sánh. Nêu một điều cần cân nhắc, không gây áp lực. Không hỏi đáp, không gắn nhãn vai.",
-    "after-buy": "DÙNG PPP VÀ MỘT NGƯỜI DẪN: Nêu kỳ vọng có căn cứ → mô tả cảnh mở hộp/bắt đầu dùng → đưa bằng chứng từ ảnh, nguồn hoặc trải nghiệm người dùng nhập. Nếu không có trải nghiệm, gọi đúng là mở hộp/ấn tượng ban đầu, không nhận đã mua/dùng hay tự bịa kết quả. Không hỏi đáp, không gắn nhãn vai.",
-    comparison: "DÙNG 4P VÀ MỘT NGƯỜI DẪN: Nêu giá trị có căn cứ → dựng tình huống sử dụng → đưa bằng chứng/tiêu chí đối chiếu → kết bằng lời mời chọn theo nhu cầu. Không bịa đối thủ, dữ liệu hoặc kết luận thắng thua; thiếu dữ liệu thì hướng dẫn người xem tự kiểm tra cùng tiêu chí. Không hỏi đáp, không gắn nhãn vai.",
-  };
-  return instructions[id] || instructions.review;
-}
-
-export function salesVideoScriptPlaceholder(id: string) {
-  const examples: Record<string, string> = {
-    "problem-solution": "Người hỏi (ngoài khung hình): Mình đang gặp [vấn đề], sản phẩm này giúp gì được không?\nNgười trả lời: Đây, mình chỉ bạn [tính năng/cách dùng đã xác minh].",
-    review: "Điều đầu tiên mình chú ý ở [tên sản phẩm] là [chi tiết có thật]. Điểm này phù hợp nếu bạn cần [nhu cầu]; nhớ cân nhắc [điều cần lưu ý].",
-    "how-to": "Để dùng [tên sản phẩm], trước tiên [bước 1]. Sau đó [bước 2]. Đây là thao tác cần chú ý: [lưu ý đã xác minh].",
-    "before-buy": "Nếu bạn đang cân nhắc [tên sản phẩm], hãy kiểm tra [tiêu chí phù hợp]. Sản phẩm có [thông tin đã xác minh]; cân nhắc thêm [điều kiện hoặc giới hạn].",
-    "after-buy": "Mở hộp [tên sản phẩm] cùng mình nhé. Đây là những gì có trong hộp: [chi tiết nhìn thấy]. Để bắt đầu, [bước sử dụng đã xác minh].",
-    comparison: "Khi so sánh [tên sản phẩm], hãy nhìn vào [tiêu chí 1] và [tiêu chí 2]. Theo thông tin hiện có, sản phẩm có [dữ kiện]; hãy đối chiếu cùng tiêu chí với lựa chọn khác.",
-  };
-  return examples[id] || examples["problem-solution"];
+export function salesVideoScriptPlaceholder() {
+  return "Điều đầu tiên mình chú ý ở [tên sản phẩm] là [chi tiết có thật]. Điểm này phù hợp nếu bạn cần [nhu cầu]; nhớ cân nhắc [điều cần lưu ý].";
 }
 
 export function salesVideoClaimGuidance(category: string, templateId = "") {

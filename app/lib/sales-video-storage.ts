@@ -37,8 +37,6 @@ export type SalesVideoProjectDetails = {
   ratio?: string;
   videoModelId?: string;
   promptMaxLength?: number;
-  contentStyle?: string;
-  copyFramework?: string;
   claimCategory?: string;
   audio?: boolean;
   references?: { presenter?: string; product?: string; primaryProduct?: string; additionalProducts?: string[]; products?: string[] };

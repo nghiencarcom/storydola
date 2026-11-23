@@ -118,24 +118,15 @@ Kết thúc video bằng một lời khuyên chân thành hoặc gợi ý tình 
 
 ---
 
-## 6. Khung công thức kịch bản chuyển đổi (Story Frameworks)
+## 6. Mạch lời thoại video bán hàng
 
-Ưu tiên đúng công thức người dùng hoặc StoryAI đã chọn. Dùng công thức để sắp xếp mạch tư duy, tuyệt đối không đọc tên công thức thành lời thoại:
+Mỗi video có thoại chỉ dùng **một người dẫn duy nhất** là nhân vật tham chiếu. Không tạo người hỏi ngoài khung hình, đối thoại hai vai, giọng thứ hai hoặc nhãn vai.
 
-1. **`PAS` (Hỏi vấn đề – đáp giải pháp: Problem – Agitate – Solution):**
-   - *Đặc biệt:* Chỉ kiểu này dùng 2 vai (Người hỏi ở ngoài khung hình; Người trả lời là nhân vật trong ảnh tham chiếu).
-   - *Cấu trúc:* Người hỏi nêu nỗi đau đời thường -> Nhấn nhẹ hậu quả gây bực mình -> Người trả lời đưa cách xử lý thực tế bằng tính năng đã xác minh kèm lưu ý ngắn.
-2. **`BAB` (Review chân thực: Before – After – Bridge):**
-   - *Cấu trúc:* Tình huống bực mình trước đây -> Mong muốn thay đổi -> Trải nghiệm/thao tác thật làm cầu nối -> Đánh giá cân bằng.
-   - *Lưu ý:* Chưa có trải nghiệm người dùng nhập thì dùng tình huống giả định ("Nếu bạn thường..."), không xưng đã mua/dùng.
-3. **`FAB` (Hướng dẫn sử dụng: Feature – Advantage – Benefit):**
-   - *Cấu trúc:* Tính năng đã xác minh -> Thao tác/Lợi thế thực tế -> Ích lợi cụ thể cho cuộc sống. Từng bước ngắn, rõ ràng.
-4. **`AIDA` (Cân nhắc trước khi mua: Attention – Interest – Desire – Action):**
-   - *Cấu trúc:* Hook vào nhu cầu thật -> Giải thích điểm liên quan -> Giúp người xem tự đánh giá độ phù hợp -> CTA nhẹ nhàng kiểm tra thông tin.
-5. **`PPP` (Mở hộp / Ấn tượng ban đầu: Promise – Picture – Proof):**
-   - *Cấu trúc:* Kỳ vọng ban đầu -> Cận cảnh mở hộp/chi tiết nhìn thấy -> Bằng chứng từ thao tác thật. Chưa dùng lâu thì gọi đúng là "ấn tượng ban đầu".
-6. **`4P` (So sánh theo tiêu chí: Promise – Picture – Proof – Push):**
-   - *Cấu trúc:* Lời hứa giá trị có căn cứ -> Tình huống sử dụng -> Tiêu chí đối chiếu công bằng -> Để người xem tự chọn theo nhu cầu. Không bịa đối thủ hoặc dìm thương hiệu khác.
+- Mở bằng một câu hook gắn với nhu cầu, tình huống hoặc hoài nghi thật; không chào hỏi hay đọc tên sản phẩm.
+- Nối tình huống với một thao tác hoặc chi tiết sản phẩm có thể quan sát/xác minh, rồi giải thích giá trị thực tế bằng lời tự nhiên.
+- Nêu điều người xem cần cân nhắc khi có căn cứ; nếu chưa có trải nghiệm thật thì không giả nhận đã mua hoặc sử dụng.
+- Kết bằng lời mời cân nhắc, kiểm tra hoặc so sánh nhẹ nhàng. Không gây áp lực mua.
+- Dùng mạch kể linh hoạt, không đọc tên công thức, không biến lời thoại thành danh sách thông số hoặc phần giải thích cho khán giả.
 
 ---
 
@@ -148,7 +139,7 @@ Chọn cách xưng hô phù hợp với tệp khách hàng của ngành hàng đ
 - **Nam giới / Công nghệ / Xe cộ & Đồ nghề:** Dùng *anh em, mấy anh em, các bác* (giọng thực tế, dứt khoát, kỹ tính).
 - **Gen Z / Học sinh / Săn deal đồ ăn:** Dùng *các bồ, team săn deal, cả nhà* (giọng nhanh, năng lượng, bắt trend nhẹ nhàng).
 - **Tệp đại chúng / Sản phẩm thông dụng:** Dùng *mọi người, cả nhà* hoặc vào thẳng câu chuyện không cần gọi khán giả.
-- **Video hỏi đáp (PAS):** Hai nhân vật xưng hô theo quan hệ tự nhiên trong ngữ cảnh (bạn – mình, em – anh/chị); chỉ gọi khán giả khi hướng mắt nói trực tiếp.
+- **Video bán hàng có một nhân vật:** Viết thành lời của một người dẫn duy nhất; không tự tạo người hỏi ngoài khung hình, giọng thứ hai hoặc nhãn vai.
 
 ---
 

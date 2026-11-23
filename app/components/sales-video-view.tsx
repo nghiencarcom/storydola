@@ -6,7 +6,7 @@ import {
   salesVideoSplitDialogue, salesVideoDialogueToSrt,
   salesVideoMaiVideoModels, salesVideoGatewayVideoModels, salesVideoModelOptions, salesVideoModels, salesVideoProductExamples, salesVideoTextExamples, salesVideoSupportsDialogue,
   salesVideoCreativeTemplates, salesVideoFileTypes, salesVideoFileLimits, salesVideoNameLimit, salesVideoRatios, salesVideoTemplates,
-  salesVideoContentStyles, salesVideoContentFramework, salesVideoClaimCategories, salesVideoImageTypes, salesVideoMaxProductImages, salesVideoScriptPlaceholder,
+  salesVideoClaimCategories, salesVideoImageTypes, salesVideoMaxProductImages, salesVideoScriptPlaceholder,
   salesVideoHookStyles, salesVideoTargetAudiences, salesVideoPainExamples, salesVideoHeroExamples, salesVideoFlawExamples,
 } from "../lib/sales-video-templates";
 import { clearSalesVideoDraft, loadSalesVideoDraft, saveSalesVideoDraftFields, saveSalesVideoDraftFile } from "../lib/sales-video-drafts";
@@ -599,10 +599,6 @@ export function SalesVideoView() {
         {deleteMessage && <p className="sales-project-delete-status" role="status">{deleteMessage}</p>}
         <div className="sales-project-grid">
           {projects.map((project) => {
-            const contentStyle = project.details?.contentStyle;
-            const contentStyleLabel = contentStyle
-              ? salesVideoContentStyles.find((style) => style.id === contentStyle)?.label || contentStyle
-              : "";
             const selectedProject = selectedProjectIds.has(project.id);
             return <article key={project.id} className={`panel-card sales-project-card${selectedProject ? " is-selected" : ""}`}>
               <label className="sales-project-select">
@@ -615,7 +611,6 @@ export function SalesVideoView() {
                 <div className="sales-project-card-copy">
                   <div className="sales-project-card-heading">
                     <strong>{project.title}</strong>
-                    {contentStyleLabel && <span className="sales-project-content-style">{contentStyleLabel}</span>}
                   </div>
                   <span className="sales-project-card-template">{[project.template, project.model].filter(Boolean).join(" · ")}</span>
                 </div>
@@ -749,7 +744,6 @@ function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, onUpdated
           {details.productUrl && <a href={details.productUrl} target="_blank" rel="noreferrer">Mở link sản phẩm</a>}</div>
         <div><small>THỜI LƯỢNG / NGÔN NGỮ</small><strong>{duration} giây · {language}</strong><span>{details.ratio || "9:16"}</span></div>
         <div><small>MODEL VIDEO</small><strong>{project.model || details.videoModelId}</strong><span>{details.codingAgent ? `Code Agent: ${details.codingAgent}${details.codingModel ? ` · ${details.codingModel}` : ""}${details.codingQuality ? ` · ${details.codingQuality}` : ""}${details.codingSpeed ? ` · ${details.codingSpeed}` : ""}` : ""}</span></div>
-        {details.contentStyle && <div><small>KIỂU NỘI DUNG / CÔNG THỨC</small><strong>{salesVideoContentStyles.find(({ id }) => id === details.contentStyle)?.label || details.contentStyle}</strong><span>{details.copyFramework || salesVideoContentFramework(details.contentStyle)}</span></div>}
         {details.facts && <div className="sales-project-facts"><small>THÔNG TIN SẢN PHẨM</small><span>{details.facts}</span></div>}
         {details.painPoint && <div className="sales-project-facts"><small>NỖI ĐAU ĐỜI THƯỜNG / HOOK</small><span>{details.painPoint}</span></div>}
         {details.heroBenefit && <div className="sales-project-facts"><small>ĐIỂM ĂN TIỀN / HERO BENEFIT</small><span>{details.heroBenefit}</span></div>}
@@ -847,7 +841,6 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
   const [userExperience, setUserExperience] = useState("");
   const [script, setScript] = useState("");
   const [productUrl, setProductUrl] = useState("");
-  const [contentStyle, setContentStyle] = useState<string>(salesVideoContentStyles[0].id);
   const [claimCategory, setClaimCategory] = useState<string>(templateId === "supplements" ? "health" : "general");
   const [queuedProject, setQueuedProject] = useState<SalesVideoProject>();
   const [productPromptOverride, setProductPromptOverride] = useState("");
@@ -919,7 +912,6 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
 
       const targetAudienceLabel = salesVideoTargetAudiences.find(({ id }) => id === targetAudience)?.label || targetAudience;
       const hookStyleLabel = salesVideoHookStyles.find(({ id }) => id === hookStyle)?.label || hookStyle;
-      const contentStyleLabel = salesVideoContentStyles.find(({ id }) => id === contentStyle)?.label || contentStyle;
       const segmentPlan = salesVideoProductSegments(selectedDuration, model?.modelMeta, videoQuality);
       const payload = {
         schema: "storyai.manual-ugc-job.v1",
@@ -934,7 +926,6 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
           consideration: minorFlaw.trim(),
         },
         creative: {
-          contentStyle: { id: contentStyle, label: contentStyleLabel },
           claimCategory,
           targetAudience: targetAudienceLabel,
           openingHook: hookStyleLabel,
@@ -965,9 +956,9 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
       const manualInstructions = [
         "NHIỆM VỤ: Soạn nội dung cho job video review UGC dựa trên dữ liệu JSON và toàn bộ hướng dẫn văn bản thuần bên dưới.",
         "ĐỌC HƯỚNG DẪN: áp dụng đầy đủ phần HƯỚNG DẪN UGC bên dưới và chọn module ngành hàng phù hợp.",
-        "GIỮ NGUYÊN: schema, template, toàn bộ product, creative.contentStyle, creative.claimCategory, model, thời lượng, tỷ lệ khung hình, ngôn ngữ, chất lượng và attachments.",
+        "GIỮ NGUYÊN: schema, template, toàn bộ product, creative.claimCategory, model, thời lượng, tỷ lệ khung hình, ngôn ngữ, chất lượng và attachments.",
         "CHỈ ĐƯỢC ĐIỀN prompt cho từng clip trong video.segments và creative.script. Không thêm, xóa, sắp xếp lại clip hoặc thay start/duration đã cho.",
-        "Viết prompt hình ảnh từng clip bằng tiếng Anh; viết lời thoại bằng ngôn ngữ đã chọn. Mỗi prompt phải bám đúng sản phẩm, kiểu nội dung, đối tượng, kiểu mở đầu và thời lượng clip.",
+        "Viết prompt hình ảnh từng clip bằng tiếng Anh; viết lời thoại bằng ngôn ngữ đã chọn cho một người dẫn duy nhất. Không tạo thoại hỏi đáp, người hỏi ngoài khung hình hoặc nhãn vai. Mỗi prompt phải bám đúng sản phẩm, đối tượng, kiểu mở đầu và thời lượng clip.",
         "Chỉ dùng thông tin xác minh và trải nghiệm người dùng có trong dữ liệu job; không bịa thông số, công dụng, giá, ưu đãi, chứng nhận hoặc trải nghiệm.",
         "Trả về duy nhất toàn bộ JSON job hợp lệ, không Markdown, không code fence, không giải thích. Ảnh tham chiếu được tải lên riêng trong StoryAI.",
       ].join("\n");
@@ -1028,10 +1019,6 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
       setProductPromptOverride(getString(importedCreative, "extraInstructions")!);
       setProductPromptEdited(Boolean(getString(importedCreative, "extraInstructions")));
     }
-    const importedContentStyle = importedCreative.contentStyle && typeof importedCreative.contentStyle === "object"
-      ? importedCreative.contentStyle as Record<string, unknown> : {};
-    const contentStyleId = getString(importedContentStyle, "id");
-    if (contentStyleId && salesVideoContentStyles.some((style) => style.id === contentStyleId)) setContentStyle(contentStyleId);
     const importedClaimCategory = getString(importedCreative, "claimCategory");
     if (importedClaimCategory && salesVideoClaimCategories.some((category) => category.id === importedClaimCategory)) setClaimCategory(importedClaimCategory);
     const audience = getString(importedCreative, "targetAudience");
@@ -1090,7 +1077,6 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
       if (typeof saved.userExperience === "string") setUserExperience(saved.userExperience);
       if (typeof saved.script === "string") setScript(saved.script);
       if (typeof saved.productUrl === "string") setProductUrl(saved.productUrl);
-      if (typeof saved.contentStyle === "string" && salesVideoContentStyles.some(({ id }) => id === saved.contentStyle)) setContentStyle(saved.contentStyle);
       if (typeof saved.claimCategory === "string" && salesVideoClaimCategories.some(({ id }) => id === saved.claimCategory)) setClaimCategory(saved.claimCategory);
       if (typeof saved.language === "string" && salesVideoLanguages.includes(saved.language as typeof salesVideoLanguages[number])) setLanguage(saved.language);
       if (typeof saved.duration === "number") setDuration(saved.duration);
@@ -1125,13 +1111,13 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
         selectedModel,
         ratio, prompt, product, facts, userExperience,
         painPoint, heroBenefit, minorFlaw, targetAudience, hookStyle,
-        script, productUrl, contentStyle,
+        script, productUrl,
         claimCategory: selectedTemplate?.id === "supplements" ? "health" : claimCategory, language, duration, sourceStart,
         productPromptOverride, productPromptEdited, savedFiles: JSON.stringify(savedFiles),
       });
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [draftReady, draftOwner, busy, templateId, selectedModel, ratio, prompt, product, facts, painPoint, heroBenefit, minorFlaw, targetAudience, hookStyle, userExperience, script, productUrl, contentStyle, claimCategory, language, duration, sourceStart, productPromptOverride, productPromptEdited, files, mediaFields, selectedTemplate?.id]);
+  }, [draftReady, draftOwner, busy, templateId, selectedModel, ratio, prompt, product, facts, painPoint, heroBenefit, minorFlaw, targetAudience, hookStyle, userExperience, script, productUrl, claimCategory, language, duration, sourceStart, productPromptOverride, productPromptEdited, files, mediaFields, selectedTemplate?.id]);
 
   function updateFile(name: string, file?: File) {
     setFiles((current) => {
@@ -1374,7 +1360,6 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
       form.set("hookStyle", hookStyle);
       form.set("autoUgc", "1");
       form.set("productUrl", productUrl.trim());
-      form.set("contentStyle", contentStyle);
       form.set("claimCategory", selectedTemplate.id === "supplements" ? "health" : claimCategory);
       form.set("prompt", "");
       if (manualPromptsReady && manualUgcJob) {
@@ -1530,7 +1515,7 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
                   <label className="form-field full sales-script-field">
                     <span>Kịch bản / lời thoại <em>Không bắt buộc</em></span>
                     <textarea name="script" value={script} onChange={(event) => setScript(event.target.value)} maxLength={2000}
-                      placeholder={salesVideoScriptPlaceholder("review")} />
+                      placeholder={salesVideoScriptPlaceholder()} />
                     {supportsAudio
                       ? <small>{maximumScriptWords === null ? `${scriptWords} từ · không áp trần tốc độ đọc cho tiếng Việt.` : `${scriptWords} / ${maximumScriptWords} từ cho ${selectedDuration} giây.`}</small>
                       : <small>Model này không tạo giọng nói; kịch bản chỉ được dùng làm ngữ cảnh cho hình ảnh.</small>}
