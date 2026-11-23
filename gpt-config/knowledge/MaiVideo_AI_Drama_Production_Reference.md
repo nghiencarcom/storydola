@@ -17,6 +17,8 @@ Prompt hồ sơ:
 - **Nhân vật**: cùng một người trên nền trắng, đúng ba view: toàn thân chính diện, toàn thân phía sau, chân dung bán thân chính diện. Giữ khuôn mặt, tuổi đã xác lập, tóc, dáng, màu da, trang phục và bảng màu nhất quán; không thêm props chưa có trong canon.
 - **Bối cảnh**: board 2×2 của cùng một địa điểm, bốn hướng bắc/đông/nam/tây; giữ nguyên mặt bằng, landmark và vị trí vật thể, chỉ đổi hướng camera.
 - Đây là ảnh hồ sơ. `image_prompt` mô tả đúng frame mở đầu tại 0 giây. Video dùng ảnh cảnh làm chuẩn bối cảnh và bố cục, ảnh tham chiếu nhân vật để khóa nhận diện/trang phục; không gửi thêm ảnh hồ sơ bối cảnh khi ảnh cảnh đã được dùng.
+- Trong prompt cảnh, khi ảnh tham chiếu nhân vật đã được gắn, để ảnh giữ chuẩn khuôn mặt và tuổi biểu kiến; không lặp lại hoặc định nghĩa lại các đặc điểm ổn định này trong `image_prompt`/`video_prompt`. Biểu cảm và diễn xuất của khoảnh khắc vẫn được mô tả. Khi không có ảnh, dùng mô tả canon trong Character Bible và không bịa/thay đổi tuổi hoặc nhận diện. Character Bible và prompt ảnh hồ sơ tiếp tục ghi rõ tuổi/nhận diện đã xác lập.
+- Chỉ khóa vị trí trái/phải, landmark, eyeline và trục 180° khi brief, blocking, ảnh cảnh hoặc hồ sơ bối cảnh đã xác lập. Giữ hướng màn hình qua các góc đối thoại; vượt trục chỉ khi có chuyển động/blocking có chủ đích và xác lập lại hướng. Không thêm điều kiện nền không được canon hỗ trợ, như “NO doors visible”.
 
 ## Visual style và Style Hình Ảnh
 

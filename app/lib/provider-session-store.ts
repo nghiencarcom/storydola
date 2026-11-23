@@ -1,8 +1,8 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { DATA_DIR } from "./data-directory";
 
-const DATA_DIR = path.join(process.cwd(), "data");
 const STORE_FILE = path.join(DATA_DIR, "provider-job-sessions.json");
 
 type EncryptedToken = { iv: string; tag: string; ciphertext: string };

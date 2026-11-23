@@ -2,10 +2,14 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { getCurrentUserId } from "./auth-server";
+import { DATA_DIR } from "./data-directory";
 
-const DATA_DIR = path.join(process.cwd(), "data");
 const KEYS_FILE = path.join(DATA_DIR, "maivideo-api-keys.json");
-const API_BASE_URL = (process.env.MAIVIDEO_BASE_URL || process.env.MAIVIDEO_API_BASE_URL || "https://maivideo.top").replace(/\/$/, "");
+export function getMaiVideoApiBaseUrl() {
+  return (process.env.MAIVIDEO_BASE_URL || process.env.MAIVIDEO_API_BASE_URL || "https://maivideo.top").trim().replace(/\/+$/, "");
+}
+
+const API_BASE_URL = getMaiVideoApiBaseUrl();
 
 type EncryptedSecret = { iv: string; tag: string; ciphertext: string };
 type StoredKey = { secret: EncryptedSecret; lastFour: string; updatedAt: string };
@@ -116,8 +120,12 @@ export async function listMaiVideoApiKeyStatus() {
 }
 
 export async function verifyMaiVideoApiKey(apiKey: string) {
-  const endpoints = ["image-generation", "video-generation"];
-  const responses = await Promise.all(endpoints.map((endpoint) => fetch(`${API_BASE_URL}/api/v1/${endpoint}/models`, {
+  const endpoints = [
+    `${API_BASE_URL}/api/v1/image-generation/models`,
+    `${API_BASE_URL}/api/v1/video-generation/models`,
+    `${API_BASE_URL}/api/v1/voices?provider=omnivoice`,
+  ];
+  const responses = await Promise.all(endpoints.map((endpoint) => fetch(endpoint, {
     headers: { Accept: "application/json", "X-API-Key": apiKey },
     cache: "no-store",
     signal: AbortSignal.timeout(15_000),

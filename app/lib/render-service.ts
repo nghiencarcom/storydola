@@ -3,14 +3,15 @@ import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { homedir } from "node:os";
 import { buildProceduralOverlayFilter, buildRandomPanZoomFilter, DEFAULT_RENDER_SETTINGS, normalizeRenderSettings } from "./render-effects";
 import { estimateDialogueDurationMs, hasExplicitDialogueSegments, isTemplateDialogueText, readDialogueSegments } from "./dialogue-segments";
 import { resolveProjectDialogueVoice } from "./project-tts-voice";
 import { normalizeAiDramaSceneDuration } from "./ai-drama-scene-timing";
 import type { RenderSettings, StoryProject } from "./project-types";
 import { readProjectScenes, sceneMediaLocalPath, type StoredScene } from "./scene-store";
+import { DATA_DIR } from "./data-directory";
 
-const DATA_DIR = path.join(process.cwd(), "data");
 const OUTPUT_DIR = path.join(DATA_DIR, "outputs");
 const RENDER_DIR = path.join(DATA_DIR, "renders");
 const sourceAudioProbeCache = new Map<string, Promise<boolean>>();
@@ -127,7 +128,7 @@ export class RenderMediaPreflightError extends Error {
   readonly issues: string[];
 
   constructor(issues: string[]) {
-    super(`Chưa thể ghép video AI Drama: ${issues.join(" · ")}`);
+    super(`Chưa thể ghép video Phim AI: ${issues.join(" · ")}`);
     this.name = "RenderMediaPreflightError";
     this.issues = issues;
   }
@@ -764,6 +765,89 @@ export async function renderProjectVideo(project: StoryProject, manifest: Render
   } finally {
     await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
   }
+}
+
+export type BlenderRenderOutput = {
+  outputPath: string;
+  blenderProjectPath: string;
+  blenderScriptPath: string;
+};
+
+async function resolveBlenderExecutable() {
+  const candidates = [
+    process.env.STORYAI_BLENDER_PATH?.trim(),
+    path.join(homedir(), "Applications", "Blender.app", "Contents", "MacOS", "Blender"),
+    "/Applications/Blender.app/Contents/MacOS/Blender",
+    "blender",
+  ].filter((value): value is string => Boolean(value));
+  let lastError: unknown;
+  for (const candidate of candidates) {
+    if (candidate !== "blender" && !existsSync(candidate)) continue;
+    try {
+      await runProcess(candidate, ["--version"]);
+      return candidate;
+    } catch (cause) {
+      lastError = cause;
+    }
+  }
+  throw new Error("BLENDER_NOT_AVAILABLE", { cause: lastError });
+}
+
+/** Runs the coding-agent-authored Blender scene inside the project's output folder. */
+export async function renderProjectBlenderVideo(project: StoryProject, scenes: StoredScene[], manifest: RenderManifest): Promise<BlenderRenderOutput> {
+  if (!scenes.length || !manifest.scenes.length) throw new Error("RENDER_NO_SCENES");
+  const outputDir = renderOutputDirectory(project);
+  const blenderDir = path.join(outputDir, "blender");
+  const blenderScript = path.join(blenderDir, "scene.py");
+  if (!existsSync(blenderScript)) throw new Error("BLENDER_SCENE_SCRIPT_NOT_FOUND");
+
+  const blender = await resolveBlenderExecutable();
+  const renderId = `blender-${Date.now()}`;
+  const inputPath = path.join(blenderDir, `${renderId}.json`);
+  const outputPath = path.join(outputDir, `${renderId}.mp4`);
+  const blenderProjectPath = path.join(outputDir, `${renderId}.blend`);
+  await mkdir(blenderDir, { recursive: true });
+  await writeFile(inputPath, JSON.stringify({
+    schema: "storyai-blender.v1",
+    project: {
+      slug: project.slug,
+      title: project.title,
+      videoTitle: project.videoTitle || project.title,
+      durationMinutes: project.durationMinutes,
+      durationSeconds: project.durationSeconds,
+      aspectRatio: project.aspectRatio,
+      language: project.language,
+      imageStyle: project.imageStyle,
+      visualStyle: project.visualStyle,
+      contentGenre: project.contentGenre,
+      storySetting: project.storySetting,
+      settingNotes: project.settingNotes,
+      characters: project.characters,
+      locations: project.locations,
+    },
+    scenes,
+  }, null, 2));
+
+  const threads = Math.max(1, Math.min(32, Number(process.env.STORYAI_BLENDER_THREADS) || 8));
+  await runProcess(blender, [
+    "--background", "--factory-startup", "--threads", String(threads),
+    "--python", blenderScript, "--",
+    "--input", inputPath,
+    "--output", outputPath,
+    "--blend", blenderProjectPath,
+    "--width", String(manifest.width),
+    "--height", String(manifest.height),
+    "--fps", String(manifest.fps),
+  ]);
+  const output = await stat(outputPath).catch(() => null);
+  const blend = await stat(blenderProjectPath).catch(() => null);
+  if (!output?.isFile() || output.size === 0) throw new Error("BLENDER_OUTPUT_MISSING");
+  if (!blend?.isFile() || blend.size === 0) throw new Error("BLENDER_PROJECT_MISSING");
+  return {
+    outputPath: localRelative(outputPath),
+    blenderProjectPath: localRelative(blenderProjectPath),
+    blenderScriptPath: localRelative(blenderScript),
+  };
 }
 
 export async function writeRenderArtifacts(project: StoryProject, manifest: RenderManifest, inputSettings?: Partial<RenderSettings>, target?: RenderEpisodeTarget) {

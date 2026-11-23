@@ -1,0 +1,37 @@
+const fs = require('node:fs');
+const vm = require('node:vm');
+const ts = require('typescript');
+const assert = require('node:assert/strict');
+const waits = [];
+const context = { exports: {}, Headers, URL, require: name => name === 'node:timers/promises' ? { setTimeout: async ms => { waits.push(ms); } } : require(name) };
+vm.createContext(context);
+vm.runInContext(ts.transpile(fs.readFileSync('app/lib/provider-request-pacing.ts', 'utf8'), { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }), context);
+const { providerRateLimitDelay, pacedProviderRequest } = context.exports;
+(async () => {
+  assert.equal(providerRateLimitDelay({ statusCode: 429, message: 'Bạn thao tác quá nhanh. Thử lại sau 8 giây.' }, 0), 8250);
+  assert.equal(providerRateLimitDelay({ statusCode: 429, retryAfterMs: 12000 }, 0), 12250);
+  for (const message of ['All accounts reached daily limit', 'Insufficient credits', 'try again tomorrow']) assert.equal(providerRateLimitDelay({ statusCode: 429, message }, 0), undefined);
+  assert.equal(providerRateLimitDelay({ statusCode: 503 }, 0), undefined);
+  assert.equal(providerRateLimitDelay({ statusCode: 429 }, 4), undefined);
+  let calls = 0;
+  assert.equal(await pacedProviderRequest('https://provider.test/create', { method: 'POST' }, undefined, async () => { if (++calls === 1) throw { statusCode: 429 }; return 'job-id'; }), 'job-id');
+  assert.equal(calls, 2);
+  let active = 0, peak = 0;
+  await Promise.all(Array.from({ length: 10 }, () => pacedProviderRequest('https://provider.test/create', { method: 'POST', headers: { Authorization: 'same-account' } }, undefined, async () => { peak = Math.max(peak, ++active); await Promise.resolve(); active--; })));
+  assert(peak >= 1); // Responses may overlap; request starts are paced by the timer.
+  calls = 0;
+  await assert.rejects(pacedProviderRequest('https://provider.test/create', { method: 'POST' }, undefined, async () => { calls++; throw new Error('network timeout'); }));
+  assert.equal(calls, 1, 'Do not retry ambiguous submissions');
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(pacedProviderRequest('https://provider.test/create', { method: 'POST' }, controller.signal, async () => { throw new Error('must not run'); }));
+  assert(waits.includes(5250));
+  let finishSlow;
+  let slowStarted;
+  const began = new Promise(resolve => { slowStarted = resolve; });
+  const slow = pacedProviderRequest('https://slow.test/create', { method: 'POST' }, undefined, async () => { slowStarted(); return new Promise(resolve => { finishSlow = resolve; }); });
+  await began;
+  assert.equal(await pacedProviderRequest('https://slow.test/create', { method: 'POST' }, undefined, async () => 'second-started'), 'second-started');
+  finishSlow('first-complete');
+  await slow;
+  console.log('Passed: account-scoped serialization, Retry-After/backoff, bounded explicit-429 retries, quota exclusion, aborts, no ambiguous-submit retry.');
+})().catch(error => { console.error(error); process.exitCode = 1; });

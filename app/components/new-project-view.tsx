@@ -6,11 +6,11 @@ import { DEFAULT_PRESET_ID, isFlowStoryOnlyPreset, STORY_PRESETS, type StoryPres
 import { useProjects } from "../lib/project-store";
 import { FALLBACK_VIDEO_LANGUAGES, voiceLanguageLabel, type OmniVoiceCatalog, type OmniVoiceOption } from "../lib/omnivoice";
 import { formatDurationLabel, getManualScriptMetrics } from "../lib/script-utils";
-import { DEFAULT_MEDIA_GENERATION_SETTINGS, IMAGE_DETAIL_LEVEL_LABELS, MAX_PROJECT_CHUNK_SIZE, MAX_SCENE_DURATION_SEC, MIN_PROJECT_CHUNK_SIZE, PROJECT_CHUNK_SIZE_PRESETS, slugify, type DramaProjectPlan, type DurationMode, type MediaGenerationSettings, type MediaModelCatalog, type MediaSource, type ScriptFormat, type ScriptMode, type VideoGenerationModelOption } from "../lib/project-types";
-import { availableImageModels, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, DEFAULT_SEEDANCE_VIDEO_MODEL_ID, HIGGSFIELD_SEEDANCE_MODEL_ID, imageDetailLevelsForModel, isFlowImageModel, isMuseImageModel, isPixverseVideoSettings, isTemporarilyHiddenMaiVideoSeedance25, isTemporarilyHiddenSeedanceProvider, isVideoOffPeakRequired, normalizeVideoDuration, preferredVideoQuality, resolveMediaGenerationSettings, videoDurationOptions, videoModelDisplayName, videoQualitiesForModel, visibleVideoModels } from "../lib/media-generation-settings";
+import { DEFAULT_MEDIA_GENERATION_SETTINGS, IMAGE_DETAIL_LEVEL_LABELS, MAX_PROJECT_CHUNK_SIZE, MAX_SCENE_DURATION_SEC, MIN_PROJECT_CHUNK_SIZE, PROJECT_CHUNK_SIZE_PRESETS, slugify, type DurationMode, type MediaGenerationSettings, type MediaModelCatalog, type MediaSource, type ScriptFormat, type ScriptMode, type VideoGenerationModelOption } from "../lib/project-types";
+import { availableImageModels, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, DEFAULT_SEEDANCE_VIDEO_MODEL_ID, HIGGSFIELD_SEEDANCE_MODEL_ID, imageDetailLevelsForModel, isFlowImageModel, isMuseImageModel, isPixverseVideoSettings, isTemporarilyHiddenMaiVideoSeedance25, isTemporarilyHiddenSeedanceProvider, isVideoOffPeakRequired, normalizeVideoDuration, preferredVideoQuality, resolveMediaGenerationSettings, videoDurationBoundsForModel, videoDurationOptions, videoModelDisplayName, videoQualitiesForModel, visibleVideoModels } from "../lib/media-generation-settings";
 import { useSeedanceAccounts } from "../lib/seedance-accounts-client";
 import { DEFAULT_IMAGE_STYLE, DEFAULT_VISUAL_STYLE, IMAGE_STYLE_OPTIONS, IMAGE_STYLE_PRESETS } from "../lib/visual-styles";
-import { CONTENT_GENRES, DEFAULT_CONTENT_GENRE, DEFAULT_STORY_SETTING, normalizeContentGenre, normalizeSecondaryGenres, normalizeStorySetting, STORY_SETTING_OPTIONS } from "../lib/content-genres";
+import { CONTENT_GENRES, contentGenresLabel, storySettingLabel, DEFAULT_CONTENT_GENRE, DEFAULT_STORY_SETTING, normalizeContentGenre, normalizeSecondaryGenres, normalizeStorySetting, STORY_SETTING_OPTIONS } from "../lib/content-genres";
 import { AI_DRAMA_JSON_TEMPLATE, AI_DRAMA_SOURCE_SCRIPT_TEMPLATE } from "../lib/project-script-templates";
 import { Icon } from "./ui-icon";
 
@@ -83,6 +83,10 @@ const IMAGE_STYLE_EN_LABELS: Record<(typeof IMAGE_STYLE_PRESETS)[number]["value"
   "Family 3D animation": "Family 3D Animation",
   "Painterly illustration": "Painterly Illustration",
   "Graphic novel": "Graphic Novel Animation",
+  "Paper-cut animation": "Layered Paper-cut Animation",
+  "Pixel-art animation": "Retro Pixel-art Animation",
+  "Risograph collage animation": "Risograph-print Collage Animation",
+  "Retro cel anime": "Retro Cel Anime",
   "Stop-motion clay": "Stop-motion Clay Animation",
 };
 
@@ -134,7 +138,6 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
   const [mediaCatalogError, setMediaCatalogError] = useState("");
   const [voiceError, setVoiceError] = useState("");
   const [error, setError] = useState("");
-  const [sourceTemplateCopyStatus, setSourceTemplateCopyStatus] = useState("");
   const [saving, setSaving] = useState(false);
   const [characterSetupPrompt, setCharacterSetupPrompt] = useState<{ slug: string; title: string } | null>(null);
   const [scriptEntryMode, setScriptEntryMode] = useState<ScriptEntryMode>("ai");
@@ -143,12 +146,8 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
   const [scriptJsonSummary, setScriptJsonSummary] = useState<ScriptJsonSummary | null>(null);
   const [pendingScriptImport, setPendingScriptImport] = useState<PendingScriptImport | null>(null);
   const [projectCreatedFromJson, setProjectCreatedFromJson] = useState(false);
+  const [dramaBriefCopyStatus, setDramaBriefCopyStatus] = useState("");
   const [dramaIdea, setDramaIdea] = useState("");
-  const [dramaBriefSnapshot, setDramaBriefSnapshot] = useState("");
-  const [generatingDramaSource, setGeneratingDramaSource] = useState(false);
-  const [dramaSourceProgress, setDramaSourceProgress] = useState("");
-  const [dramaSourceModel, setDramaSourceModel] = useState("");
-  const [dramaPlan, setDramaPlan] = useState<DramaProjectPlan | null>(null);
   const scriptJsonInputRef = useRef<HTMLInputElement>(null);
   const mediaGenerationTouched = useRef(false);
   const mediaSourceTouched = useRef(false);
@@ -327,7 +326,7 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
   }
 
   function videoDurationLimit(model: VideoGenerationModelOption | undefined, quality: string) {
-    return Math.min(model?.provider === "muse" || model?.provider === "flow" ? 10 : 15, model?.maxDurationByQuality?.[quality] || model?.maxDurationSec || 15);
+    return videoDurationBoundsForModel(model, quality).max;
   }
 
   function selectVideoModel(videoModelKey: string) {
@@ -450,28 +449,8 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
     }
   }
 
-  function loadDramaSourceTemplate() {
-    if (form.sourceText.trim() && !window.confirm("Thay toàn bộ kịch bản nguồn hiện tại bằng mẫu AI Drama?")) return;
-    setField("sourceText", AI_DRAMA_SOURCE_SCRIPT_TEMPLATE);
-    setDramaPlan(null);
-    setDramaBriefSnapshot("");
-    setDramaSourceModel("");
-    setError("");
-    setSourceTemplateCopyStatus("");
-  }
-
-  async function copyDramaSourceTemplate() {
-    try {
-      if (!navigator.clipboard?.writeText) throw new Error("Trình duyệt không hỗ trợ clipboard.");
-      await navigator.clipboard.writeText(AI_DRAMA_SOURCE_SCRIPT_TEMPLATE);
-      setSourceTemplateCopyStatus("Đã sao chép mẫu kịch bản nguồn.");
-    } catch {
-      setSourceTemplateCopyStatus("Không thể sao chép. Hãy kiểm tra quyền clipboard của trình duyệt.");
-    }
-  }
-
   function loadDramaJsonTemplate() {
-    if (scriptJsonText.trim() && !window.confirm("Thay toàn bộ JSON hiện tại bằng mẫu AI Drama?")) return;
+    if (scriptJsonText.trim() && !window.confirm("Thay toàn bộ JSON hiện tại bằng mẫu Phim AI?")) return;
     setScriptJsonText(AI_DRAMA_JSON_TEMPLATE);
     setScriptJsonSourceName("");
     setScriptJsonSummary(inspectScriptJson(JSON.parse(AI_DRAMA_JSON_TEMPLATE)));
@@ -490,132 +469,37 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
     if (!response.ok || !payload.ok) throw new Error(payload.message || "Không thể nhập kịch bản JSON.");
   }
 
-  async function generateDramaSource() {
-    if (!Number.isInteger(form.chunkSize) || form.chunkSize < MIN_PROJECT_CHUNK_SIZE || form.chunkSize > MAX_PROJECT_CHUNK_SIZE) {
-      setError(`Số cảnh mỗi chunk phải là số nguyên từ ${MIN_PROJECT_CHUNK_SIZE} đến ${MAX_PROJECT_CHUNK_SIZE}.`);
-      return;
-    }
-    if (!form.title.trim()) {
-      setError("Vui lòng nhập tên dự án trước khi viết kịch bản AI Drama.");
-      return;
-    }
-    if (!form.imageStyle.trim()) {
-      setError("Hãy nhập phong cách hình ảnh tùy chỉnh trước khi viết kịch bản AI Drama.");
-      return;
-    }
-    if (form.storySetting === "historical" && !form.settingNotes.trim()) {
-      setError("Hãy ghi rõ thời đại hoặc địa điểm lịch sử để AI giữ đúng bối cảnh.");
-      return;
-    }
-    if (dramaIdea.trim().length < 20) {
-      setError("Hãy mô tả ý tưởng ít nhất 20 ký tự để AI có đủ chất liệu viết kịch bản.");
-      return;
-    }
+  function buildDramaBrief() {
+    const hasValidChunkSize = Number.isInteger(form.chunkSize)
+      && form.chunkSize >= MIN_PROJECT_CHUNK_SIZE
+      && form.chunkSize <= MAX_PROJECT_CHUNK_SIZE;
+    return [
+      "Bạn là biên kịch Phim AI. Hãy viết kịch bản nguồn hoàn chỉnh theo mẫu cuối hướng dẫn. Nếu chưa có ý tưởng, hãy đề xuất một ý tưởng mới phù hợp thể loại và bối cảnh đã chọn. Trả về đầy đủ các mục trong mẫu để dán vào StoryAI.",
+      `Tên dự án: ${form.title.trim() || "[Chưa đặt tên — hãy đề xuất tên phù hợp]"}`,
+      `Tổng thời lượng mục tiêu: ${form.durationMinutes} phút`,
+      `Ngôn ngữ lời thoại: ${voiceLanguageLabel(form.language)} (${form.language})`,
+      hasValidChunkSize
+        ? `Phân tập: ${totalChunks} tập, tối đa ${form.chunkSize} cảnh/tập, tổng ${totalScenes} cảnh theo mốc lập kế hoạch 15 giây/cảnh. Tập cuối nhận số cảnh còn lại. Viết một chương cho mỗi tập.`
+        : "Phân tập: Hãy đề xuất số tập và số cảnh hợp lý theo thời lượng mục tiêu; không vượt giới hạn cấu hình khi có giá trị hợp lệ.",
+      "Khi triển khai cảnh, thời lượng hợp lệ là 5, 10 hoặc 15 giây theo diễn biến.",
+      `Thể loại: ${contentGenresLabel(form.contentGenre, form.secondaryGenres)}`,
+      `Bối cảnh: ${storySettingLabel(form.storySetting)}${form.settingNotes.trim() ? ` · ${form.settingNotes.trim()}` : ""}`,
+      `Phong cách hình ảnh: ${form.imageStyle.trim() || "[Chưa nhập — đề xuất phong cách phù hợp]"} · ${form.visualStyle}`,
+      `Tỷ lệ khung hình: ${form.aspectRatio}`,
+      `Ý tưởng / đề bài:\n${dramaIdea.trim() || "[Chưa nhập. Hãy tự đề xuất một ý tưởng phù hợp với cấu hình dự án rồi phát triển theo mẫu.]"}`,
+      "MẪU KỊCH BẢN NGUỒN",
+      AI_DRAMA_SOURCE_SCRIPT_TEMPLATE,
+    ].join("\n\n");
+  }
+
+  async function copyDramaBrief() {
     setError("");
-    setGeneratingDramaSource(true);
-    setDramaSourceProgress("Đang gửi yêu cầu tạo kịch bản");
-    const requestedSourceSnapshot = JSON.stringify({
-      title: form.title.trim(),
-      brief: dramaIdea.trim(),
-      durationMinutes: form.durationMinutes,
-      chunkSize: form.chunkSize,
-      language: form.language,
-      contentGenre: form.contentGenre,
-      secondaryGenres: form.secondaryGenres,
-      storySetting: form.storySetting,
-      settingNotes: form.settingNotes.trim(),
-      visualStyle: form.visualStyle,
-      imageStyle: form.imageStyle,
-      aspectRatio: form.aspectRatio,
-    });
+    setDramaBriefCopyStatus("");
     try {
-      const response = await fetch("/api/story-script/drama-source", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          projectTitle: form.title.trim(),
-          brief: dramaIdea.trim(),
-          durationMinutes: form.durationMinutes,
-          chunkSize: form.chunkSize,
-          language: form.language,
-          contentGenre: form.contentGenre,
-          secondaryGenres: form.secondaryGenres,
-          storySetting: form.storySetting,
-          settingNotes: form.settingNotes.trim(),
-          visualStyle: form.visualStyle,
-          imageStyle: form.imageStyle,
-          aspectRatio: form.aspectRatio,
-        }),
-      });
-      const responseText = await response.text();
-      let payload: Record<string, unknown> = {};
-      try {
-        const parsed = JSON.parse(responseText);
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) payload = parsed as Record<string, unknown>;
-      } catch {
-        const contentType = response.headers.get("content-type") || "không rõ định dạng";
-        throw new Error(response.ok
-          ? `Máy chủ tạo kịch bản trả phản hồi không hợp lệ (HTTP ${response.status}, ${contentType}).`
-          : `Máy chủ tạo kịch bản trả HTTP ${response.status} nhưng không gửi chi tiết lỗi (${contentType}). Kiểm tra kết nối hoặc log máy chủ.`);
-      }
-      const apiMessage = typeof payload.message === "string" && payload.message.trim() ? payload.message : "";
-      if (!response.ok) throw new Error(apiMessage || `Máy chủ AI Drama trả lỗi HTTP ${response.status}. Kiểm tra log máy chủ để biết nguyên nhân.`);
-      if (typeof payload.jobId !== "string" || payload.status !== "running") {
-        const code = typeof payload.code === "string" ? ` · ${payload.code}` : "";
-        throw new Error(apiMessage || `Máy chủ chưa nhận được job kịch bản (HTTP ${response.status}${code}).`);
-      }
-      const jobId = payload.jobId;
-      let result: Record<string, unknown> | null = null;
-      let consecutivePollFailures = 0;
-      while (!result) {
-        await new Promise((resolve) => window.setTimeout(resolve, consecutivePollFailures ? 5000 : 2500));
-        try {
-          const pollResponse = await fetch(`/api/story-script/drama-source?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store" });
-          const pollText = await pollResponse.text();
-          let pollPayload: Record<string, unknown> = {};
-          try {
-            const parsed = JSON.parse(pollText);
-            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) pollPayload = parsed as Record<string, unknown>;
-          } catch {
-            if (pollResponse.status >= 500) throw new TypeError("Temporary polling response was not JSON");
-            throw new Error(`Không đọc được trạng thái job kịch bản (HTTP ${pollResponse.status}).`);
-          }
-          if (!pollResponse.ok) {
-            if (pollResponse.status >= 500) throw new TypeError(`Temporary polling HTTP ${pollResponse.status}`);
-            throw new Error(typeof pollPayload.message === "string" ? pollPayload.message : `Không lấy được trạng thái job (HTTP ${pollResponse.status}).`);
-          }
-          consecutivePollFailures = 0;
-          if (typeof pollPayload.stage === "string") setDramaSourceProgress(pollPayload.stage);
-          if (pollPayload.status === "failed") {
-            throw new Error(typeof pollPayload.message === "string" ? pollPayload.message : "Không thể tạo kịch bản AI Drama.");
-          }
-          if (pollPayload.status === "completed") result = pollPayload;
-          else if (pollPayload.status !== "running") throw new Error("Máy chủ trả trạng thái job kịch bản không hợp lệ.");
-        } catch (cause) {
-          if (cause instanceof TypeError && /fetch|network|polling response|temporary/i.test(cause.message)) {
-            consecutivePollFailures += 1;
-            setDramaSourceProgress("Đang kết nối lại để nhận trạng thái kịch bản…");
-            continue;
-          }
-          throw cause;
-        }
-      }
-      if (typeof result.sourceText !== "string" || !result.plan) {
-        throw new Error("Job đã kết thúc nhưng máy chủ không trả đủ nội dung kịch bản.");
-      }
-      setForm((current) => ({ ...current, sourceText: result!.sourceText as string, scriptMode: "ai", scriptFormat: "plain_text" }));
-      setDramaPlan(result.plan as DramaProjectPlan);
-      setDramaBriefSnapshot(requestedSourceSnapshot);
-      setDramaSourceModel(typeof result.model === "string" ? result.model : "");
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      const transportFailure = cause instanceof TypeError && /failed to fetch|fetch failed|network|terminated/i.test(message);
-      setError(transportFailure
-        ? "Kết nối tới máy chủ StoryAI bị ngắt khi đang chờ kịch bản. Kiểm tra timeout hoặc proxy của máy chủ rồi thử lại."
-        : message || "Không thể tạo kịch bản AI Drama.");
-    } finally {
-      setGeneratingDramaSource(false);
-      setDramaSourceProgress("");
+      await navigator.clipboard.writeText(buildDramaBrief());
+      setDramaBriefCopyStatus("Đã sao chép hướng dẫn. Dán vào chat với AI, rồi dán kết quả vào ô kịch bản nguồn bên dưới.");
+    } catch {
+      setError("Không thể sao chép hướng dẫn. Hãy kiểm tra quyền clipboard của trình duyệt.");
     }
   }
 
@@ -633,11 +517,7 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
     }
     const creatingAiDrama = !projectSlug && currentScriptEntryMode === "ai" && selectedPresetId === "ai-drama";
     if (creatingAiDrama && !form.sourceText.trim() && !form.sourceUrl.trim()) {
-      setError("Hãy tạo kịch bản nguồn AI Drama hoặc nhập nội dung nguồn trước khi tạo project.");
-      return;
-    }
-    if (creatingAiDrama && dramaPlan && dramaSourceInputs !== dramaBriefSnapshot) {
-      setError("Thông tin project đã đổi sau khi AI viết kịch bản. Hãy viết lại để tên tập và thời lượng khớp project.");
+      setError("Hãy tạo kịch bản nguồn Phim AI hoặc nhập nội dung nguồn trước khi tạo project.");
       return;
     }
     const importsJson = Boolean(pendingScriptImport || (!projectSlug && currentScriptEntryMode === "json"));
@@ -667,7 +547,6 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
         ...form,
         scriptMode: currentScriptEntryMode === "manual" ? "manual" as const : "ai" as const,
         mediaGeneration: { ...mediaGeneration, ...(selectedPresetId === "ai-drama" ? { videoDurationMode: "scene" as const } : {}) },
-        ...(creatingAiDrama && dramaPlan ? { dramaPlan } : {}),
         ...(currentScriptEntryMode === "json" && !projectSlug ? { deferSourceIngest: true } : {}),
       };
       if (projectSlug && existing) {
@@ -717,20 +596,18 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
   const totalChunks = Math.ceil(totalScenes / Math.max(MIN_PROJECT_CHUNK_SIZE, form.chunkSize));
   const hasCustomImageStyle = !IMAGE_STYLE_OPTIONS.includes(form.imageStyle as (typeof IMAGE_STYLE_OPTIONS)[number]);
   const isNewAiDrama = !projectSlug && currentScriptEntryMode === "ai" && form.presetId === "ai-drama";
-  const dramaSourceInputs = JSON.stringify({
-    title: form.title.trim(),
-    brief: dramaIdea.trim(),
-    durationMinutes: form.durationMinutes,
-    chunkSize: form.chunkSize,
-    language: form.language,
-    contentGenre: form.contentGenre,
-    secondaryGenres: form.secondaryGenres,
-    storySetting: form.storySetting,
-    settingNotes: form.settingNotes.trim(),
-    visualStyle: form.visualStyle,
-    imageStyle: form.imageStyle,
-    aspectRatio: form.aspectRatio,
-  });
+  const secondaryGenreControl = (
+    <div className={isNewAiDrama ? "form-field project-secondary-genres" : "form-field full project-secondary-genres"}>
+      <span>{isNewAiDrama ? "Thể loại phụ · tối đa 2" : "Supporting Genres · up to 2"}</span>
+      <div className="project-genre-tags" role="group" aria-label={isNewAiDrama ? "Thể loại phụ" : "Supporting genres"}>
+        {CONTENT_GENRES.filter((genre) => genre.value !== form.contentGenre).map((genre) => {
+          const active = form.secondaryGenres.includes(genre.value);
+          const atLimit = form.secondaryGenres.length >= 2 && !active;
+          return <button type="button" key={genre.value} className={`project-genre-tag ${active ? "active" : ""}`} aria-pressed={active} disabled={atLimit} onClick={() => toggleSecondaryGenre(genre.value)}>{isNewAiDrama ? genre.label : CONTENT_GENRE_EN_LABELS[genre.value]}</button>;
+        })}
+      </div>
+    </div>
+  );
   const providerConfig = provider || { primaryModel: "—", fallbackModels: [], reasoningEffort: "—", serviceTier: "—", keyConfigured: false };
   const languageOptions = [...new Set([
     ...FALLBACK_VIDEO_LANGUAGES,
@@ -782,25 +659,162 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
     window.location.href = destination;
   }
 
+  const contentOutputSection = (
+    <section className={`form-section panel-card content-output-section${isNewAiDrama ? " ai-drama-output-section" : ""}`}>
+      {!isNewAiDrama && <>
+        <div className="section-kicker">03 / CONTENT & OUTPUT</div>
+        <h2>Nội dung & đầu ra</h2>
+      </>}
+      <div className="form-grid content-output-grid">
+        {currentScriptEntryMode === "json" ? <div className="form-field full">
+          <span>Thời lượng từ JSON</span>
+        </div> : <>
+          {!isNewAiDrama && <label htmlFor="project-duration-mode" className="form-field">
+            <span>Cách xác định thời lượng</span>
+            <select id="project-duration-mode" value={form.scriptMode === "manual" ? form.durationMode : "manual"} onChange={(event) => selectDurationMode(event.target.value as DurationMode)}>
+              <option value="manual">Tự nhập thời lượng mục tiêu</option>
+              {form.scriptMode === "manual" && <option value="auto">Tự tính từ kịch bản</option>}
+            </select>
+          </label>}
+          <label htmlFor="project-duration" className="form-field">
+            <span>{usesAutoDuration ? "Thời lượng tự tính" : "Thời lượng mục tiêu (phút)"}</span>
+            <input id="project-duration" type="number" min={1} step={0.1} value={usesAutoDuration ? Number((effectiveDurationSeconds / 60).toFixed(2)) : form.durationMinutes} disabled={usesAutoDuration} onChange={(event) => setField("durationMinutes", Number(event.target.value))} />
+            {manualMetrics && <small className="field-help">{manualMetrics.wordCount.toLocaleString("vi-VN")} từ · {manualMetrics.sceneCount} cảnh · {formatDurationLabel(effectiveDurationSeconds)}{manualMetrics.issues.length ? ` · ${manualMetrics.issues.length} cảnh cần tách/kiểm tra` : ""}</small>}
+          </label>
+        </>}
+        <label htmlFor="project-video-language" className="form-field">
+          <span>Ngôn ngữ video</span>
+          <select id="project-video-language" value={form.language} onChange={(event) => selectVideoLanguage(event.target.value)}>
+            {languageOptions.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}
+          </select>
+        </label>
+        <label htmlFor="project-voice" className="form-field">
+          <span>Giọng đọc OmniVoice</span>
+          <select id="project-voice" value={form.voiceId} onChange={(event) => selectVoice(event.target.value)} disabled={!visibleVoiceChoices.length}>
+            <option value="">OmniVoice mặc định</option>
+            {visibleVoiceChoices.map((voice: OmniVoiceOption) => <option key={voice.id} value={voice.id}>{voice.name} · {voiceLanguageLabel(voice.language)}{voice.gender ? ` · ${voice.gender}` : ""}</option>)}
+          </select>
+          {voiceError && <small className="field-help" role="alert">Không tải được voice MaiVideo. Kiểm tra API key trong Cài đặt.</small>}
+        </label>
+        <label htmlFor="project-aspect" className="form-field">
+          <span>Khung hình</span>
+          <select id="project-aspect" value={form.aspectRatio} onChange={(event) => setField("aspectRatio", event.target.value)}>
+            <option value="16:9">16:9 · YouTube</option>
+            <option value="9:16">9:16 · Shorts</option>
+            <option value="1:1">1:1 · Social</option>
+          </select>
+        </label>
+        {isNewAiDrama ? <div className="form-field full ai-drama-genre-settings">
+          <label htmlFor="project-content-genre" className="form-field">
+            <span>Thể loại chính</span>
+            <select id="project-content-genre" value={form.contentGenre} onChange={(event) => selectPrimaryGenre(event.target.value)}>
+              {CONTENT_GENRES.map((genre) => <option key={genre.value} value={genre.value}>{genre.label}</option>)}
+            </select>
+          </label>
+          {secondaryGenreControl}
+        </div> : <>
+          <label htmlFor="project-content-genre" className="form-field">
+            <span>Primary Genre</span>
+            <select id="project-content-genre" value={form.contentGenre} onChange={(event) => selectPrimaryGenre(event.target.value)}>
+              {CONTENT_GENRES.map((genre) => <option key={genre.value} value={genre.value}>{CONTENT_GENRE_EN_LABELS[genre.value]}</option>)}
+            </select>
+          </label>
+          {secondaryGenreControl}
+        </>}
+        <label htmlFor="project-story-setting" className="form-field">
+          <span>{isNewAiDrama ? "Bối cảnh truyện" : "Story Setting"}</span>
+          <select id="project-story-setting" value={form.storySetting} onChange={(event) => setField("storySetting", event.target.value)}>
+            {STORY_SETTING_OPTIONS.map((setting) => <option key={setting.value} value={setting.value}>{isNewAiDrama ? setting.value === "unspecified" ? "Theo kịch bản" : setting.label : STORY_SETTING_EN_LABELS[setting.value]}</option>)}
+          </select>
+        </label>
+        <label htmlFor="project-setting-notes" className="form-field">
+          <span>{isNewAiDrama ? form.storySetting === "historical" ? "Thời kỳ / địa điểm" : "Chi tiết bối cảnh" : form.storySetting === "historical" ? "Historical Period / Location" : "Setting Details"}</span>
+          <input id="project-setting-notes" value={form.settingNotes} onChange={(event) => setField("settingNotes", event.target.value)} maxLength={2000} required={form.storySetting === "historical"} placeholder={isNewAiDrama ? form.storySetting === "historical" ? "Ví dụ: Việt Nam thời Lê sơ" : "Ví dụ: Tokyo năm 2140" : form.storySetting === "historical" ? "e.g. Vietnam during the Early Le dynasty" : "e.g. Present-day Tokyo, the year 2140, a fantasy kingdom"} />
+        </label>
+        <label htmlFor="project-image-style" className="form-field">
+          <span>{isNewAiDrama ? "Phong cách hình ảnh" : "Image Style"}</span>
+          <select id="project-image-style" value={hasCustomImageStyle ? "custom" : form.imageStyle} onChange={(event) => setField("imageStyle", event.target.value === "custom" ? "" : event.target.value)}>
+            {IMAGE_STYLE_PRESETS.map(({ value, label }) => <option key={value} value={value}>{isNewAiDrama ? label.split(" · ")[0] : IMAGE_STYLE_EN_LABELS[value]}</option>)}
+            <option value="custom">{isNewAiDrama ? "Phong cách riêng…" : "Custom Image Style…"}</option>
+          </select>
+        </label>
+        {hasCustomImageStyle && <label htmlFor="project-image-style-custom" className="form-field">
+          <span>{isNewAiDrama ? "Phong cách riêng" : "Custom Image Style"}</span>
+          <input id="project-image-style-custom" value={form.imageStyle} onChange={(event) => setField("imageStyle", event.target.value)} maxLength={160} required placeholder={isNewAiDrama ? "Ví dụ: anime 2D, đổ bóng cel, nét gọn" : "e.g. 2D anime, cel shading, clean line art"} />
+        </label>}
+        {!isNewAiDrama && <label htmlFor="project-media-source" className="form-field">
+          <span>Media mặc định</span>
+          <select id="project-media-source" value={form.presetId === "ai-drama" ? "maivideo-video" : form.mediaSource} disabled={form.presetId === "ai-drama"} onChange={(event) => {
+            mediaSourceTouched.current = true;
+            setField("mediaSource", event.target.value as MediaSource);
+          }}>
+            <option value="stock-mixed">Stock mix · MaiVideo fallback</option>
+            <option value="stock-image">Chỉ stock ảnh</option>
+            <option value="stock-video">Chỉ stock video</option>
+            <option value="maivideo-image">MaiVideo AI ảnh</option>
+            <option value="maivideo-video">AI video · hệ thống đã chọn</option>
+          </select>
+        </label>}
+        <label htmlFor="project-chunk-size" className="form-field">
+          <span>Số cảnh mỗi chunk / tập</span>
+          <select id="project-chunk-size" value={customChunkSize ? "custom" : String(form.chunkSize)} onChange={(event) => {
+            if (event.target.value === "custom") {
+              setCustomChunkSize(true);
+              return;
+            }
+            setCustomChunkSize(false);
+            setField("chunkSize", Number(event.target.value));
+          }}>
+            {PROJECT_CHUNK_SIZE_PRESETS.map((size) => <option key={size} value={size}>{size} cảnh / chunk</option>)}
+            <option value="custom">Tùy chỉnh số cảnh…</option>
+          </select>
+          {customChunkSize && <input
+            aria-label="Số cảnh tùy chỉnh mỗi chunk"
+            type="number"
+            min={MIN_PROJECT_CHUNK_SIZE}
+            max={MAX_PROJECT_CHUNK_SIZE}
+            step={1}
+            required
+            value={form.chunkSize > 0 ? form.chunkSize : ""}
+            onChange={(event) => setField("chunkSize", event.target.value === "" ? 0 : Number(event.target.value))}
+            placeholder={`Nhập ${MIN_PROJECT_CHUNK_SIZE}–${MAX_PROJECT_CHUNK_SIZE} cảnh`}
+          />}
+          <small className="field-help">Mỗi chunk/tập gồm số cảnh đã chọn; có thể nhập từ {MIN_PROJECT_CHUNK_SIZE} đến {MAX_PROJECT_CHUNK_SIZE}.</small>
+        </label>
+      </div>
+      {!isNewAiDrama && <div className="fixed-rule">
+        <Icon name="check" size={15} />
+        <span><strong>Giới hạn cảnh:</strong> {MAX_SCENE_DURATION_SEC} giây · 3 từ/giây{currentScriptEntryMode === "json" ? " · JSON cần timecode hợp lệ" : ""}</span>
+      </div>}
+    </section>
+  );
+
   return (
-    <div className="new-project-view">
-      <section className="page-heading">
+    <div className={`new-project-view${isNewAiDrama ? " ai-drama-view" : ""}`}>
+      <section className={`page-heading${isNewAiDrama ? " ai-drama-sticky-heading" : ""}`}>
         <div>
-          <div className="eyebrow"><span className="eyebrow-dot" />PROJECT SETUP</div>
+          {!isNewAiDrama && <div className="eyebrow"><span className="eyebrow-dot" />PROJECT SETUP</div>}
           <h1>{projectSlug ? "Tùy chỉnh dự án" : fixedPresetId ? `Tạo dự án ${STORY_PRESETS[fixedPresetId].label}` : "Tạo dự án mới"}</h1>
-          <p className="heading-subtitle">{fixedPresetId ? `Luồng tạo riêng cho ${STORY_PRESETS[fixedPresetId].label}; loại dự án được cố định từ lúc tạo.` : "Chọn cấu hình trước khi bước vào màn hình sử dụng."}</p>
+          {!isNewAiDrama && <p className="heading-subtitle">{fixedPresetId ? `Luồng tạo riêng cho ${STORY_PRESETS[fixedPresetId].label}; loại dự án được cố định từ lúc tạo.` : "Chọn cấu hình trước khi bước vào màn hình sử dụng."}</p>}
         </div>
-        <Link className="secondary-button" href={projectSlug ? `/projects/${projectSlug}` : "/projects"}>Hủy</Link>
+        <div className="page-heading-actions">
+          {isNewAiDrama && <button className="primary-button" form="project-setup-form" type="submit" disabled={saving}>
+            <Icon name="save" size={16} />{saving ? "Đang tạo project…" : "Tạo project"}
+          </button>}
+          <Link className="secondary-button" href={projectSlug ? `/projects/${projectSlug}` : "/projects"}>Hủy</Link>
+        </div>
       </section>
 
-      <form className="project-form" onSubmit={submit}>
+      <form id="project-setup-form" className={`project-form${isNewAiDrama ? " ai-drama-form" : ""}`} onSubmit={submit}>
         <div className="form-main">
+          {isNewAiDrama && error && <div className="form-error" role="alert">{error}</div>}
+          {isNewAiDrama && contentOutputSection}
           <section className="form-section panel-card">
             <div className="form-section-heading">
               <div>
-                <div className="section-kicker">01 / SOURCE</div>
+                <div className="section-kicker">{isNewAiDrama ? "02 / KỊCH BẢN NGUỒN" : "01 / SOURCE"}</div>
                 <h2>Nguồn và thông tin dự án</h2>
-                <p>{currentScriptEntryMode === "json" ? "Chọn file JSON làm nguồn kịch bản cho project." : isNewAiDrama ? "Mô tả ý tưởng để AI viết kịch bản nguồn cho project Drama." : "Nhập link YouTube hoặc transcript/brief có quyền sử dụng."}</p>
+                {!isNewAiDrama && <p>{currentScriptEntryMode === "json" ? "Chọn file JSON làm nguồn kịch bản cho project." : "Nhập link YouTube hoặc transcript/brief có quyền sử dụng."}</p>}
               </div>
               <span className="form-step">Bắt buộc</span>
             </div>
@@ -829,24 +843,22 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
                 </div>
                 {currentScriptEntryMode === "json" && <small className="field-help">Link YouTube được lưu làm tham chiếu; kịch bản sẽ lấy từ file JSON.</small>}
               </label>
-              <label htmlFor="project-script-mode" className="form-field full">
+              {!isNewAiDrama && fixedPresetId !== "ai-drama" && <label htmlFor="project-script-mode" className="form-field full">
                 <span>Cách nhập kịch bản</span>
-                <select id="project-script-mode" value={currentScriptEntryMode} onChange={(event) => selectScriptEntryMode(event.target.value as ScriptEntryMode)} disabled={Boolean(pendingScriptImport) || fixedPresetId === "ai-drama"}>
+                <select id="project-script-mode" value={currentScriptEntryMode} onChange={(event) => selectScriptEntryMode(event.target.value as ScriptEntryMode)} disabled={Boolean(pendingScriptImport)}>
                   <option value="ai">{form.presetId === "ai-drama" ? "AI viết kịch bản nguồn từ ý tưởng" : "AI tạo kịch bản từ nguồn"}</option>
-                  {fixedPresetId !== "ai-drama" && <option value="manual">Tôi tự nhập kịch bản</option>}
-                  {!projectSlug && fixedPresetId !== "ai-drama" && <option value="json">Nhập JSON từ GPT</option>}
+                  <option value="manual">Tôi tự nhập kịch bản</option>
+                  {!projectSlug && <option value="json">Nhập JSON từ GPT</option>}
                 </select>
-                {fixedPresetId === "ai-drama"
-                  ? <small className="field-help">Luồng AI Drama dùng ý tưởng để tạo kịch bản nguồn; bạn có thể xem và chỉnh sửa nội dung ở phần bên dưới.</small>
-                  : currentScriptEntryMode === "json"
+                {currentScriptEntryMode === "json"
                   ? <small className="field-help">Dán JSON hoặc nạp file; nội dung này là nguồn kịch bản chính của project.</small>
                   : <small className="field-help">Chế độ thủ công giữ nguyên nội dung đã nhập. Sau khi lưu project, Short Drama Studio có thể phân tích và đưa gợi ý riêng; không tự ghi đè bản gốc.</small>}
-              </label>
+              </label>}
               {currentScriptEntryMode === "json" ? <div className="form-field full">
                 <span>JSON kịch bản</span>
                 {(fixedPresetId || form.presetId) === "ai-drama" && <div className="script-template-actions">
-                  <button className="secondary-button compact" type="button" onClick={loadDramaJsonTemplate} disabled={saving}><Icon name="file" size={14} />Chèn mẫu JSON AI Drama</button>
-                  <small>Mẫu minh họa A01/S001 · 5 giây. Hãy sửa nội dung và bổ sung đủ tập/cảnh trước khi nhập.</small>
+                  <button className="secondary-button compact" type="button" onClick={loadDramaJsonTemplate} disabled={saving}><Icon name="file" size={14} />Chèn mẫu JSON Phim AI</button>
+                  <small>Mẫu hướng dẫn A01/S001 · không cố định câu chuyện hay mốc nhịp; có đầy đủ prompt_guidance trong JSON. Chọn cảnh 5/10/15 giây và nhịp linh hoạt theo diễn biến, không chia đều 2,5/3 giây hay giữ hình đầu 0,5 giây. Giữ camera/VFX cần thiết và REFERENCE RULES. Thay các hướng dẫn trong [ ] bằng kịch bản thực tế và bổ sung đủ tập/cảnh trước khi nhập.</small>
                 </div>}
                 <input ref={scriptJsonInputRef} type="file" accept="application/json,.json" hidden onChange={selectScriptJsonFile} />
                 <textarea
@@ -873,58 +885,37 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
                   ? <small className="field-help">{scriptJsonSummary.schema} · {scriptJsonSummary.episodeCount} tập · {scriptJsonSummary.sceneCount} cảnh</small>
                   : <small className="field-help">Mỗi lần chỉ nhập một tập theo schema scene-script.v1. Các tập tiếp theo cần nhập lần lượt trong project.</small>}
               </div> : isNewAiDrama ? <div className="form-field full drama-source-composer">
-                <label htmlFor="project-drama-idea" className="form-field">
-                  <span>Ý tưởng / đề bài sáng tác</span>
+                <div className="drama-idea-field">
+                  <div className="drama-source-compact-heading">
+                    <label htmlFor="project-drama-idea">Ý tưởng</label>
+                    <div className="drama-source-actions">
+                      <span>{dramaIdea.length.toLocaleString("vi-VN")}/10.000</span>
+                      <button className="primary-button compact" type="button" onClick={() => void copyDramaBrief()} disabled={saving}>
+                        <Icon name="copy" size={15} />Sao chép hướng dẫn cho AI
+                      </button>
+                    </div>
+                  </div>
                   <textarea
                     id="project-drama-idea"
                     value={dramaIdea}
                     onChange={(event) => setDramaIdea(event.target.value)}
-                    placeholder="Ví dụ: Một nữ bác sĩ trở về quê sau 10 năm và phát hiện gia đình đang che giấu sự thật về người anh trai mất tích. Bối cảnh miền Trung hiện đại, melodrama gia đình, kết thúc có hy vọng…"
                     maxLength={10000}
                   />
-                  <small className="field-help">AI sẽ đề xuất title video, hồ sơ nhân vật và bối cảnh có prompt ảnh, tên từng tập/chương và diễn tiến toàn bộ thời lượng. Voice do hệ thống gán sau khi tạo project; bạn đổi trong tab Nhân vật.</small>
-                </label>
-                <div className={`drama-source-actions ${generatingDramaSource ? "is-loading" : ""}`}>
-                  <button className="primary-button compact" type="button" onClick={generateDramaSource} disabled={generatingDramaSource || saving}>
-                    <Icon name="spark" size={15} />
-                    {generatingDramaSource ? dramaSourceProgress || "Đang viết kịch bản…" : dramaBriefSnapshot ? "Viết lại kịch bản nguồn" : "AI viết kịch bản nguồn"}
-                  </button>
-                  <span>{dramaIdea.length.toLocaleString("vi-VN")}/10.000 ký tự{dramaSourceModel ? ` · ${dramaSourceModel}` : ""}</span>
+                  <details className="drama-brief-preview">
+                    <summary>Xem hướng dẫn đầy đủ sẽ sao chép</summary>
+                    <textarea aria-label="Nội dung hướng dẫn cho AI sẽ sao chép" readOnly value={buildDramaBrief()} rows={8} />
+                  </details>
                 </div>
                 <div className="form-field drama-source-text-field">
-                  <label htmlFor="project-source-text"><span>Kịch bản nguồn AI Drama · có thể chỉnh sửa</span></label>
-                  <div className="script-template-actions">
-                    <button className="secondary-button compact" type="button" onClick={loadDramaSourceTemplate} disabled={saving || generatingDramaSource}><Icon name="file" size={14} />Chèn mẫu kịch bản nguồn</button>
-                    <button className="secondary-button compact" type="button" onClick={() => void copyDramaSourceTemplate()} disabled={saving || generatingDramaSource}><Icon name="copy" size={14} />Copy mẫu</button>
-                    <small>Mẫu có story bible, nhân vật, bối cảnh và outline tập; sửa trực tiếp trong ô bên dưới.</small>
-                    {sourceTemplateCopyStatus && <small role="status">{sourceTemplateCopyStatus}</small>}
-                  </div>
+                  <label htmlFor="project-source-text">Kịch bản nguồn Phim AI</label>
                   <textarea
                     id="project-source-text"
                     value={form.sourceText}
-                    onChange={(event) => {
-                      setField("sourceText", event.target.value);
-                      if (dramaPlan) {
-                        setDramaPlan(null);
-                        setDramaBriefSnapshot("");
-                        setDramaSourceModel("");
-                      }
-                    }}
-                    placeholder="Kịch bản nguồn do AI tạo sẽ xuất hiện ở đây. Bạn cũng có thể dán story bible, treatment hoặc outline đã có."
+                    onChange={(event) => setField("sourceText", event.target.value)}
+                    placeholder="Dán kịch bản nguồn vào đây"
                   />
-                  {dramaBriefSnapshot && dramaSourceInputs !== dramaBriefSnapshot
-                    ? <small className="field-help drama-source-stale">Thông tin project hoặc ý tưởng đã thay đổi sau lần viết gần nhất. Hãy viết lại kịch bản nguồn nếu muốn áp dụng nội dung mới.</small>
-                    : <small className="field-help">Kết quả gồm story bible, hồ sơ nhân vật và outline theo nhịp khoảng 5 phút. Khi chạy tạo chunk, AI Drama chia cảnh 5/10/15 giây theo nhịp hành động, tách từng lượt thoại và gán timecode cho từng nhân vật.</small>}
+                  {dramaBriefCopyStatus && <small className="field-help" role="status">{dramaBriefCopyStatus}</small>}
                 </div>
-                {dramaPlan && <div className="drama-plan-preview">
-                  <strong>Title video: {dramaPlan.videoTitle}</strong>
-                  <span>{dramaPlan.characters.length} nhân vật · {dramaPlan.locations.length} bối cảnh · {dramaPlan.episodes.length} tập/chương</span>
-                  <details><summary>Xem nhân vật, bối cảnh và tên tập</summary>
-                    <div><strong>Nhân vật</strong>{dramaPlan.characters.map((item) => <span key={item.name}>{item.name} · {item.description}</span>)}</div>
-                    <div><strong>Bối cảnh</strong>{dramaPlan.locations.map((item) => <span key={item.name}>{item.name} · {item.description}</span>)}</div>
-                    <div><strong>Tập/chương</strong>{dramaPlan.episodes.map((item, index) => <span key={index}>A{String(index + 1).padStart(2, "0")} · {item.title}</span>)}</div>
-                  </details>
-                </div>}
               </div> : <label htmlFor="project-source-text" className="form-field full">
                 <span>{form.scriptMode === "manual" ? "Kịch bản thủ công" : "Transcript / brief"}</span>
                 <textarea id="project-source-text" value={form.sourceText} onChange={(event) => setField("sourceText", event.target.value)} placeholder={form.scriptMode === "manual" ? "Dán kịch bản tại đây. StoryAI sẽ giữ nguyên lời thoại và tự chia cảnh…" : "Để trống nếu muốn StoryAI tự lấy transcript YouTube qua MaiVideo…"} />
@@ -936,7 +927,7 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
           <section className="form-section panel-card">
             <div className="form-section-heading">
               <div>
-                <div className="section-kicker">02 / MEDIA GENERATION</div>
+                <div className="section-kicker">{isNewAiDrama ? "03" : "02"} / MEDIA GENERATION</div>
                 <h2>Cấu hình model ảnh và video</h2>
               </div>
             </div>
@@ -957,7 +948,7 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
                     </select>
                   </label>}
                   {supportedImageDetailLevels.length > 0 && <label htmlFor="project-image-detail-level" className="form-field">
-                    <span>Detail level</span>
+                    <span>{isNewAiDrama ? "Độ chi tiết ảnh" : "Detail level"}</span>
                     <select id="project-image-detail-level" value={form.mediaGeneration.imageDetailLevel} onChange={(event) => setMediaSettings({ imageDetailLevel: event.target.value as MediaGenerationSettings["imageDetailLevel"] })}>
                       {supportedImageDetailLevels.map((level) => <option key={level} value={level}>{IMAGE_DETAIL_LEVEL_LABELS[level]}</option>)}
                     </select>
@@ -969,7 +960,7 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
                     </label>
                   </div>
                 </div>
-                {!museImageSelected && !flowImageSelected && (mediaCatalog?.imageError || mediaCatalogError) && <small className="field-help media-generation-help">Catalog ảnh không tải được. Kiểm tra API key MaiVideo.</small>}
+                {!museImageSelected && !flowImageSelected && (mediaCatalog?.imageError || mediaCatalogError) && <small className="field-help media-generation-help" role="alert">Catalog ảnh không tải được. Kiểm tra API key MaiVideo.</small>}
               </section>
 
               <section className="media-generation-group" aria-labelledby="video-generation-settings-title">
@@ -1002,7 +993,7 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
                       <option value="">Mặc định{seedanceAccounts.find((account) => account.id === defaultSeedanceAccountId) ? ` · ${seedanceAccounts.find((account) => account.id === defaultSeedanceAccountId)?.name}` : " · chưa kết nối"}</option>
                       {seedanceAccounts.filter((account) => account.id !== defaultSeedanceAccountId).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
                     </select>
-                    {!seedanceAccounts.length && <small className="field-help"><Link href="/settings#seedance-login">Kết nối API key Seedance trong Cài đặt</Link></small>}
+                    {!seedanceAccounts.length && <small className="field-help interactive-help"><Link href="/settings#seedance-login">Kết nối API key Seedance trong Cài đặt</Link></small>}
                   </label>}
                   {seedanceSelected && !seedanceHiddenSelected && <label htmlFor="project-seedance-chat-mode" className="form-field">
                     <span>Chế độ chat Seedance</span>
@@ -1025,7 +1016,7 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
                       <option value="scene">Theo độ dài từng cảnh</option>
                       {form.presetId !== "ai-drama" && <option value="fixed">Cố định cho mọi cảnh</option>}
                     </select>
-                    {form.presetId === "ai-drama" && <small className="field-help">{museSelected ? "Muse.ai chỉ nhận clip 5 hoặc 10 giây; cảnh dài hơn dùng tối đa 10 giây." : flowSelected ? "Flow nhận clip 6, 8 hoặc 10 giây; thời lượng cảnh được làm tròn lên mốc phù hợp, tối đa 10 giây." : "AI Drama luôn tạo clip theo từng cảnh 5/10/15 giây."}</small>}
+                    {form.presetId === "ai-drama" && <small className="field-help">{museSelected ? "Muse.ai chỉ nhận clip 5 hoặc 10 giây; cảnh dài hơn dùng tối đa 10 giây." : flowSelected ? "Flow nhận clip 6, 8 hoặc 10 giây; thời lượng cảnh được làm tròn lên mốc phù hợp, tối đa 10 giây." : "Phim AI luôn tạo clip theo từng cảnh 5/10/15 giây."}</small>}
                     {form.mediaGeneration.videoDurationMode === "fixed"
                       ? providerAccountSelected
                         ? <select id="project-video-duration-seconds" value={form.mediaGeneration.videoDurationSec} onChange={(event) => setMediaSettings({ videoDurationSec: Number(event.target.value) })}>{videoDurationChoices.map((seconds) => <option key={seconds} value={seconds}>{seconds} giây</option>)}</select>
@@ -1049,7 +1040,7 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
                     </label>
                   </div>
                 </div>
-                {(mediaCatalog?.videoError || mediaCatalogError) && form.mediaGeneration.videoProvider === "maivideo" && <small className="field-help media-generation-help">Catalog video không tải được. Kiểm tra API key MaiVideo.</small>}
+                {(mediaCatalog?.videoError || mediaCatalogError) && form.mediaGeneration.videoProvider === "maivideo" && <small className="field-help media-generation-help" role="alert">Catalog video không tải được. Kiểm tra API key MaiVideo.</small>}
               </section>
               {!providerAccountSelected && <section className="media-generation-group media-generation-options" aria-labelledby="video-options-title">
                 <div className="media-generation-group-heading"><div><strong id="video-options-title">Tùy chọn model video</strong></div></div>
@@ -1072,131 +1063,8 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
           </section>
         </div>
 
-        <aside className="form-side">
-          <section className="form-section panel-card">
-            <div className="section-kicker">03 / CONTENT & OUTPUT</div>
-            <h2>Nội dung & đầu ra</h2>
-            <div className="form-grid content-output-grid">
-              {currentScriptEntryMode === "json" ? <div className="form-field full">
-                <span>Thời lượng từ JSON</span>
-              </div> : <>
-                <label htmlFor="project-duration-mode" className="form-field">
-                  <span>Cách xác định thời lượng</span>
-                  <select id="project-duration-mode" value={form.scriptMode === "manual" ? form.durationMode : "manual"} onChange={(event) => selectDurationMode(event.target.value as DurationMode)}>
-                    <option value="manual">Tự nhập thời lượng mục tiêu</option>
-                    {form.scriptMode === "manual" && <option value="auto">Tự tính từ kịch bản</option>}
-                  </select>
-                </label>
-                <label htmlFor="project-duration" className="form-field">
-                  <span>{usesAutoDuration ? "Thời lượng tự tính" : "Thời lượng mục tiêu (phút)"}</span>
-                  <input id="project-duration" type="number" min={1} step={0.1} value={usesAutoDuration ? Number((effectiveDurationSeconds / 60).toFixed(2)) : form.durationMinutes} disabled={usesAutoDuration} onChange={(event) => setField("durationMinutes", Number(event.target.value))} />
-                  {manualMetrics && <small className="field-help">{manualMetrics.wordCount.toLocaleString("vi-VN")} từ · {manualMetrics.sceneCount} cảnh · {formatDurationLabel(effectiveDurationSeconds)}{manualMetrics.issues.length ? ` · ${manualMetrics.issues.length} cảnh cần tách/kiểm tra` : ""}</small>}
-                </label>
-              </>}
-              <label htmlFor="project-video-language" className="form-field">
-                <span>Ngôn ngữ video</span>
-                <select id="project-video-language" value={form.language} onChange={(event) => selectVideoLanguage(event.target.value)}>
-                  {languageOptions.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}
-                </select>
-              </label>
-              <label htmlFor="project-voice" className="form-field">
-                <span>Giọng đọc OmniVoice</span>
-                <select id="project-voice" value={form.voiceId} onChange={(event) => selectVoice(event.target.value)} disabled={!visibleVoiceChoices.length}>
-                  <option value="">OmniVoice mặc định</option>
-                  {visibleVoiceChoices.map((voice: OmniVoiceOption) => <option key={voice.id} value={voice.id}>{voice.name} · {voiceLanguageLabel(voice.language)}{voice.gender ? ` · ${voice.gender}` : ""}</option>)}
-                </select>
-                {voiceError && <small className="field-help">Không kết nối MaiVideo; sẽ dùng giọng mặc định.</small>}
-              </label>
-              <label htmlFor="project-aspect" className="form-field">
-                <span>Khung hình</span>
-                <select id="project-aspect" value={form.aspectRatio} onChange={(event) => setField("aspectRatio", event.target.value)}>
-                  <option value="16:9">16:9 · YouTube</option>
-                  <option value="9:16">9:16 · Shorts</option>
-                  <option value="1:1">1:1 · Social</option>
-                </select>
-              </label>
-              <label htmlFor="project-content-genre" className="form-field">
-                <span>Primary Genre</span>
-                <select id="project-content-genre" value={form.contentGenre} onChange={(event) => selectPrimaryGenre(event.target.value)}>
-                  {CONTENT_GENRES.map((genre) => <option key={genre.value} value={genre.value}>{CONTENT_GENRE_EN_LABELS[genre.value]}</option>)}
-                </select>
-              </label>
-              <div className="form-field full project-secondary-genres">
-                <span>Supporting Genres · up to 2</span>
-                <div className="project-genre-tags" role="group" aria-label="Supporting genres">
-                  {CONTENT_GENRES.filter((genre) => genre.value !== form.contentGenre).map((genre) => {
-                    const active = form.secondaryGenres.includes(genre.value);
-                    const atLimit = form.secondaryGenres.length >= 2 && !active;
-                    return <button type="button" key={genre.value} className={`project-genre-tag ${active ? "active" : ""}`} aria-pressed={active} disabled={atLimit} onClick={() => toggleSecondaryGenre(genre.value)}>{CONTENT_GENRE_EN_LABELS[genre.value]}</button>;
-                  })}
-                </div>
-              </div>
-              <label htmlFor="project-story-setting" className="form-field">
-                <span>Story Setting</span>
-                <select id="project-story-setting" value={form.storySetting} onChange={(event) => setField("storySetting", event.target.value)}>
-                  {STORY_SETTING_OPTIONS.map((setting) => <option key={setting.value} value={setting.value}>{STORY_SETTING_EN_LABELS[setting.value]}</option>)}
-                </select>
-              </label>
-              <label htmlFor="project-setting-notes" className="form-field">
-                <span>{form.storySetting === "historical" ? "Historical Period / Location" : "Setting Details"}</span>
-                <input id="project-setting-notes" value={form.settingNotes} onChange={(event) => setField("settingNotes", event.target.value)} maxLength={2000} required={form.storySetting === "historical"} placeholder={form.storySetting === "historical" ? "e.g. Vietnam during the Early Le dynasty" : "e.g. Present-day Tokyo, the year 2140, a fantasy kingdom"} />
-              </label>
-              <label htmlFor="project-image-style" className="form-field">
-                <span>Image Style</span>
-                <select id="project-image-style" value={hasCustomImageStyle ? "custom" : form.imageStyle} onChange={(event) => setField("imageStyle", event.target.value === "custom" ? "" : event.target.value)}>
-                  {IMAGE_STYLE_PRESETS.map(({ value }) => <option key={value} value={value}>{IMAGE_STYLE_EN_LABELS[value]}</option>)}
-                  <option value="custom">Custom Image Style…</option>
-                </select>
-              </label>
-              {hasCustomImageStyle && <label htmlFor="project-image-style-custom" className="form-field">
-                <span>Custom Image Style</span>
-                <input id="project-image-style-custom" value={form.imageStyle} onChange={(event) => setField("imageStyle", event.target.value)} maxLength={160} required placeholder="e.g. 2D anime, cel shading, clean line art" />
-              </label>}
-              <label htmlFor="project-media-source" className="form-field">
-                <span>Media mặc định</span>
-                <select id="project-media-source" value={form.presetId === "ai-drama" ? "maivideo-video" : form.mediaSource} disabled={form.presetId === "ai-drama"} onChange={(event) => {
-                  mediaSourceTouched.current = true;
-                  setField("mediaSource", event.target.value as MediaSource);
-                }}>
-                  <option value="stock-mixed">Stock mix · MaiVideo fallback</option>
-                  <option value="stock-image">Chỉ stock ảnh</option>
-                  <option value="stock-video">Chỉ stock video</option>
-                  <option value="maivideo-image">MaiVideo AI ảnh</option>
-                  <option value="maivideo-video">AI video · hệ thống đã chọn</option>
-                </select>
-              </label>
-              <label htmlFor="project-chunk-size" className="form-field">
-                <span>Số cảnh mỗi chunk / tập</span>
-                <select id="project-chunk-size" value={customChunkSize ? "custom" : String(form.chunkSize)} onChange={(event) => {
-                  if (event.target.value === "custom") {
-                    setCustomChunkSize(true);
-                    return;
-                  }
-                  setCustomChunkSize(false);
-                  setField("chunkSize", Number(event.target.value));
-                }}>
-                  {PROJECT_CHUNK_SIZE_PRESETS.map((size) => <option key={size} value={size}>{size} cảnh / chunk</option>)}
-                  <option value="custom">Tùy chỉnh số cảnh…</option>
-                </select>
-                {customChunkSize && <input
-                  aria-label="Số cảnh tùy chỉnh mỗi chunk"
-                  type="number"
-                  min={MIN_PROJECT_CHUNK_SIZE}
-                  max={MAX_PROJECT_CHUNK_SIZE}
-                  step={1}
-                  required
-                  value={form.chunkSize > 0 ? form.chunkSize : ""}
-                  onChange={(event) => setField("chunkSize", event.target.value === "" ? 0 : Number(event.target.value))}
-                  placeholder={`Nhập ${MIN_PROJECT_CHUNK_SIZE}–${MAX_PROJECT_CHUNK_SIZE} cảnh`}
-                />}
-                <small className="field-help">Mỗi chunk/tập gồm số cảnh đã chọn; có thể nhập từ {MIN_PROJECT_CHUNK_SIZE} đến {MAX_PROJECT_CHUNK_SIZE}.</small>
-              </label>
-            </div>
-            <div className="fixed-rule">
-              <Icon name="check" size={15} />
-              <span><strong>Giới hạn cảnh:</strong> {MAX_SCENE_DURATION_SEC} giây · 3 từ/giây{currentScriptEntryMode === "json" ? " · JSON cần timecode hợp lệ" : ""}</span>
-            </div>
-          </section>
+        {!isNewAiDrama && <aside className="form-side">
+          {contentOutputSection}
 
           <section className="form-section panel-card provider-card">
             <div className="section-kicker">04 / PROVIDER</div>
@@ -1221,17 +1089,17 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
             </div>
             <button className="primary-button" type="submit" disabled={saving}><Icon name="save" size={16} />{saving ? pendingScriptImport || currentScriptEntryMode === "json" ? "Đang nhập JSON…" : "Đang lưu…" : pendingScriptImport ? "Thử nhập JSON" : currentScriptEntryMode === "json" ? "Tạo project & nhập JSON" : projectSlug ? "Lưu thay đổi" : "Tạo project"}</button>
           </div>
-        </aside>
+        </aside>}
       </form>
 
-      <div className="setup-summary">
+      {!isNewAiDrama && <div className="setup-summary">
         <Icon name="spark" size={16} />
         <span>{currentScriptEntryMode === "json"
           ? scriptJsonSummary
             ? <>Project sẽ nhập <strong>{scriptJsonSummary.episodeCount} tập</strong> · <strong>{scriptJsonSummary.sceneCount} cảnh</strong> từ {scriptJsonSummary.schema}.</>
             : "Chọn JSON scene-script.v1 của một tập để xem số cảnh trước khi tạo project."
           : <>Project sẽ tạo <strong>{totalScenes} cảnh</strong> trong <strong>{totalChunks} tập</strong>. Sau khi tạo, hãy nhập JSON riêng cho từng tập.</>}</span>
-      </div>
+      </div>}
 
       {characterSetupPrompt && <div className="character-setup-backdrop">
         <section className="character-setup-dialog" role="dialog" aria-modal="true" aria-labelledby="character-setup-title" aria-describedby="character-setup-description">

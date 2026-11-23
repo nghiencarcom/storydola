@@ -35,7 +35,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   const snapshot = await readData();
   const project = snapshot.projects.find((item) => item.slug === slug);
   if (!project) return NextResponse.json({ message: "Không tìm thấy project." }, { status: 404 });
-  if (project.presetId !== "ai-drama") return NextResponse.json({ message: "Dịch timeline thoại chỉ áp dụng cho AI Drama." }, { status: 409 });
+  if (project.presetId !== "ai-drama") return NextResponse.json({ message: "Dịch timeline thoại chỉ áp dụng cho Phim AI." }, { status: 409 });
   const { scene } = await findProjectScene(project, sceneId);
   if (!scene) return NextResponse.json({ message: "Không tìm thấy cảnh." }, { status: 404 });
   const chunk = chunkForScene(project, scene);

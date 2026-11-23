@@ -1,5 +1,7 @@
 "use client";
 
+import type { VideoPromptCompactionReport } from "../lib/video-prompt-compaction";
+
 import Link from "next/link";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isFlowStoryOnlyPreset, STORY_PRESETS } from "../lib/story-presets";
@@ -7,7 +9,7 @@ import { useProjects } from "../lib/project-store";
 import { FALLBACK_VIDEO_LANGUAGES, voiceLanguageLabel, type OmniVoiceCatalog, type OmniVoiceOption } from "../lib/omnivoice";
 import { DEFAULT_RENDER_SETTINGS, normalizeRenderSettings } from "../lib/render-effects";
 import { DEFAULT_MEDIA_GENERATION_SETTINGS, IMAGE_DETAIL_LEVEL_LABELS, type DialogueSegment, type ImageGenerationModelOption, type MediaGenerationSettings, type MediaModelCatalog, type ProjectCharacter, type ProjectLocation, type RenderSettings, type SceneAiReview, type SceneMediaJob, type StoryProject, type VideoGenerationModelOption, type VideoPublishingSet } from "../lib/project-types";
-import { availableImageModels as filterAvailableImageModels, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, DEFAULT_SEEDANCE_VIDEO_MODEL_ID, HIGGSFIELD_SEEDANCE_MODEL_ID, imageDetailLevelsForModel, imageModelDisplayName, isFlowImageModel, isMuseImageModel, isPixverseVideoSettings, isTemporarilyHiddenMaiVideoSeedance25, isVideoOffPeakRequired, normalizeVideoDuration, preferredVideoQuality, resolveMediaGenerationSettings, videoDurationOptions, videoModelDisplayName, videoQualitiesForModel, visibleVideoModels } from "../lib/media-generation-settings";
+import { availableImageModels as filterAvailableImageModels, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, DEFAULT_SEEDANCE_VIDEO_MODEL_ID, HIGGSFIELD_SEEDANCE_MODEL_ID, imageDetailLevelsForModel, imageModelDisplayName, isFlowImageModel, isMuseImageModel, isPixverseVideoSettings, isTemporarilyHiddenMaiVideoSeedance25, isVideoOffPeakRequired, normalizeVideoDuration, preferredVideoQuality, resolveMediaGenerationSettings, videoDurationBoundsForModel, videoDurationOptions, videoModelDisplayName, videoQualitiesForModel, visibleVideoModels } from "../lib/media-generation-settings";
 import { estimateDialogueDurationMs, hasExplicitDialogueSegments, isTemplateDialogueText, readDialogueSegments } from "../lib/dialogue-segments";
 import { useSeedanceAccounts } from "../lib/seedance-accounts-client";
 import { isTemplateEntityName, normalizeEntityName } from "../lib/entity-name";
@@ -63,6 +65,7 @@ type ScenePreview = Record<string, unknown> & {
 };
 
 type SceneVideoPromptPreview = {
+  compaction?: VideoPromptCompactionReport;
   prompt: string;
   promptLength: number;
   provider: string;
@@ -124,7 +127,7 @@ type MaiVideoImagePreview = {
 
 const BATCH_PROFILE_IMAGE_CONCURRENCY = 5;
 const BATCH_TTS_EPISODE_CONCURRENCY = 5;
-const VIDEO_QUEUE_CONCURRENCY = 20;
+const VIDEO_QUEUE_CONCURRENCY = 50;
 
 async function forEachConcurrent<T>(items: T[], concurrency: number, task: (item: T, index: number) => Promise<void>) {
   let nextIndex = 0;
@@ -396,7 +399,7 @@ function mediaSettingsForScene(scene: ScenePreview | undefined, project: StoryPr
 }
 
 function sceneVideoDurationLimit(model: VideoGenerationModelOption | undefined, quality: string) {
-  return Math.min(model?.provider === "muse" || model?.provider === "flow" ? 10 : 15, model?.maxDurationByQuality?.[quality] || model?.maxDurationSec || 15);
+  return videoDurationBoundsForModel(model, quality).max;
 }
 
 function sceneDurationSeconds(scene: ScenePreview, fallback = 15) {
@@ -445,6 +448,15 @@ function sceneNeedsAiVideo(scene: ScenePreview) {
   return !(scene.media?.status === "ready" && scene.media.kind === "video" && !scene.media.stale && ["maivideo-video", "seedance", "flow-video", "upload"].some((provider) => String(scene.media?.provider || "").startsWith(provider)));
 }
 
+function sceneHasExistingAiVideo(scene: ScenePreview) {
+  const media = scene.media;
+  const provider = String(media?.provider || "");
+  return media?.status === "ready"
+    && media.kind === "video"
+    && !media.stale
+    && (provider.startsWith("maivideo-video") || provider.startsWith("seedance") || provider.startsWith("flow-video"));
+}
+
 function sceneHasActiveMediaJob(scene: ScenePreview) {
   return scene.mediaJob?.status === "queued" || scene.mediaJob?.status === "running";
 }
@@ -477,7 +489,6 @@ function sceneAiReview(scene: ScenePreview): SceneAiReview {
   return {
     status: ["passed", "needs_changes", "error"].includes(status) ? status as SceneAiReviewStatus : "pending",
     score: Number.isFinite(Number(raw.score)) ? Math.max(0, Math.min(100, Number(raw.score))) : 0,
-    dialogueTimingScore: Number.isFinite(Number(raw.dialogueTimingScore)) ? Math.max(0, Math.min(100, Number(raw.dialogueTimingScore))) : undefined,
     summary: String(raw.summary || "AI chưa đánh giá cảnh này."),
     issues: Array.isArray(raw.issues) ? raw.issues.map((issue) => String(issue)).filter(Boolean) : [],
     checks: raw.checks && typeof raw.checks === "object" ? raw.checks : {},
@@ -489,11 +500,6 @@ function sceneAiReview(scene: ScenePreview): SceneAiReview {
 
 function sceneAiReviewLabel(status: SceneAiReviewStatus) {
   return status === "passed" ? "AI đạt" : status === "needs_changes" ? "AI cần sửa" : status === "error" ? "AI lỗi" : "Chờ AI";
-}
-
-function sceneAiCheckLabel(key: string) {
-  const labels: Record<string, string> = { timing: "Thời lượng", voiceover: "Thoại", dialogue_timing: "Nhịp thoại", narrative: "Kịch bản", continuity: "Liên tục", prompt: "Prompt", camera: "Camera", media: "Media" };
-  return labels[key] || key.replaceAll("_", " ");
 }
 
 function sceneAiReviewTone(status: SceneAiReviewStatus) {
@@ -673,6 +679,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   const [episodeScriptChunkId, setEpisodeScriptChunkId] = useState("");
   const [episodeScriptDraft, setEpisodeScriptDraft] = useState("");
   const [episodeScriptDrafts, setEpisodeScriptDrafts] = useState<Record<string, string>>({});
+  const [episodeScriptLoading, setEpisodeScriptLoading] = useState(false);
   const [logoUploading, setLogoUploading] = useState(false);
   const [renderSettings, setRenderSettings] = useState<RenderSettings>(() => projectRenderSettings(project, project.render?.settings));
   const [videoQueueRunning, setVideoQueueRunning] = useState(false);
@@ -681,6 +688,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   const videoQueueStopRef = useRef(false);
   const autoResumeVideoQueueAtRef = useRef<Record<string, number>>({});
   const scenesLoadInFlightRef = useRef(false);
+  const episodeScriptLoadTokenRef = useRef(0);
 
   useEffect(() => {
     const search = new URLSearchParams(window.location.search);
@@ -1268,17 +1276,28 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
     void loadScenes();
   }, [loadScenes, project?.completedChunks]);
 
+  const hasActiveLocationReferences = Boolean(project.locations?.some(location => location.imageGeneration?.status === "running" || location.imageGeneration?.status === "queued"));
+  useEffect(() => {
+    if (!hasActiveLocationReferences) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refresh();
+    }, 3_000);
+    return () => window.clearInterval(timer);
+  }, [hasActiveLocationReferences, refresh]);
+
+  const hasActiveSceneMediaJobs = scenes.some(sceneHasActiveMediaJob) || Boolean(project.sceneMediaJobs?.some((job) => job.status === "queued" || job.status === "running"));
+
   useEffect(() => {
     const poll = () => {
       if (document.visibilityState === "visible") void loadScenes({ silent: true });
     };
-    const timer = window.setInterval(poll, 15_000);
+    const timer = window.setInterval(poll, hasActiveSceneMediaJobs ? 3_000 : 15_000);
     document.addEventListener("visibilitychange", poll);
     return () => {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", poll);
     };
-  }, [loadScenes]);
+  }, [loadScenes, hasActiveSceneMediaJobs]);
 
   useEffect(() => {
     let active = true;
@@ -1517,14 +1536,21 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
         : Number.isFinite(end - start) && end > start ? end - start : Number(project.sceneDurationSec || 15);
       timelineStartSec += duration;
     }
-    return createEpisodeScriptTemplate(target.id, target.sceneStart, target.sceneEnd, timelineStartSec);
+    return createEpisodeScriptTemplate(target.id, target.sceneStart, target.sceneEnd, timelineStartSec, {
+      contentGenre: project.contentGenre,
+      secondaryGenres: project.secondaryGenres,
+      visualStyle: project.visualStyle,
+      imageStyle: project.imageStyle,
+      language: project.language,
+      existing_locations: (project.locations || []).map(location => ({ name: location.name, description: location.description })),
+    });
   }
 
-  function episodeScriptDraftFor(target: { id: string; sceneStart: number; sceneEnd: number }) {
+  function episodeScriptDraftFor(target: { id: string; sceneStart: number; sceneEnd: number }): string | undefined {
     const savedDraft = episodeScriptDrafts[target.id];
-    return savedDraft && !isUneditedLegacyEpisodeTemplateDraft(savedDraft, target)
+    return savedDraft !== undefined && !isUneditedLegacyEpisodeTemplateDraft(savedDraft, target)
       ? savedDraft
-      : episodeScriptTemplate(target.id);
+      : undefined;
   }
 
   async function importEpisodeBundle(bundle: unknown, preserveProjectStructure = false) {
@@ -1570,7 +1596,8 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
           ].filter(Boolean).join(" + ")}`
           : " · JSON không có gói title/thumbnail"
         : "";
-      setRunMessage({ tone: "success", text: `Đã nhập ${imported.length} tập · ${sceneCount} cảnh từ JSON${publishingSummary}${replaced}.` });
+      const pacingWarnings = Array.isArray(payload.warnings) ? payload.warnings : [];
+      setRunMessage({ tone: "success", text: `Đã nhập ${imported.length} tập · ${sceneCount} cảnh từ JSON${publishingSummary}${replaced}.${payload.locationReferences?.pending ? ` Đang tự tạo ${payload.locationReferences.pending} ảnh bối cảnh còn thiếu.` : ""}${pacingWarnings.length ? ` Cảnh báo: ${pacingWarnings.join("; ")}` : ""}` });
       return true;
     } catch (cause) {
       setRunMessage({ tone: "error", text: cause instanceof Error ? cause.message : "Không thể nhập kịch bản JSON." });
@@ -1580,26 +1607,47 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
     }
   }
 
+  async function loadEpisodeScriptChunk(chunkId: string) {
+    const target = project?.chunks.find((chunk) => chunk.id === chunkId);
+    if (!target) return;
+    const loadToken = ++episodeScriptLoadTokenRef.current;
+    const draft = episodeScriptDraftFor(target);
+    setEpisodeScriptChunkId(chunkId);
+    setEpisodeScriptDraft(draft ?? "");
+    setEpisodeScriptLoading(false);
+    if (draft !== undefined || !target.outputPath || !project?.slug) return;
+
+    setEpisodeScriptLoading(true);
+    try {
+      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/chunks/${encodeURIComponent(chunkId)}/script`, { cache: "no-store" });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.script) throw new Error(payload.message || "Không đọc được JSON đã lưu của tập này.");
+      if (loadToken !== episodeScriptLoadTokenRef.current) return;
+      const savedJson = JSON.stringify(payload.script, null, 2);
+      setEpisodeScriptDraft(savedJson);
+      setEpisodeScriptDrafts((current) => ({ ...current, [chunkId]: savedJson }));
+    } catch (cause) {
+      if (loadToken === episodeScriptLoadTokenRef.current) {
+        setRunMessage({ tone: "error", text: cause instanceof Error ? cause.message : "Không đọc được JSON đã lưu của tập này." });
+      }
+    } finally {
+      if (loadToken === episodeScriptLoadTokenRef.current) setEpisodeScriptLoading(false);
+    }
+  }
+
   function openEpisodeScriptEditor(chunkId?: string) {
     if (!project?.chunks.length) return;
     const target = (chunkId ? project.chunks.find((chunk) => chunk.id === chunkId) : undefined)
       || project.chunks.find((chunk) => !chunk.outputPath)
       || project.chunks[0];
-    const draft = episodeScriptDraftFor(target);
     setRunMessage(null);
-    setEpisodeScriptChunkId(target.id);
-    setEpisodeScriptDraft(draft);
-    setEpisodeScriptDrafts((current) => ({ ...current, [target.id]: draft }));
     setEpisodeScriptEditorOpen(true);
+    void loadEpisodeScriptChunk(target.id);
   }
 
   function selectEpisodeScriptChunk(chunkId: string) {
-    const target = project?.chunks.find((chunk) => chunk.id === chunkId);
-    if (!target) return;
-    const draft = episodeScriptDraftFor(target);
-    setEpisodeScriptChunkId(chunkId);
-    setEpisodeScriptDraft(draft);
-    setEpisodeScriptDrafts((current) => ({ ...current, [chunkId]: draft }));
+    setRunMessage(null);
+    void loadEpisodeScriptChunk(chunkId);
   }
 
   function updateEpisodeScriptDraft(value: string) {
@@ -1621,11 +1669,14 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   }
 
   async function copyEpisodeScriptDraft() {
-    if (!episodeScriptDraft.trim()) return;
+    const draft = episodeScriptDraft.trim();
+    const target = project.chunks.find((chunk) => chunk.id === episodeScriptChunkId);
+    const contentToCopy = draft || (target ? episodeScriptTemplate(target.id) : "");
+    if (!contentToCopy) return;
     try {
       if (!navigator.clipboard?.writeText) throw new Error("Trình duyệt không hỗ trợ clipboard.");
-      await navigator.clipboard.writeText(episodeScriptDraft);
-      setRunMessage({ tone: "success", text: `Đã sao chép JSON kịch bản ${episodeScriptChunkId}.` });
+      await navigator.clipboard.writeText(contentToCopy);
+      setRunMessage({ tone: "success", text: draft ? `Đã sao chép JSON kịch bản ${episodeScriptChunkId}.` : `Đã sao chép JSON mẫu cho tập ${episodeScriptChunkId}.` });
     } catch {
       setRunMessage({ tone: "error", text: "Không thể sao chép. Hãy kiểm tra quyền clipboard của trình duyệt." });
     }
@@ -1841,9 +1892,10 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
       const fallbackCount = Number(payload.render?.missingMedia) || 0;
       const audioReady = Boolean(payload.render?.audioReady);
       const stale = Boolean(payload.render?.stale);
+      const usedBlender = renderSettings.renderer === "blender";
       setRunMessage({
-        tone: audioReady && fallbackCount === 0 && !stale ? "success" : "error",
-        text: `Đã render MP4${audioReady ? " · đã có tiếng TTS hoặc tiếng gốc" : " · không có tiếng TTS hoặc tiếng gốc, đã tạo kèm SRT"}${fallbackCount ? ` · ${fallbackCount} cảnh dùng media dự phòng` : ""}${stale ? " · dữ liệu đổi trong lúc render, cần render lại" : ""}.`,
+        tone: !stale && (usedBlender || (audioReady && fallbackCount === 0)) ? "success" : "error",
+        text: `Đã render MP4 bằng ${usedBlender ? "Blender local" : "FFmpeg"}${usedBlender ? " · lưu kèm file .blend" : audioReady ? " · đã có tiếng TTS hoặc tiếng gốc" : " · không có tiếng TTS hoặc tiếng gốc, đã tạo kèm SRT"}${fallbackCount ? ` · ${fallbackCount} cảnh dùng media dự phòng` : ""}${stale ? " · dữ liệu đổi trong lúc render, cần render lại" : ""}.`,
       });
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "Render MP4 thất bại.";
@@ -2253,22 +2305,22 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
     }
   }
 
-  async function generateFilteredSceneVideos() {
-    if (!filteredVideoTargets.length || batchMediaBusy || videoQueueRunning || generatingSceneId || ttsRunning || dialogueTtsBatchProgress || scriptBlocksIndependentTasks) return;
+  async function generateFilteredSceneVideos(targets = filteredVideoTargets, regenerate = false) {
+    if (!targets.length || batchMediaBusy || videoQueueRunning || generatingSceneId || ttsRunning || dialogueTtsBatchProgress || scriptBlocksIndependentTasks) return;
     if (batchMediaSettings.videoProvider === "seedance") {
       setRunMessage({ tone: "error", text: "Dự án đang dùng Seedance trực tiếp từ seedance.maivideo.top, hiện tạm ẩn. Chọn MaiVideo, Muse.ai hoặc Flow để tạo video mới." });
       return;
     }
     setBatchMediaBusy(true);
     setGeneratingSceneMediaKind("video");
-    setBatchMediaProgress(`Đang xếp ${filteredVideoTargets.length} job video vào hàng đợi nền…`);
+    setBatchMediaProgress(`Đang xếp ${targets.length} job ${regenerate ? "tạo lại video" : "video"} vào hàng đợi nền…`);
     setSceneError("");
     try {
-      await applyBatchSceneMediaSettings(filteredVideoTargets, batchMediaSettings);
+      await applyBatchSceneMediaSettings(targets, batchMediaSettings);
       const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scene-media-jobs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sceneIds: filteredVideoTargets.map((scene) => scene.id), kind: "video", mediaGeneration: batchMediaSettings }),
+        body: JSON.stringify({ sceneIds: targets.map((scene) => scene.id), kind: "video", mediaGeneration: batchMediaSettings }),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || !payload.ok) throw new Error(payload.message || "Không thể xếp video vào hàng đợi nền.");
@@ -2276,7 +2328,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
       const jobsByScene = new Map(jobs.map((job) => [job.sceneId, job]));
       setScenes((current) => current.map((scene) => jobsByScene.has(scene.id) ? { ...scene, mediaJob: jobsByScene.get(scene.id) } : scene));
       const replacedLegacyJobs = Number(payload.replacedLegacyVideoJobs) || 0;
-      setRunMessage({ tone: "success", text: `Đã xếp ${jobs.length} job video vào hàng đợi chạy nền.${replacedLegacyJobs ? ` Đã thay ${replacedLegacyJobs} job chờ ở queue cũ.` : ""} Có thể tiếp tục thao tác; trạng thái từng cảnh tự cập nhật.` });
+      setRunMessage({ tone: "success", text: `Đã xếp ${jobs.length} job ${regenerate ? "tạo lại video" : "video"} vào hàng đợi chạy nền.${replacedLegacyJobs ? ` Đã thay ${replacedLegacyJobs} job chờ ở queue cũ.` : ""} Có thể tiếp tục thao tác; trạng thái từng cảnh tự cập nhật.` });
     } catch (cause) {
       setSceneError(cause instanceof Error ? cause.message : "Không thể xếp video vào hàng đợi nền.");
     } finally {
@@ -2448,6 +2500,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
         model: String(payload.model || ""),
         dialogueCueCount: Number(payload.dialogueCueCount) || 0,
         dialogueIncluded: Boolean(payload.dialogueIncluded),
+        compaction: payload.compaction,
       };
       if (sceneVideoPromptPreviewRequestIds.current[scene.id] !== requestId) return null;
       setSceneVideoPromptPreviews((current) => ({ ...current, [scene.id]: { result } }));
@@ -3112,6 +3165,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   const batchPixverseSelected = isPixverseVideoSettings(batchMediaSettings);
   const filteredImageTargets = (batchRegenerateImages ? filteredScenes : filteredScenes.filter((scene) => sceneNeedsImage(scene, project))).filter((scene) => !sceneHasActiveMediaJob(scene));
   const filteredVideoTargets = (batchRegenerateVideos ? filteredScenes : filteredScenes.filter(sceneNeedsAiVideo)).filter((scene) => !sceneHasActiveMediaJob(scene));
+  const filteredVideoRegenerationTargets = filteredScenes.filter(sceneHasExistingAiVideo).filter((scene) => !sceneHasActiveMediaJob(scene));
   const activeSceneMediaJobCount = scenes.filter(sceneHasActiveMediaJob).length;
   const batchOverLimitCount = batchMediaSettings.videoDurationMode === "scene"
     ? filteredScenes.filter((scene) => Math.ceil(sceneDurationSeconds(scene, project.sceneDurationSec)) > batchVideoMaxDuration).length
@@ -3358,12 +3412,12 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
     </details>;
   }
   const aiDramaWorkspace = project.presetId === "ai-drama" ? (
-<section id="scenes" className="ai-drama-workspace" aria-label="AI Drama">
+<section id="scenes" className="ai-drama-workspace" aria-label="Phim AI">
         <header className="ai-drama-workspace-heading">
-          <div><div className="section-kicker">AI DRAMA</div><h2>Prompt ảnh, video theo cảnh và timeline thoại</h2><p>Kịch bản và prompt tạo trước; duyệt/chỉnh xong mới bấm tạo ảnh, video hàng loạt. TTS chạy bằng nút riêng.</p></div>
+          <div><div className="section-kicker">PHIM AI</div><h2>Prompt ảnh, video theo cảnh và timeline thoại</h2><p>Kịch bản và prompt tạo trước; duyệt/chỉnh xong mới bấm tạo ảnh, video hàng loạt. TTS chạy bằng nút riêng.</p></div>
         </header>
 
-        <nav className="ai-drama-subtabs" aria-label="Mục AI Drama">
+        <nav className="ai-drama-subtabs" aria-label="Mục Phim AI">
           <button type="button" className={dramaTab === "scenes" ? "active" : ""} onClick={() => setDramaTab("scenes")}>Cảnh · prompt & thoại</button>
           <button type="button" className={dramaTab === "characters" ? "active" : ""} onClick={() => setDramaTab("characters")}>Prompt nhân vật · {characterProfiles.length}</button>
           <button type="button" className={dramaTab === "locations" ? "active" : ""} onClick={() => setDramaTab("locations")}>Prompt bối cảnh · {locationProfiles.length}</button>
@@ -3407,7 +3461,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                       </select>
                       <small>Ngôn ngữ trong hồ sơ voice chỉ mô tả giọng; lời thoại sẽ được đọc theo ngôn ngữ video của project.</small>
                       {voiceCatalogLoading && <small>Đang tải thư viện voice…</small>}
-                      {!voiceCatalogLoading && !voiceCatalog?.voices.length && <small>Không tải được thư viện voice OmniVoice.</small>}
+                      {!voiceCatalogLoading && !voiceCatalog?.voices.length && <small>Không tải được thư viện voice MaiVideo. Kiểm tra API key trong Cài đặt.</small>}
                     </label>
                   </details>
                 </div>
@@ -3432,6 +3486,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
             <div className="ai-drama-character-content"><strong>{location.name}</strong>
               <label>Prompt tạo ảnh<textarea key={`${location.id}-${location.imagePrompt || location.description}-${PROFILE_REFERENCE_ASPECT_RATIO}`} defaultValue={profileImagePrompt(location, "locations")} rows={7} onBlur={(event) => { if (event.target.value !== (location.imagePrompt || "")) void updateDramaProfile("locations", location.id, "PATCH", { imagePrompt: event.target.value }); }} disabled={Boolean(profileBusyId) || profileBatchKinds.has("locations") || profileImageBusyIds.has(`locations:${location.id}`)} /><small className="ai-drama-prompt-guidance">Bắt buộc: bốn góc camera Bắc · Đông · Nam · Tây của cùng một nơi · khung hình 1:1.</small></label>
               <div className="ai-drama-icon-actions">
+                {location.imageGeneration && <small role="status">{location.imageGeneration.status === "running" || location.imageGeneration.status === "queued" ? "Đang tự tạo ảnh bối cảnh…" : location.imageGeneration.status === "failed" ? `Lỗi tạo ảnh: ${location.imageGeneration.error || "Thử lại bằng nút Tạo ảnh"}` : "Ảnh bối cảnh đã sẵn sàng"}</small>}
                 <button type="button" onClick={() => void generateDramaProfileImage("locations", location.id)} disabled={Boolean(profileBusyId) || profileBatchKinds.has("locations") || profileImageBusyIds.has(`locations:${location.id}`)}><Icon name={profileImageBusyIds.has(`locations:${location.id}`) ? "clock" : "spark"} size={15} /> {profileImageBusyIds.has(`locations:${location.id}`) ? "Đang tạo…" : "Tạo ảnh"}</button>
                 <button type="button" onClick={() => chooseDramaUpload("locations", location.name, location.imagePrompt || "", location.description || "")} disabled={Boolean(profileBusyId) || profileBatchKinds.has("locations") || profileImageBusyIds.has(`locations:${location.id}`)}><Icon name="upload" size={15} /> Upload</button>
                 <button type="button" title="Xóa bối cảnh" onClick={() => void updateDramaProfile("locations", location.id, "DELETE")} disabled={Boolean(profileBusyId) || profileBatchKinds.has("locations") || profileImageBusyIds.has(`locations:${location.id}`)}><Icon name="trash" size={15} /></button>
@@ -3443,23 +3498,23 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
         {dramaTab === "scenes" && <section className="ai-drama-panel" aria-labelledby="ai-drama-scenes-title">
           <div className="ai-drama-model-quick-settings" aria-label="Cấu hình hệ thống và model tạo media">
             <div className="ai-drama-model-quick-system" aria-label="Hệ thống tạo ảnh"><span>Hệ thống ảnh</span><strong>{batchMuseImageSelected ? "Muse.ai" : batchFlowImageSelected ? "Flow" : "MaiVideo"}</strong></div>
-            <label><span>Model ảnh</span><select aria-label="Model ảnh AI Drama" value={batchMediaSettings.imageModel} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateQuickImageModel(event.target.value)}>{batchImageModelOptions.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}</select></label>
-            {!batchMuseImageSelected && !batchFlowImageSelected && <label><span>Độ phân giải ảnh</span><select aria-label="Độ phân giải ảnh AI Drama" value={batchMediaSettings.imageQuality} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateBatchMediaSettings({ imageQuality: event.target.value })}>{batchImageQualities.map((quality) => <option key={quality} value={quality}>{quality}</option>)}</select></label>}
-            {batchImageDetailLevels.length > 0 && <label><span>Detail level</span><select aria-label="Detail level ảnh AI Drama" value={batchMediaSettings.imageDetailLevel} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateBatchMediaSettings({ imageDetailLevel: event.target.value as MediaGenerationSettings["imageDetailLevel"] })}>{batchImageDetailLevels.map((level) => <option key={level} value={level}>{IMAGE_DETAIL_LEVEL_LABELS[level]}</option>)}</select></label>}
-            <label><span>Hệ thống video</span><select aria-label="Hệ thống video AI Drama" value={batchSeedanceHiddenSelected ? "__hidden_seedance__" : batchMediaSettings.videoProvider === "higgsfield" ? "maivideo" : batchMediaSettings.videoProvider} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateBatchMediaSettings({ videoProvider: event.target.value as MediaGenerationSettings["videoProvider"] })}>{batchSeedanceHiddenSelected && <option value="__hidden_seedance__" disabled>Seedance trực tiếp · tạm ẩn</option>}<option value="maivideo">MaiVideo</option><option value="muse">Muse.ai · Seedance Gateway</option><option value="flow">Flow · Seedance Gateway</option></select></label>
-            <label><span>Model video</span><select aria-label="Model video AI Drama" value={batchSeedanceHiddenSelected ? "__hidden_seedance__" : batchMediaSettings.videoModel} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateQuickVideoModel(event.target.value)}>{batchSeedanceHiddenSelected && <option value="__hidden_seedance__" disabled>Model Seedance trực tiếp · tạm ẩn</option>}{batchVideoModelOptions.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}</select></label>
+            <label><span>Model ảnh</span><select aria-label="Model ảnh Phim AI" value={batchMediaSettings.imageModel} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateQuickImageModel(event.target.value)}>{batchImageModelOptions.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}</select></label>
+            {!batchMuseImageSelected && !batchFlowImageSelected && <label><span>Độ phân giải ảnh</span><select aria-label="Độ phân giải ảnh Phim AI" value={batchMediaSettings.imageQuality} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateBatchMediaSettings({ imageQuality: event.target.value })}>{batchImageQualities.map((quality) => <option key={quality} value={quality}>{quality}</option>)}</select></label>}
+            {batchImageDetailLevels.length > 0 && <label><span>Detail level</span><select aria-label="Detail level ảnh Phim AI" value={batchMediaSettings.imageDetailLevel} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateBatchMediaSettings({ imageDetailLevel: event.target.value as MediaGenerationSettings["imageDetailLevel"] })}>{batchImageDetailLevels.map((level) => <option key={level} value={level}>{IMAGE_DETAIL_LEVEL_LABELS[level]}</option>)}</select></label>}
+            <label><span>Hệ thống video</span><select aria-label="Hệ thống video Phim AI" value={batchSeedanceHiddenSelected ? "__hidden_seedance__" : batchMediaSettings.videoProvider === "higgsfield" ? "maivideo" : batchMediaSettings.videoProvider} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateBatchMediaSettings({ videoProvider: event.target.value as MediaGenerationSettings["videoProvider"] })}>{batchSeedanceHiddenSelected && <option value="__hidden_seedance__" disabled>Seedance trực tiếp · tạm ẩn</option>}<option value="maivideo">MaiVideo</option><option value="muse">Muse.ai · Seedance Gateway</option><option value="flow">Flow · Seedance Gateway</option></select></label>
+            <label><span>Model video</span><select aria-label="Model video Phim AI" value={batchSeedanceHiddenSelected ? "__hidden_seedance__" : batchMediaSettings.videoModel} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateQuickVideoModel(event.target.value)}>{batchSeedanceHiddenSelected && <option value="__hidden_seedance__" disabled>Model Seedance trực tiếp · tạm ẩn</option>}{batchVideoModelOptions.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}</select></label>
             {batchSeedanceHiddenSelected && <small className="field-help">Dự án đang dùng Seedance trực tiếp từ seedance.maivideo.top, hiện tạm ẩn. Chọn MaiVideo, Muse.ai hoặc Flow để tạo video mới.</small>}
-            {batchMediaAccountSelected && <label><span>{batchFlowSelected || batchFlowImageSelected ? "API key Seedance · Flow" : batchMuseSelected || batchMuseImageSelected ? "API key Seedance · Muse.ai" : "Tài khoản Seedance"}</span><select aria-label="Tài khoản API ảnh và video AI Drama" value={batchMediaSettings.seedanceAccountId === defaultSeedanceAccountId ? "" : batchMediaSettings.seedanceAccountId || ""} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateBatchMediaSettings({ seedanceAccountId: event.target.value })}><option value="">Mặc định{seedanceAccounts.find((account) => account.id === defaultSeedanceAccountId) ? ` · ${seedanceAccounts.find((account) => account.id === defaultSeedanceAccountId)?.name}` : " · chưa kết nối"}</option>{seedanceAccounts.filter((account) => account.id !== defaultSeedanceAccountId).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>}
-            {batchSeedanceSelected && <label><span>Chế độ chat</span><select aria-label="Chế độ chat Seedance AI Drama" value={batchMediaSettings.seedanceChatMode} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateBatchMediaSettings({ seedanceChatMode: event.target.value === "Pro" ? "Pro" : "Fast" })}><option value="Fast">Fast · mặc định</option><option value="Pro">Pro</option></select></label>}
-            <label><span>Chất lượng video</span>{batchProviderAccountSelected ? <select aria-label="Chất lượng video AI Drama" value="profile" disabled><option value="profile">{batchFlowSelected ? "1080p · cố định" : batchMuseSelected ? "Theo profile Muse.ai" : "Theo profile Seedance"}</option></select> : <select aria-label="Chất lượng video AI Drama" value={batchMediaSettings.videoQuality} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateBatchMediaSettings({ videoQuality: event.target.value })}>{batchVideoQualities.map((quality) => <option key={quality} value={quality}>{quality}</option>)}</select>}</label>
-            <label><span>Thời lượng clip</span><select aria-label="Chế độ thời lượng video AI Drama" value="scene" disabled><option value="scene">Theo độ dài từng cảnh</option></select></label>
+            {batchMediaAccountSelected && <label><span>{batchFlowSelected || batchFlowImageSelected ? "API key Seedance · Flow" : batchMuseSelected || batchMuseImageSelected ? "API key Seedance · Muse.ai" : "Tài khoản Seedance"}</span><select aria-label="Tài khoản API ảnh và video Phim AI" value={batchMediaSettings.seedanceAccountId === defaultSeedanceAccountId ? "" : batchMediaSettings.seedanceAccountId || ""} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateBatchMediaSettings({ seedanceAccountId: event.target.value })}><option value="">Mặc định{seedanceAccounts.find((account) => account.id === defaultSeedanceAccountId) ? ` · ${seedanceAccounts.find((account) => account.id === defaultSeedanceAccountId)?.name}` : " · chưa kết nối"}</option>{seedanceAccounts.filter((account) => account.id !== defaultSeedanceAccountId).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>}
+            {batchSeedanceSelected && <label><span>Chế độ chat</span><select aria-label="Chế độ chat Seedance Phim AI" value={batchMediaSettings.seedanceChatMode} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateBatchMediaSettings({ seedanceChatMode: event.target.value === "Pro" ? "Pro" : "Fast" })}><option value="Fast">Fast · mặc định</option><option value="Pro">Pro</option></select></label>}
+            <label><span>Chất lượng video</span>{batchProviderAccountSelected ? <select aria-label="Chất lượng video Phim AI" value="profile" disabled><option value="profile">{batchFlowSelected ? "1080p · cố định" : batchMuseSelected ? "Theo profile Muse.ai" : "Theo profile Seedance"}</option></select> : <select aria-label="Chất lượng video Phim AI" value={batchMediaSettings.videoQuality} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateBatchMediaSettings({ videoQuality: event.target.value })}>{batchVideoQualities.map((quality) => <option key={quality} value={quality}>{quality}</option>)}</select>}</label>
+            <label><span>Thời lượng clip</span><select aria-label="Chế độ thời lượng video Phim AI" value="scene" disabled><option value="scene">Theo độ dài từng cảnh</option></select></label>
             {batchFlowSelected && <label><span>Tham chiếu Flow</span>{isFlowStoryOnlyPreset(project.presetId)
               ? <select aria-label="Tham chiếu video Flow" value="ingredients" disabled><option value="ingredients">Ingredients / References · Story</option></select>
               : <select aria-label="Tham chiếu video Flow" value={batchMediaSettings.flowReferenceMode} disabled={batchMediaBusy || videoQueueRunning} onChange={(event) => updateBatchMediaSettings({ flowReferenceMode: event.target.value === "frames" ? "frames" : "ingredients" })}><option value="ingredients">Ingredients / References</option><option value="frames">Frames · khung đầu và cuối</option></select>}</label>}
             {batchFlowSelected && batchMediaSettings.flowReferenceMode === "frames" && <small className="field-help">Mỗi cảnh cần ảnh cảnh hiện tại làm khung đầu và chọn ảnh khung cuối trong cấu hình từng cảnh.</small>}
-            <small className="field-help">{batchMuseSelected ? "Muse.ai chỉ nhận clip 5 hoặc 10 giây; cảnh dài hơn dùng tối đa 10 giây." : batchFlowSelected ? "Flow nhận clip 6, 8 hoặc 10 giây; thời lượng cảnh được làm tròn lên mốc phù hợp, tối đa 10 giây." : "Mỗi clip AI Drama dùng đúng độ dài cảnh: 5, 10 hoặc 15 giây."}</small>
+            <small className="field-help">{batchMuseSelected ? "Muse.ai chỉ nhận clip 5 hoặc 10 giây; cảnh dài hơn dùng tối đa 10 giây." : batchFlowSelected ? "Flow nhận clip 6, 8 hoặc 10 giây; thời lượng cảnh được làm tròn lên mốc phù hợp, tối đa 10 giây." : "Mỗi clip Phim AI dùng đúng độ dài cảnh: 5, 10 hoặc 15 giây."}</small>
           </div>
-          <div className="ai-drama-model-quick-toggles" aria-label="Tuỳ chọn media AI Drama">
+          <div className="ai-drama-model-quick-toggles" aria-label="Tuỳ chọn media Phim AI">
             <label><input type="checkbox" checked={batchMediaSettings.imageUseCharacterReferences} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving} onChange={(event) => updateBatchMediaSettings({ imageUseCharacterReferences: event.target.checked })} /><span>Hồ sơ nhân vật cho ảnh cảnh</span></label>
             {!batchProviderAccountSelected && <>
               <label><input type="checkbox" checked={batchPixverseSelected ? true : selectedBatchVideoModel?.supportsMultiShot === false ? false : batchMediaSettings.videoMultiShot} disabled={batchMediaBusy || videoQueueRunning || batchPixverseSelected || selectedBatchVideoModel?.supportsMultiShot === false} onChange={(event) => updateBatchMediaSettings({ videoMultiShot: event.target.checked })} /><span>Multi-shot{batchPixverseSelected ? " · luôn bật với PixVerse" : selectedBatchVideoModel?.supportsMultiShot === false ? " · không hỗ trợ" : ""}</span></label>
@@ -3476,6 +3531,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
               <button className="secondary-button compact" type="button" title="Tự gán hồ sơ nhân vật và bối cảnh theo nội dung cảnh. Hồ sơ bối cảnh được thêm vào prompt ảnh và video theo cài đặt tham chiếu." onClick={() => void autoAssignSceneReferences()} disabled={(!characterProfiles.length && !locationProfiles.length) || autoAssignCharactersBusy || batchMediaBusy || videoQueueRunning || sceneCharacterSaving}>{autoAssignCharactersBusy ? "Đang gán…" : "Tự gán hồ sơ"}</button>
               <button className="secondary-button compact" type="button" onClick={() => void generateFilteredSceneImages()} disabled={!filteredImageTargets.length || batchMediaBusy || sceneMediaSettingsSaving || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning || Boolean(dialogueTtsBatchProgress) || Boolean(generatingSceneId)}>{batchMediaBusy && generatingSceneMediaKind === "image" ? batchMediaProgress || "Đang tạo ảnh…" : `Tạo ảnh · ${filteredImageTargets.length}`}</button>
               <button className="primary-button compact" type="button" onClick={() => void generateFilteredSceneVideos()} disabled={!filteredVideoTargets.length || batchSeedanceHiddenSelected || batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || scriptBlocksIndependentTasks || ttsRunning || Boolean(dialogueTtsBatchProgress) || Boolean(generatingSceneId)}>{batchMediaBusy && generatingSceneMediaKind === "video" ? batchMediaProgress || "Đang tạo video…" : `Tạo video · ${filteredVideoTargets.length}`}</button>
+              <button className="secondary-button compact" type="button" title="Tạo lại video AI đã có trong phạm vi cảnh hiện tại; video cũ được thay khi job mới hoàn tất." onClick={() => void generateFilteredSceneVideos(filteredVideoRegenerationTargets, true)} disabled={!filteredVideoRegenerationTargets.length || batchSeedanceHiddenSelected || batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || scriptBlocksIndependentTasks || ttsRunning || Boolean(dialogueTtsBatchProgress) || Boolean(generatingSceneId)}>{batchMediaBusy && generatingSceneMediaKind === "video" ? batchMediaProgress || "Đang tạo lại video…" : `Tạo lại video · ${filteredVideoRegenerationTargets.length}`}</button>
               {project.presetId === "ai-drama" && <button className="secondary-button compact" type="button" onClick={() => void generateFilteredDialogueTts()} disabled={!filteredDialogueTtsVoiceTargets.length || Boolean(dialogueTtsBatchProgress) || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress) || ttsRunning || renderRunning || dialogueSavingSceneId !== "" || isRunning || Boolean(runningScriptChunkId) || Boolean(generatingSceneId) || batchMediaBusy || videoQueueRunning} title={filteredDialogueTtsVoiceTargets.length ? `Tạo voice ${voiceLanguageLabel(dialogueTranslationLanguage)} cho ${filteredDialogueTtsVoiceTargets.length} cảnh đã dịch` : filteredDialogueScenesNeedingTranslation.length ? `Dịch thoại sang ${voiceLanguageLabel(dialogueTranslationLanguage)} trước` : filteredDialogueScenesMissingVoice.length ? "Gán voice cho nhân vật trước" : "Các cảnh trong phạm vi hiện tại đã có voice hoặc chưa có lời thoại"}>{dialogueTtsBatchProgress ? `Đang tạo voice ${voiceLanguageLabel(dialogueTranslationLanguage)} ${dialogueTtsBatchProgress}…` : `Tạo voice ${voiceLanguageLabel(dialogueTranslationLanguage)} · ${filteredDialogueTtsVoiceTargets.length}`}</button>}
               <button className="text-button" type="button" onClick={() => { setSceneSearch(""); setSceneChunkFilter("all"); setSceneReviewFilter("all"); setSceneAiReviewFilter("all"); setSceneMediaFilter("all"); }}>Xóa lọc</button>
             </div>
@@ -3493,7 +3549,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
               <small title={dialogueScenesNeedingTranslation.length ? `Áp dụng cho ${dialogueScenesNeedingTranslation.length} cảnh có lời thoại trong phạm vi đang chọn.` : dialogueScenesWithoutTimeline.length ? `Hoàn thiện timeline thoại cho ${dialogueScenesWithoutTimeline.length} cảnh trước.` : `Đã có bản dịch ${voiceLanguageLabel(dialogueTranslationLanguage)} cho mọi cảnh trong phạm vi đang chọn.`}>{dialogueScenesNeedingTranslation.length ? `Còn ${dialogueScenesNeedingTranslation.length} cảnh cần dịch` : dialogueScenesWithoutTimeline.length ? `Thiếu timeline · ${dialogueScenesWithoutTimeline.length}` : `Đã dịch ${voiceLanguageLabel(dialogueTranslationLanguage)}`}</small>
             </div>
           </div>
-          {scenesLoading ? <div className="ai-drama-empty">Đang tải cảnh…</div> : !filteredScenes.length ? <div className="ai-drama-empty"><strong>Chưa có cảnh trong phạm vi này</strong><span>Nhập JSON riêng cho từng tập ở Tổng quan project, sau đó quay lại gán nhân vật thoại.</span><button type="button" className="secondary-button compact" onClick={() => openProjectSection("episodes")}>Mở nhập tập</button></div> : <div className="ai-drama-scene-table" role="table" aria-label="Danh sách cảnh AI Drama">
+          {scenesLoading ? <div className="ai-drama-empty">Đang tải cảnh…</div> : !filteredScenes.length ? <div className="ai-drama-empty"><strong>Chưa có cảnh trong phạm vi này</strong><span>Nhập JSON riêng cho từng tập ở Tổng quan project, sau đó quay lại gán nhân vật thoại.</span><button type="button" className="secondary-button compact" onClick={() => openProjectSection("episodes")}>Mở nhập tập</button></div> : <div className="ai-drama-scene-table" role="table" aria-label="Danh sách cảnh Phim AI">
             <div className="ai-drama-scene-table-head" role="rowgroup"><div className="ai-drama-scene-table-row" role="row"><span role="columnheader">STT cảnh</span><span role="columnheader">Timeline · lời thoại từng nhân vật</span><span role="columnheader">Prompt tạo ảnh · ảnh tham chiếu</span><span role="columnheader">Prompt tạo video · ảnh tham chiếu</span></div></div>
             <div className="ai-drama-scene-table-body" role="rowgroup">
             {filteredScenes.map((scene) => {
@@ -3569,7 +3625,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                       : <span className="ai-drama-timeline-gap" key={`gap-${scene.id}-${index}`}><b>{row.startSec.toFixed(1)}–{row.endSec.toFixed(1)}s · Không thoại</b></span>)}
                   </span>
                   <div className="ai-drama-scene-table-cell ai-drama-image-cell" role="cell">
-                    {sceneReferenceImageUrl ? <button className="ai-drama-scene-image-preview" type="button" onClick={() => setSceneImagePreview(scene)} aria-label={`Xem ảnh ${sceneNumberLabel(scene)}`} title={`Xem ảnh ${sceneNumberLabel(scene)}`}><img src={sceneReferenceImageUrl} alt={`Ảnh ${sceneNumberLabel(scene)}`} loading="lazy" /></button> : <span className="ai-drama-scene-thumb ai-drama-scene-thumb-empty"><Icon name="scene" size={16} /></span>}
+                    {sceneReferenceImageUrl ? <button className="ai-drama-scene-image-preview" type="button" onClick={() => setSceneImagePreview(scene)} aria-label={`Xem ảnh ${sceneNumberLabel(scene)}`} title={`Xem ảnh ${sceneNumberLabel(scene)}`}><img src={`${sceneReferenceImageUrl}${sceneReferenceImageUrl.includes("?") ? "&" : "?"}thumbnail=1`} alt={`Ảnh ${sceneNumberLabel(scene)}`} loading="lazy" decoding="async" /></button> : <span className="ai-drama-scene-thumb ai-drama-scene-thumb-empty"><Icon name="scene" size={16} /></span>}
                     {sceneReferenceImage?.status === "ready" && sceneReferenceImage.stale === true && <small className="scene-stale-reference-note" role="status">Ảnh đã cũ · video vẫn dùng ảnh này</small>}
                     <small className="ai-drama-scene-image-prompt">{sceneImagePrompt || "Chưa có prompt tạo ảnh"}</small>
                     {mediaJobActive && scene.mediaJob?.kind === "image" && <small className="scene-media-job-status" role="status">{mediaJobLabel}</small>}
@@ -3611,6 +3667,19 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                           {videoPromptPreview?.result && <>
                             <small className="ai-drama-video-preview-meta">Bản xem trước · {videoPromptPreview.result.provider} · {videoPromptPreview.result.model} · {videoPromptPreview.result.promptLength.toLocaleString("vi-VN")} ký tự · {videoPromptPreview.result.dialogueCueCount} lượt thoại{videoPromptPreview.result.dialogueCueCount > 0 && !videoPromptPreview.result.dialogueIncluded ? " · cảnh báo: cue thoại chưa nằm trong payload do giới hạn prompt" : ""}</small>
                             <pre>{videoPromptPreview.result.prompt}</pre>
+                            {videoPromptPreview.result.compaction && <details className="video-prompt-compaction">
+                              <summary>Từ/câu đã rút gọn và đề xuất xoá · áp dụng mọi dự án</summary>
+                              <p>Tự động áp dụng khi dựng prompt gửi API theo giới hạn của model đang chọn: {videoPromptPreview.result.compaction.limit.toLocaleString("vi-VN")} ký tự. Nếu vượt giới hạn, hệ thống cắt phần cuối prompt; prompt cảnh đã lưu không bị sửa.</p>
+                              <strong>Đã xoá/thay trong mẫu chung</strong>
+                              <ul>{videoPromptPreview.result.compaction.templateEdits.map((edit, index) => <li key={index}><del>{edit.before}</del><br /><span>Thay bằng: {edit.after}</span><br /><small>{edit.reason}</small></li>)}</ul>
+                              <strong>Thay đổi thực tế trong prompt cảnh này</strong>
+                              {videoPromptPreview.result.compaction.sceneEdits?.length ? videoPromptPreview.result.compaction.sceneEdits.map((edit, index) => <details key={index}><summary>{edit.reason}</summary><p>Trước:</p><pre>{edit.before}</pre><p>Sau:</p><pre>{edit.after}</pre></details>) : <p>Không xoá/sửa mô tả cảnh; chỉ ghép hướng dẫn chung.</p>}
+                              <strong>Nguyên tắc đang áp dụng</strong>
+                              <ul>{videoPromptPreview.result.compaction.recommendations.map((note) => <li key={note}>{note}</li>)}</ul>
+                              <strong>Bảo toàn nội dung</strong>
+                              {videoPromptPreview.result.compaction.omittedSections.length ? <>{<p role="status">Các phần dưới không có trong payload; hãy kiểm tra vì có thể thiếu hướng dẫn phong cách/bối cảnh.</p>}<ul>{videoPromptPreview.result.compaction.omittedSections.map((text, index) => <li key={index}><del>{text}</del></li>)}</ul></> : <p>Không có phần nào bị bỏ ngoài việc cắt ký tự cuối nếu prompt vượt giới hạn của model.</p>}
+                            </details>}
+
                           </>}
                         </details>
                         <div className="ai-drama-api-video-copy-actions">
@@ -3765,7 +3834,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
       <nav className="project-step-nav" aria-label="Các bước trong dự án">
         <a href="#source"><span>01</span>Nguồn</a>
         <a href="#episodes"><span>02</span>Tập & kịch bản</a>
-        <a href="#scenes"><span>03</span>{project.presetId === "ai-drama" ? "AI Drama" : "Cảnh & media"}</a>
+        <a href="#scenes"><span>03</span>{project.presetId === "ai-drama" ? "Phim AI" : "Cảnh & media"}</a>
         {hasEpisodeScripts && <a href="#publishing-package"><span>04</span>Title & thumbnail</a>}
         <a href="#export"><span>{hasEpisodeScripts ? "05" : "04"}</span>QA & xuất</a>
       </nav>
@@ -4077,7 +4146,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                 <label className="scene-media-field"><span>Chất lượng video</span>{batchProviderAccountSelected ? <select aria-label="Chất lượng video áp dụng hàng loạt" value="profile" disabled><option value="profile">{batchFlowSelected ? "1080p · cố định" : batchMuseSelected ? "Theo profile Muse.ai" : "Theo profile Seedance"}</option></select> : <select aria-label="Chất lượng video áp dụng hàng loạt" value={batchMediaSettings.videoQuality} disabled={batchMediaBusy || sceneMediaSettingsSaving} onChange={(event) => updateBatchMediaSettings({ videoQuality: event.target.value })}>{batchVideoQualities.map((quality) => <option key={quality} value={quality}>{quality}</option>)}</select>}</label>
                 <label className="scene-media-field"><span>Thời lượng clip</span><select aria-label="Thời lượng clip áp dụng hàng loạt" value={batchMediaSettings.videoDurationMode} disabled={project.presetId === "ai-drama" || batchMediaBusy || sceneMediaSettingsSaving} onChange={(event) => updateBatchMediaSettings({ videoDurationMode: event.target.value === "fixed" ? "fixed" : "scene" })}>
                   <option value="scene">Theo thời lượng từng cảnh</option>{project.presetId !== "ai-drama" && <option value="fixed">Cố định theo giây</option>}
-                </select>{project.presetId !== "ai-drama" && batchMediaSettings.videoDurationMode === "fixed" && <select aria-label="Số giây clip cố định áp dụng hàng loạt" value={batchMediaSettings.videoDurationSec} disabled={batchMediaBusy || sceneMediaSettingsSaving} onChange={(event) => updateBatchMediaSettings({ videoDurationSec: Number(event.target.value) })}>{batchVideoDurationChoices.map((seconds) => <option key={seconds} value={seconds}>{seconds} giây</option>)}</select>}{project.presetId === "ai-drama" && <small className="scene-media-settings-help">{batchMuseSelected ? "Muse.ai chỉ nhận clip 5 hoặc 10 giây; cảnh dài hơn dùng tối đa 10 giây." : batchFlowSelected ? "Flow nhận clip 6, 8 hoặc 10 giây; thời lượng cảnh được làm tròn lên mốc phù hợp, tối đa 10 giây." : "Clip AI Drama luôn khớp cảnh 5/10/15 giây."}</small>}</label>
+                </select>{project.presetId !== "ai-drama" && batchMediaSettings.videoDurationMode === "fixed" && <select aria-label="Số giây clip cố định áp dụng hàng loạt" value={batchMediaSettings.videoDurationSec} disabled={batchMediaBusy || sceneMediaSettingsSaving} onChange={(event) => updateBatchMediaSettings({ videoDurationSec: Number(event.target.value) })}>{batchVideoDurationChoices.map((seconds) => <option key={seconds} value={seconds}>{seconds} giây</option>)}</select>}{project.presetId === "ai-drama" && <small className="scene-media-settings-help">{batchMuseSelected ? "Muse.ai chỉ nhận clip 5 hoặc 10 giây; cảnh dài hơn dùng tối đa 10 giây." : batchFlowSelected ? "Flow nhận clip 6, 8 hoặc 10 giây; thời lượng cảnh được làm tròn lên mốc phù hợp, tối đa 10 giây." : "Clip Phim AI luôn khớp cảnh 5/10/15 giây."}</small>}</label>
                 {batchFlowSelected && <label className="scene-media-field"><span>Tham chiếu Flow</span>{isFlowStoryOnlyPreset(project.presetId)
                   ? <select aria-label="Tham chiếu Flow áp dụng hàng loạt" value="ingredients" disabled><option value="ingredients">Ingredients / References · Story</option></select>
                   : <select aria-label="Tham chiếu Flow áp dụng hàng loạt" value={batchMediaSettings.flowReferenceMode} disabled={batchMediaBusy || sceneMediaSettingsSaving} onChange={(event) => updateBatchMediaSettings({ flowReferenceMode: event.target.value === "frames" ? "frames" : "ingredients" })}><option value="ingredients">Ingredients / References</option><option value="frames">Frames · khung đầu và cuối</option></select>}</label>}
@@ -4135,10 +4204,10 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                     event.preventDefault();
                     setSelectedSceneId(scene.id);
                   }}>
-                    <span className="scene-table-cell scene-table-ident" role="cell"><span className="scene-list-id">{sceneNumberLabel(scene)}</span>{scene.referenceImagePreviewUrl && <img className="scene-list-reference" src={scene.referenceImagePreviewUrl} alt="" loading="lazy" />}<small>{scene.chunkId}</small></span>
+                    <span className="scene-table-cell scene-table-ident" role="cell"><span className="scene-list-id">{sceneNumberLabel(scene)}</span>{scene.referenceImagePreviewUrl && <img className="scene-list-reference" src={`${scene.referenceImagePreviewUrl}${scene.referenceImagePreviewUrl.includes("?") ? "&" : "?"}thumbnail=1`} alt="" loading="lazy" decoding="async" />}<small>{scene.chunkId}</small></span>
                     <span className="scene-table-cell scene-table-copy" role="cell"><strong>{description}</strong><small>{compactSceneText(summary || "Chưa có thoại hoặc prompt", 160)}</small></span>
                     <span className="scene-table-cell scene-table-profiles" role="cell"><strong>{characterIds.length} nhân vật</strong><small>{location?.name || "Chưa gán bối cảnh"}</small></span>
-                    <span className="scene-table-cell scene-table-status" role="cell"><span className={`scene-ai-badge ${sceneAiReviewTone(aiReview.status)}`}>{sceneAiReviewLabel(aiReview.status)}</span><small>{aiReview.score ? `${aiReview.score}/100` : "Chưa có điểm"}</small>{project.presetId === "ai-drama" && aiReview.dialogueTimingScore !== undefined && <small>Nhịp thoại {aiReview.dialogueTimingScore}/100</small>}</span>
+                    <span className="scene-table-cell scene-table-status" role="cell"><span className={`scene-ai-badge ${sceneAiReviewTone(aiReview.status)}`}>{sceneAiReviewLabel(aiReview.status)}</span><small>{aiReview.score ? `${aiReview.score}/100` : "Chưa có điểm"}</small></span>
                     <span className="scene-table-cell scene-table-status" role="cell"><span className={`scene-review-badge ${sceneReviewTone(review)}`}>{sceneReviewLabel(review)}</span></span>
                     <span className="scene-table-cell scene-table-status" role="cell"><strong>{sceneMediaKindLabel(media, project.presetId === "ai-drama")}</strong><small>{sceneMediaReady(media, project.presetId === "ai-drama") ? "Sẵn sàng" : media?.status === "failed" ? "Lỗi" : media?.status === "ready" ? "Cần tạo video" : "Chưa tạo"}</small></span>
                     <span className="scene-table-cell scene-table-status" role="cell"><span className={`scene-tts-badge ${ttsReady ? "ready" : ttsPending ? "pending" : "not-needed"}`}>{project.presetId === "ai-drama" ? `${readyDialogueSegments}/${dialogueSegments.length}` : audio.localPath ? "Có TTS" : voice ? "Chưa TTS" : "Không lời"}</span></span>
@@ -4273,12 +4342,12 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                     <label className="scene-tts-field"><span>Nhân vật thoại chính</span><select value={selectedSceneSpeakerId} onChange={(event) => void saveSceneSpeaker(selectedScene, event.target.value)} disabled={sceneCharacterSaving || ttsRunning} aria-label="Chọn nhân vật thoại cho cảnh">
                       <option value="">Narrator / giọng mặc định</option>
                       {characterProfiles.map((character) => <option key={character.id} value={character.id}>{character.name}{character.voiceName ? ` · ${character.voiceName}` : " · chưa chọn voice"}</option>)}
-                    </select><small>{selectedSceneSpeaker?.voiceName ? `TTS sẽ dùng ${selectedSceneSpeaker.voiceName} theo hồ sơ nhân vật.` : selectedSceneSpeaker ? "Hãy chọn voice cho nhân vật trong tab AI Drama." : "Chọn người thoại để TTS tự lấy voice theo nhân vật."}</small></label>
+                    </select><small>{selectedSceneSpeaker?.voiceName ? `TTS sẽ dùng ${selectedSceneSpeaker.voiceName} theo hồ sơ nhân vật.` : selectedSceneSpeaker ? "Hãy chọn voice cho nhân vật trong tab Phim AI." : "Chọn người thoại để TTS tự lấy voice theo nhân vật."}</small></label>
                     {voiceCatalogLoading && <small>Đang tải thư viện voice…</small>}
                   </> : <label className="scene-tts-field"><span>Giọng đọc cho {sceneNumberLabel(selectedScene)}</span><select value={selectedSceneVoiceId} onChange={(event) => void saveSceneTtsVoice(event.target.value)} disabled={voiceCatalogLoading || sceneTtsSaving || ttsRunning || !voiceCatalog?.voices.length} aria-label="Chọn voice cho cảnh hiện tại">
                     {!visibleSceneVoices.some((voice) => voice.id === selectedSceneVoiceId) && <option value="">Chọn voice…</option>}
                     {visibleSceneVoices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name} · {voiceLanguageLabel(voice.language)}{voice.gender ? ` · ${voice.gender}` : ""}</option>)}
-                  </select><small>{voiceCatalogLoading ? "Đang tải danh sách voice từ MaiVideo…" : voiceCatalog?.voices.length ? "Voice được lưu riêng cho cảnh; lời đọc dùng ngôn ngữ video của project, bất kể ngôn ngữ hồ sơ voice." : "Không tải được danh sách voice OmniVoice."}</small></label>}
+                  </select><small>{voiceCatalogLoading ? "Đang tải danh sách voice từ MaiVideo…" : voiceCatalog?.voices.length ? "Voice được lưu riêng cho cảnh; lời đọc dùng ngôn ngữ video của project, bất kể ngôn ngữ hồ sơ voice." : "Không tải được danh sách voice MaiVideo. Kiểm tra API key trong Cài đặt."}</small></label>}
                   <div className="scene-tts-actions"><button className="primary-button compact" type="button" onClick={() => void generateSelectedSceneTts(project.presetId === "ai-drama" ? selectedSceneDialogueSegments.length > 0 && selectedSceneDialogueReadyCount === selectedSceneDialogueSegments.length : Boolean(selectedSceneAudio.localPath))} disabled={(project.presetId === "ai-drama" ? !selectedSceneDialogueSegments.length || selectedSceneDialogueMissingVoice : !selectedSceneVoice || !sceneText(selectedScene, "dialogue_or_voiceover", "voiceText", "voiceover")) || ttsRunning || renderRunning || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || Boolean(dialogueTtsBatchProgress) || Boolean(generatingSceneId) || sceneTtsSaving}><Icon name={ttsRunning && ttsChunkId === selectedScene.chunkId ? "clock" : "spark"} size={14} />{ttsRunning && ttsChunkId === selectedScene.chunkId ? "Đang tạo voice…" : project.presetId === "ai-drama" ? selectedSceneDialogueReadyCount === selectedSceneDialogueSegments.length && selectedSceneDialogueSegments.length ? "Tạo lại TTS các câu" : `Tạo TTS · ${selectedSceneDialogueSegments.length - selectedSceneDialogueReadyCount} câu` : selectedSceneAudio.localPath ? "Tạo lại TTS cảnh này" : "Tạo TTS cảnh này"}</button>{Boolean(selectedSceneAudio.voiceId) && project.presetId !== "ai-drama" && <span>Audio hiện có: {String(selectedSceneAudio.voiceName || selectedSceneAudio.voiceId)}</span>}</div>
                   {project.presetId === "ai-drama" && <div className="scene-tts-segment-players">{selectedSceneDialogueSegments.filter((segment) => segment.audio?.localPath).map((segment) => <label key={segment.id}><span>{characterProfiles.find((character) => character.id === segment.speakerCharacterId)?.name || "Narrator"} · {segment.text}</span><audio controls preload="none" src={`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(selectedScene.id)}/tts?segmentId=${encodeURIComponent(segment.id)}`}>Trình duyệt không hỗ trợ phát audio.</audio></label>)}</div>}
                   {selectedSceneAudioUrl && <audio className="scene-tts-player" controls preload="none" src={selectedSceneAudioUrl}>Trình duyệt không hỗ trợ phát audio.</audio>}
@@ -4290,8 +4359,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                   <div className={`scene-ai-card ${sceneAiReviewTone(selectedAiReview.status)}`}>
                     <div className="scene-ai-heading"><div><small>AI PRE-CHECK</small><strong>{sceneAiReviewLabel(selectedAiReview.status)}</strong></div><span>{selectedAiReview.score}/100</span></div>
                     <p className="scene-ai-summary">{selectedAiReview.summary}</p>
-                    {project.presetId === "ai-drama" && selectedAiReview.dialogueTimingScore !== undefined && <div className="scene-ai-dialogue-score"><strong>Khớp thời lượng chia đoạn thoại</strong><span>{selectedAiReview.dialogueTimingScore}/100</span><small>Dùng thời lượng audio TTS nếu có; nếu chưa có thì ước lượng theo độ dài câu, nhịp đọc, timecode và khoảng nghỉ.</small></div>}
-                    {Object.keys(selectedAiReview.checks).length > 0 && <div className="scene-ai-checks">{Object.entries(selectedAiReview.checks).map(([key, value]) => <span key={key} className={`scene-ai-check ${value}`}><i />{sceneAiCheckLabel(key)}: {value === "pass" ? "đạt" : value === "warning" ? "cảnh báo" : "lỗi"}</span>)}</div>}
+                    {Object.keys(selectedAiReview.checks).length > 0 && <div className="scene-ai-checks">{Object.entries(selectedAiReview.checks).map(([key, value]) => <span key={key} className={`scene-ai-check ${value}`}><i />{key}: {value === "pass" ? "đạt" : value === "warning" ? "cảnh báo" : "lỗi"}</span>)}</div>}
                     {selectedAiReview.issues.length > 0 && <ul className="scene-ai-issues">{selectedAiReview.issues.map((issue, index) => <li key={`${issue}-${index}`}>{issue}</li>)}</ul>}
                   </div>
                   <div className="scene-qa-card">
@@ -4377,13 +4445,13 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
         <article className="production-tool-card panel-card">
           <div className="production-tool-heading"><div><div className="section-kicker">FULL PROJECT RENDER</div><h2>Xuất video toàn dự án</h2></div><span className={`tool-status ${project.render?.stale || project.render?.status === "failed" ? "warning" : project.render?.status === "completed" ? "good" : "neutral"}`}>{project.render?.stale ? "Bản cũ" : project.render?.status === "completed" ? "Đã render" : project.render?.status === "running" ? "Đang render" : "MP4 + SRT"}</span></div>
           <p>{project.render?.status === "failed" && project.render.error ? `Lần render trước thất bại: ${project.render.error}` : project.render?.stale ? `Kịch bản, thoại hoặc media đã đổi sau lần xuất · bản cũ có ${project.render.sceneCount || 0} cảnh. Hãy render lại để đồng bộ MP4/SRT.` : project.render?.outputPath ? `${project.render.sceneCount || scenes.length} cảnh toàn dự án · ${Math.round((project.render.durationSec || 0) / 60)} phút · ${project.render.audioReady ? "đã có tiếng TTS hoặc tiếng gốc" : "chưa có tiếng"}` : "Ghép toàn bộ tập thành MP4 + SRT."}</p>
-          <div className="production-tool-actions"><button className="primary-button compact" type="button" onClick={() => void renderProjectVideo()} disabled={renderRunning || isRunning || Boolean(runningScriptChunkId)}><Icon name="play" size={14} />{renderRunning ? renderingChunkId ? `Đang ghép Tập ${String(chunks.find((chunk) => chunk.id === renderingChunkId)?.episodeNumber || "").padStart(2, "0")}…` : "Đang render toàn dự án…" : project.render?.status === "failed" ? "Thử render lại toàn dự án" : project.render?.stale ? "Render lại đủ các tập" : "Render toàn dự án"}</button>{project.render?.outputPath && <><a className="text-button" href={`/api/projects/${encodeURIComponent(project.slug)}/render/file?kind=video`} target="_blank" rel="noreferrer">{project.render.stale ? "Mở MP4 bản cũ" : "Mở MP4"} <Icon name="arrow" size={13} /></a><a className="text-button" href={`/api/projects/${encodeURIComponent(project.slug)}/render/file?kind=video&download=1`} download={`${project.slug}.mp4`}>{project.render.stale ? "Tải MP4 bản cũ" : "Tải MP4"} <Icon name="download" size={13} /></a><a className="text-button" href={`/api/projects/${encodeURIComponent(project.slug)}/render/file?kind=subtitle`} target="_blank" rel="noreferrer">{project.render.stale ? "SRT bản cũ" : "SRT"}</a></>}</div>
+          <div className="production-tool-actions"><button className="primary-button compact" type="button" onClick={() => void renderProjectVideo()} disabled={renderRunning || isRunning || Boolean(runningScriptChunkId)}><Icon name="play" size={14} />{renderRunning ? renderingChunkId ? `Đang ghép Tập ${String(chunks.find((chunk) => chunk.id === renderingChunkId)?.episodeNumber || "").padStart(2, "0")}…` : renderSettings.renderer === "blender" ? "Đang render bằng Blender…" : "Đang render toàn dự án…" : project.render?.status === "failed" ? "Thử render lại toàn dự án" : project.render?.stale ? "Render lại đủ các tập" : renderSettings.renderer === "blender" ? "Render animation bằng Blender" : "Render toàn dự án"}</button>{project.render?.outputPath && <><a className="text-button" href={`/api/projects/${encodeURIComponent(project.slug)}/render/file?kind=video`} target="_blank" rel="noreferrer">{project.render.stale ? "Mở MP4 bản cũ" : "Mở MP4"} <Icon name="arrow" size={13} /></a><a className="text-button" href={`/api/projects/${encodeURIComponent(project.slug)}/render/file?kind=video&download=1`} download={`${project.slug}.mp4`}>{project.render.stale ? "Tải MP4 bản cũ" : "Tải MP4"} <Icon name="download" size={13} /></a><a className="text-button" href={`/api/projects/${encodeURIComponent(project.slug)}/render/file?kind=subtitle`} target="_blank" rel="noreferrer">{project.render.stale ? "SRT bản cũ" : "SRT"}</a>{project.render.blenderProjectPath && <a className="text-button" href={`/api/projects/${encodeURIComponent(project.slug)}/render/file?kind=blend&download=1`} download={`${project.slug}.blend`}>Tải .blend <Icon name="download" size={13} /></a>}</>}</div>
         </article>
       </section>
 
       <section className="render-settings-panel panel-card">
         <div className="render-settings-heading">
-          <div><div className="section-kicker">TÙY CHỈNH HẬU KỲ</div><h2>Chuyển động, watermark & hiệu ứng cho MP4</h2><p>Áp dụng trên toàn video khi xuất.</p></div>
+          <div><div className="section-kicker">RENDER LOCAL</div><h2>Chọn cách dựng video</h2><p>Chọn FFmpeg để ghép media có sẵn hoặc Blender để dựng cảnh 3D local từ script của coding agent.</p></div>
           <span className="render-settings-save-status"><span className="render-settings-save-dot" />Lưu cùng lần render</span>
         </div>
         <details className="render-settings-details">
@@ -4393,10 +4461,16 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
           </summary>
           <div className="render-settings-groups">
             <section className="render-setting-group">
+              <div className="render-setting-group-heading"><span className="render-setting-group-number">00</span><div><strong>Engine render</strong><small>Chọn công cụ tạo MP4 cuối cùng trên máy này</small></div></div>
+              <div className="render-setting-group-grid render-setting-group-grid-motion">
+                <label className="render-setting-field render-setting-field-wide"><span>Render bằng</span><select aria-label="Engine render dự án" value={renderSettings.renderer} onChange={(event) => updateRenderSetting("renderer", event.target.value as RenderSettings["renderer"])}><option value="ffmpeg">FFmpeg · ghép media hiện có</option><option value="blender">Blender · dựng hoạt cảnh 3D local</option></select><small className="render-setting-help">Blender cần coding agent tạo <code>data/outputs/{project.slug}/blender/scene.py</code>. StoryAI truyền kịch bản cảnh cho Blender, lưu MP4 và file .blend; không gọi dịch vụ tạo video cloud. Bản Blender hiện chưa ghép voice/TTS hoặc âm thanh gốc.</small></label>
+              </div>
+            </section>
+            <section className="render-setting-group">
               <div className="render-setting-group-heading"><span className="render-setting-group-number">01</span><div><strong>Nhịp & chuyển động</strong><small>Kiểm soát cách camera di chuyển trên toàn timeline</small></div></div>
               <div className="render-setting-group-grid render-setting-group-grid-motion">
                 <label className="render-setting-field render-setting-field-wide"><span><span>Tốc độ video</span><strong>{renderSettings.speed.toFixed(2)}×</strong></span><input type="range" min="0.5" max="3" step="0.05" value={renderSettings.speed} onChange={(event) => updateRenderSetting("speed", Number(event.target.value))} /><small className="render-setting-help">Mặc định 1.00× · 0.5× chậm · 3× nhanh</small></label>
-                <label className={`render-setting-check render-setting-check-card ${renderSettings.enableRandomPanZoom ? "is-active" : ""}`}><input type="checkbox" checked={renderSettings.enableRandomPanZoom} onChange={(event) => updateRenderSetting("enableRandomPanZoom", event.target.checked)} /><span className="render-setting-check-copy"><strong>Bật X / Y / zoom ngẫu nhiên</strong><small>{project.presetId === "ai-drama" ? "Mặc định tắt cho AI Drama; giữ nguyên timeline, không cắt cảnh" : "Mặc định bật như FastEdit; giữ nguyên timeline, không cắt cảnh"}</small></span></label>
+                <label className={`render-setting-check render-setting-check-card ${renderSettings.enableRandomPanZoom ? "is-active" : ""}`}><input type="checkbox" checked={renderSettings.enableRandomPanZoom} onChange={(event) => updateRenderSetting("enableRandomPanZoom", event.target.checked)} /><span className="render-setting-check-copy"><strong>Bật X / Y / zoom ngẫu nhiên</strong><small>{project.presetId === "ai-drama" ? "Mặc định tắt cho Phim AI; giữ nguyên timeline, không cắt cảnh" : "Mặc định bật như FastEdit; giữ nguyên timeline, không cắt cảnh"}</small></span></label>
                 <label className={`render-setting-check render-setting-check-card ${renderSettings.useRandomInterval ? "is-active" : ""}`}><input type="checkbox" checked={renderSettings.useRandomInterval} disabled={!renderSettings.enableRandomPanZoom} onChange={(event) => updateRenderSetting("useRandomInterval", event.target.checked)} /><span className="render-setting-check-copy"><strong>Đổi nhịp chuyển động</strong><small>FastEdit chọn một nhịp trong khoảng min–max cho toàn timeline</small></span></label>
                 <div className="render-setting-subgrid render-setting-subgrid-three render-setting-field-wide">
                   <label className="render-setting-field"><span>Nhịp min (s)</span><input type="number" min="0.5" max="30" step="0.1" value={renderSettings.minInterval} disabled={!renderSettings.enableRandomPanZoom || !renderSettings.useRandomInterval} onChange={(event) => updateRenderSetting("minInterval", Number(event.target.value))} /></label>
@@ -4459,7 +4533,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
           <div className="episode-script-import-heading"><div><div className="section-kicker">NHẬP JSON</div><h2 id="episode-script-import-title">Nhập JSON một tập</h2><p>Chọn một tập, dán hoặc chỉnh JSON scene-script.v1 rồi nhập vào project. Mỗi lần chỉ nhập một tập.</p></div><button className="text-button" type="button" onClick={() => setEpisodeScriptEditorOpen(false)} disabled={importingScripts}>Đóng</button></div>
           <div className="episode-script-import-controls">
             <label className="extend-episodes-field"><span>Tập cần nhập</span><select value={episodeScriptChunkId} onChange={(event) => selectEpisodeScriptChunk(event.target.value)} disabled={importingScripts}>{project.chunks.map((chunk, index) => <option key={chunk.id} value={chunk.id}>{"Tập " + String(index + 1).padStart(2, "0") + " · " + chunk.id + " · S" + String(chunk.sceneStart).padStart(3, "0") + "–S" + String(chunk.sceneEnd).padStart(3, "0") + (chunk.outputPath ? " · đã có kịch bản" : " · chưa có kịch bản")}</option>)}</select></label>
-            <button className="secondary-button compact" type="button" disabled={importingScripts || !episodeScriptChunkId} onClick={() => {
+            <button className="secondary-button compact" type="button" disabled={importingScripts || episodeScriptLoading || !episodeScriptChunkId} onClick={() => {
               const target = project.chunks.find((chunk) => chunk.id === episodeScriptChunkId);
               if (!target) return;
               const currentTemplate = episodeScriptTemplate(target.id);
@@ -4467,12 +4541,12 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                 && !isUneditedLegacyEpisodeTemplateDraft(episodeScriptDraft, target)
                 && !window.confirm("Thay phần JSON đang soạn bằng mẫu mới cho tập này?")) return;
               updateEpisodeScriptDraft(currentTemplate);
-            }}><Icon name="file" size={14} />Chèn lại mẫu tập</button>
+            }}><Icon name="file" size={14} />Chèn mẫu JSON</button>
           </div>
-          <div className="episode-script-import-note"><Icon name="help" size={15} /><span>Mẫu tạo scene ID liên tục theo phạm vi tập, mặc định 15 giây/cảnh. ID có thể nằm trong <code>id</code> hoặc <code>scene_id</code> (ví dụ <code>S081</code>, <code>A03-S081</code>, hoặc số <code>81</code>). Hãy thay các hướng dẫn trong dấu [ ] bằng nội dung kịch bản. Cảnh im lặng dùng <code>dialogue_mode: "visual_led"</code>, <code>dialogue_or_voiceover: ""</code> và <code>dialogue_segments: []</code>; không đặt câu hướng dẫn vào trường thoại. Với AI Drama, viết thoại trước rồi chia một cue cho mỗi lượt người nói; tính start/end riêng theo độ dài câu, nhịp đọc và khoảng nghỉ. Không ép số từ tối thiểu hay thời lượng cue bằng nhau; tối đa 3 đơn vị đọc/giây, trần 3,5. Hook mở tập xuất hiện trong 0–5 giây; end hook tạo hệ quả nối sang tập kế.</span></div>
-          <label className="episode-script-json-field"><span>JSON scene-script.v1 · một tập</span><textarea spellCheck={false} aria-label="JSON kịch bản của một tập" value={episodeScriptDraft} onChange={(event) => updateEpisodeScriptDraft(event.target.value)} disabled={importingScripts} /></label>
+          <div className="episode-script-import-note"><Icon name="help" size={15} /><span>Mẫu tạo scene ID liên tục theo phạm vi tập, thời lượng 15 giây trong khung là giá trị mẫu: hãy chọn 5/10/15 giây theo từng cảnh và tính lại start/end liên tục. Toàn bộ hướng dẫn nằm trong prompt_guidance của JSON. Nhịp dài/ngắn linh hoạt theo hành động, thoại và phản ứng; không chia đều 2,5/3 giây, không ngẫu nhiên thời điểm vô cớ, không bắt giữ hình đầu 0,5 giây. Giữ camera/VFX cần thiết và REFERENCE RULES khoá theo ảnh. ID có thể nằm trong <code>id</code> hoặc <code>scene_id</code> (ví dụ <code>S081</code>, <code>A03-S081</code>, hoặc số <code>81</code>). Hãy thay các hướng dẫn trong dấu [ ] bằng nội dung kịch bản. Cảnh im lặng dùng <code>dialogue_mode: "visual_led"</code>, <code>dialogue_or_voiceover: ""</code> và <code>dialogue_segments: []</code>; không đặt câu hướng dẫn vào trường thoại. Với Phim AI, cảnh <code>dialogue_led</code> có ngưỡng tham khảo 10 từ/5 giây, 20 từ/10 giây, 30 từ/15 giây; thiếu từ chỉ cảnh báo, không chặn nhập JSON. Tính tốc độ bằng tổng số từ chia thời lượng cả cảnh, không tính từng cue; mục tiêu tối đa 3 từ/giây. Số từ và tốc độ chỉ cảnh báo. Với dialogue_led, mỗi khoảng nghỉ liên tục bắt buộc ≤3 giây; tổng nghỉ ≤4 giây/cảnh 10 giây và ≤5 giây/cảnh 15 giây, tính cả đầu, giữa và cuối cảnh. Đuôi cảnh trước + đầu cảnh sau (và khoảng trống timeline) ≤3 giây khi hai cảnh liền nhau đều dialogue_led. Cue start_sec/end_sec tính từ đầu từng cảnh. visual_led/im lặng có chủ đích được miễn kiểm tra nghỉ. Phim hài hình ảnh không cần thoại. Hook mở tập xuất hiện trong 0–5 giây; end hook tạo hệ quả nối sang tập kế.</span></div>
+          <label className="episode-script-json-field"><span>{episodeScriptLoading ? "Đang tải JSON đã nhập…" : project.chunks.find((chunk) => chunk.id === episodeScriptChunkId)?.outputPath ? "JSON scene-script.v1 · đã nhập" : "JSON scene-script.v1 · một tập"}</span><textarea spellCheck={false} aria-label="JSON kịch bản của một tập" placeholder="Dán JSON scene-script.v1 vào đây, hoặc chọn “Chèn mẫu JSON” để xem mẫu." value={episodeScriptDraft} onChange={(event) => updateEpisodeScriptDraft(event.target.value)} disabled={importingScripts || episodeScriptLoading} /></label>
           {runMessage && <div className={"run-message " + runMessage.tone} role={runMessage.tone === "error" ? "alert" : "status"}><span><Icon name={runMessage.tone === "success" ? "check" : "alert"} size={13} /></span>{runMessage.text}</div>}
-          <div className="character-setup-actions"><button className="secondary-button" type="button" onClick={() => setEpisodeScriptEditorOpen(false)} disabled={importingScripts}>Để sau</button><button className="primary-button" type="button" onClick={() => void importEpisodeScriptDraft()} disabled={importingScripts || !episodeScriptDraft.trim()}><Icon name={importingScripts ? "clock" : "file"} size={15} />{importingScripts ? "Đang nhập tập…" : "Nhập kịch bản tập này"}</button><button className="secondary-button" type="button" onClick={() => void copyEpisodeScriptDraft()} disabled={importingScripts || !episodeScriptDraft.trim()} title="Sao chép JSON hiện có trong trình soạn thảo"><Icon name="copy" size={15} />Copy JSON</button></div>
+          <div className="character-setup-actions"><button className="secondary-button" type="button" onClick={() => setEpisodeScriptEditorOpen(false)} disabled={importingScripts}>Để sau</button><button className="primary-button" type="button" onClick={() => void importEpisodeScriptDraft()} disabled={importingScripts || episodeScriptLoading || !episodeScriptDraft.trim()}><Icon name={importingScripts ? "clock" : "file"} size={15} />{importingScripts ? "Đang nhập tập…" : "Nhập kịch bản tập này"}</button><button className="secondary-button" type="button" onClick={() => void copyEpisodeScriptDraft()} disabled={importingScripts || episodeScriptLoading || !episodeScriptChunkId} title={episodeScriptDraft.trim() ? "Sao chép JSON hiện có trong trình soạn thảo" : "Sao chép JSON mẫu cho tập đang chọn"}><Icon name="copy" size={15} />{episodeScriptDraft.trim() ? "Copy JSON" : "Copy JSON mẫu"}</button></div>
         </section>
       </div>}
       {showExtendEpisodes && <div className="extend-episodes-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget && !extendingEpisodes) setShowExtendEpisodes(false); }}>

@@ -11,3 +11,8 @@ deliverables/
 plugin-source/
 .DS_Store
 *.tsbuildinfo
+__pycache__/
+*.py[cod]
+.storyai-*.lock/
+duong-may-chung-mai_*.scene-script.json
+duong-may-chung-mai_brief.txt

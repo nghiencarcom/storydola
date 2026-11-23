@@ -146,7 +146,7 @@ export async function POST(_request: Request, context: { params: Promise<{ slug:
   const snapshot = await readData();
   const project = snapshot.projects.find((item) => item.slug === slug);
   if (!project) return NextResponse.json({ message: "Không tìm thấy project." }, { status: 404 });
-  if (project.presetId !== "ai-drama") return NextResponse.json({ message: "Đồng bộ Character Bible chỉ áp dụng cho AI Drama." }, { status: 409 });
+  if (project.presetId !== "ai-drama") return NextResponse.json({ message: "Đồng bộ hồ sơ nhân vật chỉ áp dụng cho Phim AI." }, { status: 409 });
 
   const descriptions = new Map<string, string>();
   const names = new Map<string, string>();
@@ -409,7 +409,7 @@ export async function POST(_request: Request, context: { params: Promise<{ slug:
     data.activities.unshift(makeActivity({
       projectSlug: slug,
       kind: "project",
-      title: created.length || createdLocations.length ? "Đã đồng bộ hồ sơ AI Drama từ kịch bản" : "Hồ sơ AI Drama đã khớp với kịch bản",
+      title: created.length || createdLocations.length ? "Đã đồng bộ hồ sơ Phim AI từ kịch bản" : "Hồ sơ Phim AI đã khớp với kịch bản",
       detail: `${mergedCharacters.length} nhân vật · ${mergedLocations.length} bối cảnh · có thể gán voice và tạo ảnh tham chiếu.`,
       status: "success",
     }));

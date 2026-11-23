@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { headers } from "next/headers";
@@ -9,12 +9,13 @@ import { getManualScriptMetrics } from "./script-utils";
 import { continuityContextFromOutput } from "./story-context";
 import { DEFAULT_IMAGE_STYLE, DEFAULT_VISUAL_STYLE, normalizeProjectStyleSettings } from "./visual-styles";
 import { DEFAULT_CONTENT_GENRE, DEFAULT_STORY_SETTING, normalizeContentGenre, normalizeSecondaryGenres, normalizeStorySetting } from "./content-genres";
+import { DATA_DIR } from "./data-directory";
 
-const DATA_DIR = path.join(process.cwd(), "data");
 const DATA_FILE = path.join(DATA_DIR, "storyai.json");
 const OUTPUT_DIR = path.join(DATA_DIR, "outputs");
 const EMPTY_DATA: StoryAIData = { projects: [], activities: [] };
 let mutationQueue: Promise<unknown> = Promise.resolve();
+let partitionedWorkspaceSeen = false;
 
 function normalizeProjectAspectRatio(value: unknown) {
   const ratio = typeof value === "string" ? value.trim() : "";
@@ -57,7 +58,9 @@ function normalizeWorkspaceData(value: unknown): StoryAIData {
 async function readWorkspaceFile(): Promise<StoredWorkspaceFile | (StoryAIData & { legacyDataOwnerId?: string })> {
   try {
     const raw = await readFile(DATA_FILE, "utf8");
-    return JSON.parse(raw) as StoredWorkspaceFile | (StoryAIData & { legacyDataOwnerId?: string });
+    const stored = JSON.parse(raw) as StoredWorkspaceFile | (StoryAIData & { legacyDataOwnerId?: string });
+    partitionedWorkspaceSeen = isPartitionedFile(stored);
+    return stored;
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code !== "ENOENT") {
       throw new Error("STORYAI_DATA_FILE_CORRUPT: Workspace data could not be read safely.", { cause });
@@ -97,6 +100,25 @@ async function currentUserId() {
   return userId;
 }
 
+// Media reads share an immutable, file-versioned snapshot, without copying the activity log.
+let mediaSnapshot: { version: string; pending: Promise<StoredWorkspaceFile | (StoryAIData & { legacyDataOwnerId?: string })> } | undefined;
+
+export async function readProjectForMedia(slug: string): Promise<StoryProject | undefined> {
+  const userId = await currentUserId();
+  const info = await stat(DATA_FILE);
+  const version = `${info.ino}:${info.mtimeMs}:${info.size}`;
+  if (!mediaSnapshot || mediaSnapshot.version !== version) {
+    const pending = readWorkspaceFile();
+    const entry = { version, pending };
+    mediaSnapshot = entry;
+    pending.catch(() => { if (mediaSnapshot === entry) mediaSnapshot = undefined; });
+  }
+  const stored = await mediaSnapshot.pending;
+  const partition = isPartitionedFile(stored) ? stored.userData[userId] : stored.legacyDataOwnerId === userId ? stored : undefined;
+  const project = partition?.projects.find((item) => item.slug === slug);
+  return project ? structuredClone(project) : undefined;
+}
+
 export async function readData(): Promise<StoryAIData> {
   const userId = await currentUserId();
   await claimLegacyWorkspace(userId);
@@ -105,6 +127,8 @@ export async function readData(): Promise<StoryAIData> {
 
 /** Assigns the pre-account workspace to the first authenticated MaiVideo user. */
 export async function claimLegacyWorkspace(userId: string) {
+  // A partitioned workspace needs no legacy migration or wait for unrelated writes.
+  if (partitionedWorkspaceSeen) return;
   mutationQueue = mutationQueue.catch(() => undefined).then(async () => {
     const stored = await readWorkspaceFile();
     if (isPartitionedFile(stored)) return;
@@ -124,7 +148,7 @@ export async function updateDataForUser<T>(userId: string, mutator: (data: Story
   let result!: T;
   mutationQueue = mutationQueue.catch(() => undefined).then(async () => {
     const stored = await readWorkspaceFile();
-    const data = await readUserPartition(userId);
+    const data = normalizeWorkspaceData(isPartitionedFile(stored) ? stored.userData[userId] || EMPTY_DATA : stored.legacyDataOwnerId === userId ? stored : EMPTY_DATA);
     result = await mutator(data);
     const current = isPartitionedFile(stored)
       ? stored
@@ -187,6 +211,7 @@ function resolveProjectTiming(input: {
   durationMode?: DurationMode;
   durationMinutes?: number;
   sourceText?: string;
+  presetId?: StoryProject["presetId"];
 }) {
   const scriptMode = input.scriptMode || "ai";
   const requestedMinutes = Math.max(1, Number(input.durationMinutes) || 60);
@@ -195,7 +220,9 @@ function resolveProjectTiming(input: {
     : "manual";
   const requestedSeconds = requestedMinutes * 60;
 
-  if (scriptMode === "manual" && input.sourceText?.trim()) {
+  // AI Drama sourceText stores a series bible and episode outline, not a spoken
+  // transcript. Counting those words as narration inflates the requested runtime.
+  if (scriptMode === "manual" && input.presetId !== "ai-drama" && input.sourceText?.trim()) {
     const metrics = getManualScriptMetrics({
       text: input.sourceText,
       format: input.scriptFormat || "plain_text",
@@ -221,7 +248,7 @@ function resolveProjectTiming(input: {
 }
 
 export function makeProject(input: CreateProjectInput, slug: string): StoryProject {
-  const timing = resolveProjectTiming(input);
+  const timing = resolveProjectTiming({ ...input, presetId: input.presetId });
   const { deferSourceIngest: _deferSourceIngest, ...projectInput } = input;
   const chunkSize = normalizeProjectChunkSize(input.chunkSize);
   return {
@@ -293,6 +320,7 @@ export function updateProjectRecord(project: StoryProject, patch: UpdateProjectI
   const sourceUrlChanged = patch.sourceUrl !== undefined && patch.sourceUrl.trim() !== project.sourceUrl.trim();
   if (sourceUrlChanged && (patch.sourceText === undefined || patch.sourceText.trim() === project.sourceText.trim())) next.sourceText = "";
   const sourceChanged = (patch.sourceText !== undefined && patch.sourceText.trim() !== project.sourceText.trim()) || sourceUrlChanged;
+  const dramaPlanChanged = patch.dramaPlan !== undefined && JSON.stringify(patch.dramaPlan) !== JSON.stringify(project.dramaPlan);
   if (sourceChanged) {
     const versions = [...(project.scriptStudio?.versions || [])];
     if ((project.scriptMode || "ai") === "manual" && project.sourceText.trim() && !versions.some((version) => version.sourceText === project.sourceText)) {
@@ -327,13 +355,14 @@ export function updateProjectRecord(project: StoryProject, patch: UpdateProjectI
     const field = key as keyof UpdateProjectInput;
     return patch[field] !== undefined && patch[field] !== project[field];
   });
-  if (durationChanged || chunkSizeChanged || sourceChanged || scriptConfigChanged || formatChanged) {
+  if (durationChanged || chunkSizeChanged || sourceChanged || dramaPlanChanged || scriptConfigChanged || formatChanged) {
     const timing = resolveProjectTiming({
       scriptMode: next.scriptMode,
       scriptFormat: next.scriptFormat,
       durationMode: next.durationMode,
       durationMinutes: next.durationMinutes,
       sourceText: next.sourceText,
+      presetId: next.presetId,
     });
     next.durationMode = timing.durationMode;
     next.durationMinutes = timing.durationMinutes;
@@ -353,7 +382,7 @@ export function updateProjectRecord(project: StoryProject, patch: UpdateProjectI
     next.chunks = createChunks(totalScenes, chunkSize);
     next.status = "draft";
   }
-  if (sourceChanged || formatChanged) next.continuityContext = undefined;
+  if (sourceChanged || dramaPlanChanged || formatChanged) next.continuityContext = undefined;
   next.sourceStatus = next.sourceText?.trim() ? "ready" : "missing";
   next.updatedAt = now();
   return next;

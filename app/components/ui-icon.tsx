@@ -4,7 +4,7 @@ export type IconName =
   | "grid" | "folder" | "layers" | "bolt" | "settings" | "help" | "play"
   | "check" | "clock" | "scene" | "stack" | "alert" | "more" | "arrow"
   | "external" | "download" | "link" | "spark" | "search" | "chevron"
-  | "plus" | "sliders" | "save" | "file" | "users" | "refresh" | "copy" | "logout" | "trash" | "upload" | "image";
+  | "plus" | "sliders" | "save" | "file" | "users" | "refresh" | "copy" | "logout" | "trash" | "upload" | "image" | "menu" | "close";
 
 const icons: Record<IconName, ReactNode> = {
   grid: <><rect x="3.5" y="3.5" width="7" height="7" rx="1.5" /><rect x="13.5" y="3.5" width="7" height="7" rx="1.5" /><rect x="3.5" y="13.5" width="7" height="7" rx="1.5" /><rect x="13.5" y="13.5" width="7" height="7" rx="1.5" /></>,
@@ -38,6 +38,8 @@ const icons: Record<IconName, ReactNode> = {
   trash: <><path d="M4 7h16M10 11v6M14 11v6" /><path d="m6 7 .8 13h10.4L18 7M9 7V4h6v3" /></>,
   upload: <><path d="M12 16V4m-4 4 4-4 4 4M4 16v4h16v-4" /></>,
   image: <><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="8" cy="9" r="1.5" /><path d="m4 17 5-5 3 3 3-4 5 6" /></>,
+  menu: <><path d="M4 7h16M4 12h16M4 17h16" /></>,
+  close: <><path d="m6 6 12 12M18 6 6 18" /></>,
 };
 
 export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {

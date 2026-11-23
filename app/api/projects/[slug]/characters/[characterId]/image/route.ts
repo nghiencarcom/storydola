@@ -4,21 +4,21 @@ import { NextResponse } from "next/server";
 import { generateMaiVideoProfileImage } from "../../../../../../lib/media-provider";
 import { isFlowImageModel, isMuseImageModel, resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
 import { readMaiVideoAuthCookie } from "../../../../../../lib/maivideo-auth-shared";
-import { now, readData, updateData } from "../../../../../../lib/server-store";
+import { now, readData, readProjectForMedia, updateData } from "../../../../../../lib/server-store";
 import type { MediaGenerationSettings } from "../../../../../../lib/project-types";
+import { dataPath } from "../../../../../../lib/data-directory";
 
 export const runtime = "nodejs";
 
 export async function GET(_request: Request, context: { params: Promise<{ slug: string; characterId: string }> }) {
   const { slug, characterId } = await context.params;
-  const data = await readData();
-  const project = data.projects.find((item) => item.slug === slug);
+  const project = await readProjectForMedia(slug);
   if (!project) return NextResponse.json({ message: "Không tìm thấy project." }, { status: 404 });
   const character = (project.characters || []).find((item) => item.id === characterId);
   if (!character?.referenceImagePath) return NextResponse.json({ message: "Không tìm thấy ảnh tham chiếu." }, { status: 404 });
 
   const safeSlug = project.slug.trim().replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 100) || "project";
-  const projectMediaRoot = path.resolve(process.cwd(), "data", "media", safeSlug, "characters");
+  const projectMediaRoot = dataPath("media", safeSlug, "characters");
   const resolvedPath = path.resolve(process.cwd(), character.referenceImagePath);
   if (!resolvedPath.startsWith(`${projectMediaRoot}${path.sep}`)) {
     return NextResponse.json({ message: "Ảnh tham chiếu không thuộc project này." }, { status: 403 });

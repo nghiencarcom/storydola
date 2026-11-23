@@ -12,6 +12,7 @@ import { resolveProjectDialogueVoice, resolveProjectSceneVoice } from "../../../
 import { hasExplicitDialogueSegments, isTemplateDialogueText, readDialogueSegments } from "../../../../../../lib/dialogue-segments";
 import { wavDurationMs } from "../../../../../../lib/wav-duration";
 import type { DialogueSegment, StoryProject } from "../../../../../../lib/project-types";
+import { dataPath } from "../../../../../../lib/data-directory";
 
 export const runtime = "nodejs";
 
@@ -43,7 +44,7 @@ function safeSegment(value: string) {
 }
 
 function projectAudioRoot(slug: string, chunkId: string) {
-  return path.join(process.cwd(), "data", "media", safeSegment(slug), "tts", safeSegment(chunkId));
+  return dataPath("media", safeSegment(slug), "tts", safeSegment(chunkId));
 }
 
 function localDataPath(absolutePath: string) {
@@ -178,7 +179,7 @@ export async function DELETE(request: Request, context: { params: Promise<{ slug
   if (isProjectChunkRunActive(slug)) return NextResponse.json({ message: "Project đang viết kịch bản. Hãy đợi tác vụ hoàn tất rồi xoá TTS." }, { status: 409 });
   if (!claimProjectTts(slug, chunkId)) return NextResponse.json({ message: "Tập này đang tạo TTS. Hãy đợi tác vụ hoàn tất rồi thử lại." }, { status: 409 });
 
-  const outputRoot = path.resolve(process.cwd(), "data", "outputs", safeSegment(slug));
+  const outputRoot = dataPath("outputs", safeSegment(slug));
   const outputPrefix = `data/outputs/${safeSegment(slug)}/`;
   const normalizedOutputPath = chunk.outputPath.replace(/\\/g, "/");
   const outputFilename = normalizedOutputPath.startsWith(outputPrefix) ? normalizedOutputPath.slice(outputPrefix.length) : "";
@@ -189,7 +190,7 @@ export async function DELETE(request: Request, context: { params: Promise<{ slug
 
   const chunkOutputPath = path.join(outputRoot, outputFilename);
   const audioRoot = path.resolve(projectAudioRoot(slug, chunkId));
-  const legacyRoot = path.resolve(process.cwd(), "data", "audio", safeSegment(slug));
+  const legacyRoot = dataPath("audio", safeSegment(slug));
   try {
     const payload = asRecord(JSON.parse(await readFile(chunkOutputPath, "utf8")));
     const scenes = Array.isArray(payload.scenes) ? payload.scenes.map((scene) => asRecord(scene)) : [];
@@ -247,6 +248,7 @@ export async function DELETE(request: Request, context: { params: Promise<{ slug
 
 export async function POST(request: Request, context: { params: Promise<{ slug: string; chunkId: string }> }) {
   const { slug, chunkId } = await context.params;
+  const userId = request.headers.get("x-storyai-user-id")?.trim() || undefined;
   const snapshot = await readData();
   const project = snapshot.projects.find((item) => item.slug === slug);
   if (!project) return NextResponse.json({ message: "Không tìm thấy project." }, { status: 404 });
@@ -260,7 +262,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
 
   const episodeNumber = project.chunks.findIndex((item) => item.id === chunkId) + 1;
   const episodeLabel = `Tập ${String(episodeNumber).padStart(2, "0")}`;
-  const outputRoot = path.resolve(process.cwd(), "data", "outputs", safeSegment(slug));
+  const outputRoot = dataPath("outputs", safeSegment(slug));
   const outputPrefix = `data/outputs/${safeSegment(slug)}/`;
   const normalizedOutputPath = chunk.outputPath.replace(/\\/g, "/");
   const outputFilename = normalizedOutputPath.startsWith(outputPrefix) ? normalizedOutputPath.slice(outputPrefix.length) : "";

@@ -148,7 +148,7 @@ export async function findMaiVideoLibraryImage(id: string, session?: MaiVideoLib
   return image;
 }
 
-export async function downloadMaiVideoLibraryImage(id: string, session?: MaiVideoLibrarySession) {
+export async function downloadMaiVideoLibraryImage(id: string, session?: MaiVideoLibrarySession, maxBytes = 8 * 1024 * 1024) {
   const context = libraryContext(session);
   const image = await findMaiVideoLibraryImage(id, session);
   const url = resolvedMaiVideoUrl(image.fileUrl, context, { asStaticFile: true });
@@ -159,9 +159,10 @@ export async function downloadMaiVideoLibraryImage(id: string, session?: MaiVide
   });
   if (!response.ok) throw new MaiVideoLibraryError("Không tải được ảnh đã chọn từ MaiVideo.", response.status === 401 ? 401 : 502);
   const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length <= 0 || bytes.length > 8 * 1024 * 1024) throw new MaiVideoLibraryError("Ảnh MaiVideo phải nhỏ hơn 8 MB.", 413);
-  if (!supportedImageMime(bytes)) throw new MaiVideoLibraryError("Media đã chọn không phải ảnh PNG, JPG, WebP hoặc AVIF.", 415);
-  return { image, bytes };
+  if (bytes.length <= 0 || bytes.length > maxBytes) throw new MaiVideoLibraryError(`Ảnh MaiVideo không được vượt quá ${maxBytes / 1024 ** 2} MB.`, 413);
+  const mimeType = supportedImageMime(bytes);
+  if (!mimeType) throw new MaiVideoLibraryError("Media đã chọn không phải ảnh PNG, JPG, WebP hoặc AVIF.", 415);
+  return { image, bytes, mimeType };
 }
 
 export async function fetchMaiVideoLibraryPreview(id: string, session?: MaiVideoLibrarySession) {

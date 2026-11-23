@@ -1,3 +1,4 @@
+import type { VideoPromptCompactionReport } from "../../../../../../lib/video-prompt-compaction";
 import { NextResponse } from "next/server";
 import { resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
 import { previewMaiVideoVideoPromptForScene, type VideoPromptReferenceImage } from "../../../../../../lib/media-provider";
@@ -30,6 +31,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     ...(sceneSettings || {}),
     ...(requestedSettings || {}),
   });
+  let compaction: VideoPromptCompactionReport | undefined;
   let referenceImages: VideoPromptReferenceImage[] = [];
   let referenceImagesComposed = false;
   try {
@@ -55,6 +57,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       projectVoiceId: project.voiceId,
       projectVoiceName: project.voiceName,
       projectVoiceLanguage: project.voiceLanguage,
+      onPromptCompactionComposed: (report) => { compaction = report; },
       onVideoReferencesComposed: async (references) => {
         referenceImages = references;
         referenceImagesComposed = true;
@@ -65,6 +68,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       ok: true,
       prompt,
       promptLength: prompt.length,
+      compaction,
       ...(body?.referenceImagesOnly === true ? { referenceImages } : {}),
       provider: mediaGeneration.videoProvider,
       model: mediaGeneration.videoModel,

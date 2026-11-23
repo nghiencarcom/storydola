@@ -2,8 +2,8 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID }
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { getCurrentUserId } from "./auth-server";
+import { DATA_DIR } from "./data-directory";
 
-const DATA_DIR = path.join(process.cwd(), "data");
 const ACCOUNTS_FILE = path.join(DATA_DIR, "seedance-accounts.json");
 const SEEDANCE_BASE_URL = "https://seedance.maivideo.top";
 

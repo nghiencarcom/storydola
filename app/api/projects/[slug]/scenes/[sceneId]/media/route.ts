@@ -2,11 +2,13 @@ import { createReadStream } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import { markRenderStale, readChunkOutput, readData, saveChunkOutput, updateData } from "../../../../../../lib/server-store";
+import { markRenderStale, readChunkOutput, readData, readProjectForMedia, saveChunkOutput, updateData } from "../../../../../../lib/server-store";
 import { findProjectScene, sceneMediaLocalPath, sceneReferenceImageLocalPath } from "../../../../../../lib/scene-store";
 import { resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
 import { MAX_SCENE_MEDIA_UPLOAD_BYTES } from "../../../../../../lib/scene-media-upload-config";
 import { saveGeneratedSceneMedia } from "../../../../../../lib/scene-media-output";
+import { dataPath, relativeDataPath } from "../../../../../../lib/data-directory";
+import { imageThumbnailResponse } from "../../../../../../lib/image-thumbnail";
 
 export const runtime = "nodejs";
 
@@ -28,7 +30,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   const extension = png ? "png" : jpeg ? "jpg" : webp ? "webp" : mp4 ? "mp4" : "";
   if (!extension) return NextResponse.json({ message: "Chỉ hỗ trợ PNG, JPG, WebP hoặc MP4." }, { status: 415 });
   const kind = mp4 ? "video" : "image";
-  const relativePath = path.join("data", "media", project.slug, scene.chunkId, `${scene.id}-upload-${Date.now()}.${extension}`);
+  const relativePath = relativeDataPath("media", project.slug, scene.chunkId, `${scene.id}-upload-${Date.now()}.${extension}`);
   const absolutePath = path.join(process.cwd(), relativePath);
   await mkdir(path.dirname(absolutePath), { recursive: true });
   await writeFile(absolutePath, bytes);
@@ -115,10 +117,11 @@ function streamFileRange(filePath: string, start: number, end: number) {
 
 export async function GET(request: Request, context: { params: Promise<{ slug: string; sceneId: string }> }) {
   const { slug, sceneId } = await context.params;
-  const data = await readData();
-  const project = data.projects.find((item) => item.slug === slug);
+  const project = await readProjectForMedia(slug);
   if (!project) return NextResponse.json({ message: "Không tìm thấy project." }, { status: 404 });
-  const { scene } = await findProjectScene(project, sceneId);
+  const sceneNumber = /^S\d+$/i.test(sceneId) ? Number(sceneId.slice(1)) : NaN;
+  const targetChunk = project.chunks.find((chunk) => sceneNumber >= chunk.sceneStart && sceneNumber <= chunk.sceneEnd);
+  const { scene } = await findProjectScene(targetChunk ? { ...project, chunks: [targetChunk] } : project, sceneId);
   if (!scene) return NextResponse.json({ message: "Không tìm thấy cảnh." }, { status: 404 });
 
   const kind = new URL(request.url).searchParams.get("kind");
@@ -127,7 +130,7 @@ export async function GET(request: Request, context: { params: Promise<{ slug: s
   const localPath = isReference ? sceneReferenceImageLocalPath(scene) : sceneMediaLocalPath(scene);
   if (!localPath) return NextResponse.json({ message: "Cảnh chưa có media." }, { status: 404 });
   const resolvedPath = path.resolve(process.cwd(), localPath);
-  const projectMediaRoot = path.resolve(process.cwd(), "data", "media", project.slug);
+  const projectMediaRoot = dataPath("media", project.slug);
   if (resolvedPath !== projectMediaRoot && !resolvedPath.startsWith(`${projectMediaRoot}${path.sep}`)) {
     return NextResponse.json({ message: "Media không thuộc project này." }, { status: 403 });
   }
@@ -135,6 +138,9 @@ export async function GET(request: Request, context: { params: Promise<{ slug: s
   try {
     const details = await stat(resolvedPath);
     if (!details.isFile()) throw new Error("NOT_FILE");
+    if (new URL(request.url).searchParams.get("thumbnail") === "1" && contentType(resolvedPath).startsWith("image/")) {
+      return await imageThumbnailResponse(request, resolvedPath);
+    }
     const range = request.headers.get("range");
     let start = 0;
     let end = details.size - 1;

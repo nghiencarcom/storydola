@@ -1,3 +1,9 @@
+import { validateEpisode, type ImportEpisode } from "../../../../lib/episode-script-validation";
+import { after } from "next/server";
+import { getCurrentUserId } from "../../../../lib/auth-server";
+import { readMaiVideoAuthCookie } from "../../../../lib/maivideo-auth-shared";
+import { reconcileEpisodeLocations } from "../../../../lib/episode-locations";
+import { ensureLocationReference } from "../../../../lib/location-reference-generation";
 import { NextResponse } from "next/server";
 import { claimProjectChunkRun, isProjectChunkRunActive, releaseProjectChunkRun } from "../../../../lib/chunk-generation-lock";
 import { buildContinuityQaReport } from "../../../../lib/continuity-qa";
@@ -9,14 +15,11 @@ import { claimProjectTts, isProjectTtsActive, releaseProjectTts } from "../../..
 import { makeActivity, markRenderStale, now, readChunkOutput, readData, saveChunkOutput, updateData } from "../../../../lib/server-store";
 import type { ProjectChunk, StoryProject, ProjectVideoPublishingPackage, VideoPublishingSet } from "../../../../lib/project-types";
 import { normalizeProjectStyleSettings } from "../../../../lib/visual-styles";
-import { isAiDramaSceneDuration } from "../../../../lib/ai-drama-scene-timing";
 import { normalizeContentGenre, normalizeSecondaryGenres, normalizeStorySetting } from "../../../../lib/content-genres";
 
 export const runtime = "nodejs";
 
 type JsonRecord = Record<string, unknown>;
-type ImportEpisode = { chunkId: string; sceneStart: number; sceneEnd: number; scenes: JsonRecord[]; payload: JsonRecord };
-const REQUIRED_TEXT_FIELDS = ["act", "purpose", "beat_summary", "dialogue_or_voiceover", "image_keyword", "video_keyword", "image_prompt", "video_prompt", "continuity_in", "continuity_out", "source_basis"];
 
 function asRecord(value: unknown): JsonRecord | undefined {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : undefined;
@@ -24,80 +27,6 @@ function asRecord(value: unknown): JsonRecord | undefined {
 
 function errorResponse(message: string, status = 400, extra: JsonRecord = {}) {
   return NextResponse.json({ message, ...extra }, { status });
-}
-
-function normalizedSceneId(scene: JsonRecord) {
-  const candidates = [scene.id, scene.scene_id, scene.sceneId, scene.scene_number, scene.sceneNumber]
-    .filter((value) => value !== undefined && value !== null && String(value).trim() !== "");
-  for (const candidate of candidates) {
-    const value = String(candidate).trim().toUpperCase();
-    const match = value.match(/^(?:A\d{2,}[-_:])?S\s*(\d+)$/)
-      || value.match(/^SCENE[\s_-]*(\d+)$/)
-      || value.match(/^(\d+)$/);
-    if (!match) continue;
-    const number = Number(match[1]);
-    if (Number.isSafeInteger(number) && number > 0) return { number, id: `S${String(number).padStart(3, "0")}` };
-  }
-  return undefined;
-}
-
-function validateEpisode(value: unknown, requireDiscreteDramaDurations = false): { episode?: ImportEpisode; message?: string } {
-  const payload = asRecord(value);
-  if (!payload || payload.schema !== "scene-script.v1") return { message: "Mỗi phần tử episodes phải có schema scene-script.v1." };
-  const chunkId = String(payload.chunk_id || "").trim().toUpperCase();
-  if (!/^A\d{2,}$/.test(chunkId)) return { message: `chunk_id không hợp lệ: ${chunkId || "trống"}. Dùng dạng A01, A02…` };
-  if (typeof payload.chunk_summary !== "string" || !payload.chunk_summary.trim()) return { message: `${chunkId}: thiếu chunk_summary.` };
-  if (!asRecord(payload.continuity_state)) return { message: `${chunkId}: continuity_state phải là object đầy đủ.` };
-  if (!Array.isArray(payload.scenes) || payload.scenes.length === 0) return { message: `${chunkId}: scenes phải là mảng có ít nhất một cảnh.` };
-
-  const scenes: JsonRecord[] = [];
-  const numbers: number[] = [];
-  for (let index = 0; index < payload.scenes.length; index += 1) {
-    const scene = asRecord(payload.scenes[index]);
-    if (!scene) return { message: `${chunkId}: cảnh thứ ${index + 1} không phải object.` };
-    const normalizedId = normalizedSceneId(scene);
-    if (!normalizedId) {
-      const suppliedId = [scene.id, scene.scene_id, scene.sceneId, scene.scene_number, scene.sceneNumber]
-        .find((value) => value !== undefined && value !== null && String(value).trim() !== "");
-      const detail = suppliedId === undefined ? "" : ` (đã nhận ${JSON.stringify(String(suppliedId).trim())})`;
-      return { message: `${chunkId}: cảnh ${index + 1} cần ID hợp lệ trong trường id hoặc scene_id, ví dụ S001${detail}. Có thể dùng S001, A01-S001, Scene 1 hoặc số 1.` };
-    }
-    const id = normalizedId.id;
-    const sceneNumber = normalizedId.number;
-    numbers.push(sceneNumber);
-    if (typeof scene.start_sec !== "number" || !Number.isFinite(scene.start_sec) || scene.start_sec < 0) return { message: `${id}: start_sec phải là số không âm.` };
-    if (typeof scene.end_sec !== "number" || !Number.isFinite(scene.end_sec) || scene.end_sec <= scene.start_sec) return { message: `${id}: end_sec phải lớn hơn start_sec.` };
-    const sceneDuration = scene.end_sec - scene.start_sec;
-    if (sceneDuration > 15.01) return { message: `${id}: thời lượng cảnh vượt quá 15 giây.` };
-    if (requireDiscreteDramaDurations && !isAiDramaSceneDuration(sceneDuration)) return { message: `${id}: AI Drama chỉ nhận thời lượng cảnh 5, 10 hoặc 15 giây.` };
-    const declaredDuration = scene.duration_sec ?? scene.durationSec;
-    if (requireDiscreteDramaDurations && declaredDuration !== undefined
-      && (!isAiDramaSceneDuration(declaredDuration) || Math.abs(Number(declaredDuration) - sceneDuration) >= 0.001)) {
-      return { message: `${id}: duration_sec phải khớp timecode và chỉ nhận 5, 10 hoặc 15 giây.` };
-    }
-    if (typeof scene.voiceover_target_sec !== "number" || !Number.isFinite(scene.voiceover_target_sec) || scene.voiceover_target_sec < 0) return { message: `${id}: voiceover_target_sec phải là số không âm.` };
-    for (const key of REQUIRED_TEXT_FIELDS) {
-      if (typeof scene[key] !== "string") return { message: `${id}: thiếu trường văn bản ${key}.` };
-    }
-    if (scene.media_type !== "image" && scene.media_type !== "video") return { message: `${id}: media_type chỉ nhận image hoặc video.` };
-    if (!Array.isArray(scene.risk_flags) || scene.risk_flags.some((flag) => typeof flag !== "string")) return { message: `${id}: risk_flags phải là mảng chuỗi.` };
-    scenes.push({ ...scene, id });
-  }
-
-  for (let index = 1; index < numbers.length; index += 1) {
-    if (numbers[index] !== numbers[index - 1] + 1) return { message: `${chunkId}: scene ID phải liên tục; có khoảng trống hoặc ID trùng.` };
-    const previous = scenes[index - 1];
-    const current = scenes[index];
-    if (Number(current.start_sec) < Number(previous.end_sec)) return { message: `${chunkId}: timecode bị chồng lấn tại ${String(current.id)}.` };
-  }
-
-  return { episode: {
-    chunkId,
-    sceneStart: numbers[0],
-    sceneEnd: numbers[numbers.length - 1],
-    scenes,
-    payload: { ...payload, chunk_id: chunkId, scenes },
-  } };
 }
 
 function busyProject(project: StoryProject) {
@@ -253,6 +182,16 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   if (new Set(importedSceneIds).size !== importedSceneIds.length) return errorResponse("Gói nhập có scene ID bị trùng giữa các tập.");
   parsedEpisodes.sort((left, right) => left.sceneStart - right.sceneStart);
 
+  if (existing.presetId === "ai-drama") {
+    try {
+      let locations = existing.locations || [];
+      for (const episode of parsedEpisodes) locations = reconcileEpisodeLocations(locations, episode.payload, now()).locations;
+    } catch (cause) {
+      return errorResponse(cause instanceof Error ? cause.message : "Location Bible không hợp lệ.");
+    }
+  }
+  const userId = await getCurrentUserId();
+  const providerAuthToken = readMaiVideoAuthCookie(request.headers.get("cookie"));
   const pristine = isPristine(existing);
   if (pristine && !bundle && (parsedEpisodes[0].chunkId !== "A01" || parsedEpisodes[0].sceneStart !== 1)) {
     return errorResponse("Project mới chỉ nhận tập đầu tiên A01 bắt đầu từ S001. Để nhập tập tiếp theo, hãy thêm tập tương ứng trong project hoặc nhập gói series có đủ các tập trước.", 409);
@@ -327,7 +266,23 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
 
       const timestamp = now();
       const importedChunkRecords: ProjectChunk[] = [];
+      const locationIds = new Set<string>();
+      let addedLocations = 0;
       for (const episode of parsedEpisodes) {
+        if (project.presetId === "ai-drama") {
+          const reconciled = reconcileEpisodeLocations(project.locations || [], episode.payload, timestamp);
+          project.locations = reconciled.locations;
+          episode.scenes = reconciled.scenes;
+          episode.warnings.push(...reconciled.warnings);
+          for (const id of reconciled.usedIds) {
+            locationIds.add(id);
+            const location = project.locations.find(item => item.id === id);
+            if (location && !location.referenceImagePath && location.imageGeneration?.status !== "running") {
+              location.imageGeneration = { ...location.imageGeneration, status: "queued", updatedAt: timestamp };
+            }
+          }
+          addedLocations += reconciled.addedIds.length;
+        }
         const chunk: ProjectChunk = {
           ...(project.chunks.find((item) => item.id === episode.chunkId) || {} as ProjectChunk),
           id: episode.chunkId,
@@ -439,12 +394,22 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       }));
       return {
         project,
+        addedLocations,
+        pendingLocationIds: [...locationIds].filter(id => !project.locations?.find(location => location.id === id)?.referenceImagePath),
         imported: importedChunkRecords.map((chunk) => ({ chunkId: chunk.id, sceneStart: chunk.sceneStart, sceneEnd: chunk.sceneEnd, sceneCount: chunk.generatedScenes })),
         publishingImported: { series: Boolean(rootPackage.series), episodes: Object.keys(importedEpisodePackages) },
       };
     });
 
-    return NextResponse.json({ ok: true, project: updated.project, imported: updated.imported, publishingImported: updated.publishingImported, replaced: replace ? conflicts.map((item) => item.chunkId) : [] });
+    if (updated.pendingLocationIds.length) {
+      after(async () => {
+        for (const id of updated.pendingLocationIds) {
+          try { await ensureLocationReference(userId, slug, id, providerAuthToken); }
+          catch { /* Error/status is persisted per location; importing the script remains successful. */ }
+        }
+      });
+    }
+    return NextResponse.json({ ok: true, locationReferences: { added: updated.addedLocations, pending: updated.pendingLocationIds.length }, warnings: parsedEpisodes.flatMap(episode => episode.warnings), project: updated.project, imported: updated.imported, publishingImported: updated.publishingImported, replaced: replace ? conflicts.map((item) => item.chunkId) : [] });
   } catch (cause) {
     const code = cause instanceof Error ? cause.message : "SCRIPT_IMPORT_FAILED";
     if (code === "PROJECT_NOT_FOUND") return errorResponse("Không tìm thấy project.", 404);

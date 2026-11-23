@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { getCurrentUserId } from "./auth-server";
 import { DEFAULT_CONTENT_GENRE, DEFAULT_STORY_SETTING, normalizeContentGenre, normalizeSecondaryGenres, normalizeStorySetting } from "./content-genres";
-import { normalizeDramaPlan } from "./drama-plan";
+import { dramaPlanSourceText, normalizeDramaPlan } from "./drama-plan";
 import { getOmniVoiceCatalog } from "./omnivoice-server";
+import { voiceLanguagePromptLabel } from "./omnivoice";
 import { isValidProjectChunkSize, normalizeProjectChunkSize, type CreateProjectInput, type DramaProjectPlan } from "./project-types";
 import { makeActivity, makeProject, updateData, updateProjectRecord } from "./server-store";
 import type { StoryPresetId } from "./story-presets";
@@ -30,12 +31,22 @@ export async function createProjectResponse(request: Request, presetId: StoryPre
       const expectedEpisodes = Math.ceil(totalScenes / chunkSize);
       dramaPlan = normalizeDramaPlan(body.dramaPlan, expectedEpisodes);
     } catch (cause) {
-      return NextResponse.json({ message: cause instanceof Error ? cause.message : "Kế hoạch AI Drama không hợp lệ." }, { status: 400 });
+      return NextResponse.json({ message: cause instanceof Error ? cause.message : "Kế hoạch Phim AI không hợp lệ." }, { status: 400 });
     }
   }
 
   const catalog = dramaPlan ? await getOmniVoiceCatalog().catch(() => null) : null;
   const selectedVoice = (catalog?.voices || []).find((voice) => voice.id === body.voiceId);
+  const suppliedSourceText = typeof body.sourceText === "string" ? body.sourceText : "";
+  const sourceText = dramaPlan && !suppliedSourceText.includes("CHAPTER PLAN (each chapter maps to one project chunk; keep its scene range and causal continuity):")
+    ? dramaPlanSourceText(dramaPlan, {
+      projectTitle: body.title as string,
+      brief: suppliedSourceText,
+      durationMinutes: Math.max(1, Number(body.durationMinutes) || 60),
+      chunkSize,
+      language: voiceLanguagePromptLabel(typeof body.language === "string" ? body.language : "vi"),
+    })
+    : suppliedSourceText;
   const userSuffix = await getCurrentUserId();
   let project = await updateData((data) => {
     const baseSlug = `${slugify(body.title as string)}-${userSuffix}`;
@@ -45,7 +56,7 @@ export async function createProjectResponse(request: Request, presetId: StoryPre
     const created = makeProject({
       title: body.title as string,
       sourceUrl: body.sourceUrl || "",
-      sourceText: body.sourceText || "",
+      sourceText,
       scriptMode: body.scriptMode || "ai",
       scriptFormat: body.scriptFormat || "plain_text",
       durationMode: body.durationMode,

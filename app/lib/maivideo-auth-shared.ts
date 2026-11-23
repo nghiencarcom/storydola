@@ -57,6 +57,8 @@ function normalizeAuthUser(value: unknown): MaiVideoAuthUser | null {
   return { id, email, name, ...(role ? { role } : {}) };
 }
 
+const authChecksInFlight = new Map<string, Promise<MaiVideoAuthUser | null>>();
+
 async function cacheKey(baseUrl: string, token: string) {
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${baseUrl}:${token}`));
   return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -70,9 +72,19 @@ export async function verifyMaiVideoAuthToken(token: string, baseUrl: string): P
   if (cached && cached.expiresAt > Date.now()) return cached.user;
   if (cached) authUserCache.delete(key);
 
+  const existingCheck = authChecksInFlight.get(key);
+  if (existingCheck) return existingCheck;
+  const pending = fetchAuthUser(rawToken, baseUrl, key);
+  authChecksInFlight.set(key, pending);
+  try { return await pending; }
+  finally { if (authChecksInFlight.get(key) === pending) authChecksInFlight.delete(key); }
+}
+
+async function fetchAuthUser(rawToken: string, baseUrl: string, key: string): Promise<MaiVideoAuthUser | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), AUTH_TIMEOUT_MS);
   let user: MaiVideoAuthUser | null = null;
+  let definitiveResponse = false;
   try {
     const response = await fetch(`${baseUrl}/api/auth/me`, {
       method: "GET",
@@ -84,6 +96,7 @@ export async function verifyMaiVideoAuthToken(token: string, baseUrl: string): P
       cache: "no-store",
       signal: controller.signal,
     });
+    definitiveResponse = response.ok || response.status === 401 || response.status === 403;
     if (response.ok) {
       const payload = await response.json().catch(() => ({})) as { user?: unknown };
       user = normalizeAuthUser(payload.user);
@@ -95,7 +108,8 @@ export async function verifyMaiVideoAuthToken(token: string, baseUrl: string): P
   }
 
   if (authUserCache.size > 1_000) authUserCache.clear();
-  authUserCache.set(key, { user, expiresAt: Date.now() + AUTH_CACHE_TTL_MS });
+  // Network errors must not lock every image request out for the full session TTL.
+  if (definitiveResponse) authUserCache.set(key, { user, expiresAt: Date.now() + (user ? AUTH_CACHE_TTL_MS : Math.min(AUTH_CACHE_TTL_MS, 2_000)) });
   return user;
 }
 

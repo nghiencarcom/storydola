@@ -17,7 +17,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function emptyQueue(): VideoQueueState {
-  return { status: "idle", concurrency: 20, jobs: [], updatedAt: now() };
+  return { status: "idle", concurrency: 50, jobs: [], updatedAt: now() };
 }
 
 function queueSummary(queue: VideoQueueState) {
@@ -61,7 +61,7 @@ function recoverStaleJobs(queue: VideoQueueState) {
 export async function POST(request: Request, context: { params: Promise<{ slug: string }> }) {
   const { slug } = await context.params;
   const body = await request.json().catch(() => ({})) as { limit?: number };
-  const requestedConcurrency = Math.max(1, Math.min(20, Number(body.limit) || 20));
+  const requestedConcurrency = Math.max(1, Math.min(50, Number(body.limit) || 50));
   const started = await updateData((data) => {
     const project = getProjectOrThrow(data, slug);
     const queue = project.videoQueue || emptyQueue();

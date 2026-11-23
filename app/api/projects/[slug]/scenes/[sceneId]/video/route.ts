@@ -104,7 +104,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     const userMessage = publicBaseUrlMessage || (message === "SEEDANCE_ACCOUNT_REQUIRED"
       ? "Chưa kết nối API key Seedance / MaiVideo. Hãy thêm tài khoản trong Cài đặt."
       : message === "AI_DRAMA_SCENE_DURATION_UNSUPPORTED"
-        ? "Model video này không hỗ trợ đúng thời lượng 5, 10 hoặc 15 giây của cảnh AI Drama. Hãy chọn model khác."
+        ? "Model video này không hỗ trợ đúng thời lượng 5, 10 hoặc 15 giây của cảnh Phim AI. Hãy chọn model khác."
         : message === "SEEDANCE_ACCOUNT_NOT_FOUND"
           ? "Tài khoản API đã chọn không còn tồn tại. Hãy chọn lại tài khoản."
       : message === "SEEDANCE_ENCRYPTION_KEY_REQUIRED"

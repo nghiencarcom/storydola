@@ -57,7 +57,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   const settings = normalizeRenderSettings(body.settings);
   const dialogueLanguage = body.language ? normalizeLanguage(body.language) : "";
   if (body.language && !dialogueLanguage) return NextResponse.json({ code: "INVALID_RENDER_LANGUAGE", message: "Ngôn ngữ render không hợp lệ." }, { status: 400 });
-  if (dialogueLanguage && project.presetId !== "ai-drama") return NextResponse.json({ code: "LOCALIZED_RENDER_UNSUPPORTED", message: "Render voice theo ngôn ngữ dịch hiện hỗ trợ project AI Drama." }, { status: 400 });
+  if (dialogueLanguage && project.presetId !== "ai-drama") return NextResponse.json({ code: "LOCALIZED_RENDER_UNSUPPORTED", message: "Render voice theo ngôn ngữ dịch hiện hỗ trợ project Phim AI." }, { status: 400 });
   if (isProjectTtsActive(slug)) return NextResponse.json({ code: "TTS_ALREADY_RUNNING", message: "Project đang tạo TTS. Hãy đợi tác vụ này hoàn tất rồi ghép video." }, { status: 409 });
   if (!claimProjectRender(slug)) return NextResponse.json({ code: "RENDER_ALREADY_RUNNING", message: "Dự án đang có video được ghép. Hãy đợi tác vụ hiện tại hoàn tất." }, { status: 409 });
 

@@ -60,7 +60,7 @@ export function normalizeAiDramaSceneTimings(scenes: unknown[], timelineStartSec
     const originalEnd = numberValue(scene, "end_sec", "endSec");
     const declaredDuration = numberValue(scene, "duration_sec", "durationSec");
     const sourceDuration = originalEnd !== undefined && originalEnd > originalStart ? originalEnd - originalStart : undefined;
-    const requestedDuration = declaredDuration ?? videoPromptDuration(scene) ?? sourceDuration ?? numberValue(scene, "voiceover_target_sec", "voiceoverTargetSec");
+    const requestedDuration = declaredDuration ?? sourceDuration ?? videoPromptDuration(scene) ?? numberValue(scene, "voiceover_target_sec", "voiceoverTargetSec");
     const durationSec = normalizeAiDramaSceneDuration(Math.max(requestedDuration || 0, lastDialogueEnd(scene)));
     const startSec = Number(cursor.toFixed(3));
     cursor += durationSec;

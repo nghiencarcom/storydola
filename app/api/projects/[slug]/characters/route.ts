@@ -11,6 +11,7 @@ import { makeActivity, markRenderStale, now, readChunkOutput, readData, saveChun
 import { resolveProjectSceneVoice } from "../../../../lib/project-tts-voice";
 import { hasExplicitDialogueSegments, readDialogueSegments } from "../../../../lib/dialogue-segments";
 import { sceneReferenceCharacterIds } from "../../../../lib/scene-reference-assignments";
+import { dataPath, relativeDataPath } from "../../../../lib/data-directory";
 
 export const runtime = "nodejs";
 
@@ -96,7 +97,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ slug:
   const snapshot = await readData();
   const project = snapshot.projects.find((item) => item.slug === slug);
   if (!project) return NextResponse.json({ message: "Không tìm thấy project." }, { status: 404 });
-  if (project.presetId !== "ai-drama") return NextResponse.json({ message: "Voice theo nhân vật chỉ áp dụng cho AI Drama." }, { status: 409 });
+  if (project.presetId !== "ai-drama") return NextResponse.json({ message: "Voice theo nhân vật chỉ áp dụng cho Phim AI." }, { status: 409 });
   if (!(project.characters || []).some((character) => character.id === characterId)) return NextResponse.json({ message: "Không tìm thấy hồ sơ nhân vật." }, { status: 404 });
 
   const saved = await updateData(async (data) => {
@@ -237,7 +238,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       return NextResponse.json({ message: "Ảnh cảnh đã chọn không còn khả dụng." }, { status: 400 });
     }
     const safeSlug = project.slug.trim().replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 100) || "project";
-    const mediaRoot = path.resolve(process.cwd(), "data", "media", safeSlug);
+    const mediaRoot = dataPath("media", safeSlug);
     const sourcePath = path.resolve(process.cwd(), localPath);
     if (!sourcePath.startsWith(`${mediaRoot}${path.sep}`)) {
       return NextResponse.json({ message: "Ảnh cảnh không thuộc project này." }, { status: 403 });
@@ -265,7 +266,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   const existingCharacter = (project.characters || []).find((character) => normalizeEntityName(character.name) === normalizeEntityName(name));
   const characterId = existingCharacter?.id || `char-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const safeSlug = project.slug.trim().replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 100) || "project";
-  const relativePath = path.join("data", "media", safeSlug, "characters", `${characterId}.${detected.extension}`);
+  const relativePath = relativeDataPath("media", safeSlug, "characters", `${characterId}.${detected.extension}`);
   const absolutePath = path.join(process.cwd(), relativePath);
   await mkdir(path.dirname(absolutePath), { recursive: true });
   await writeFile(absolutePath, bytes);

@@ -1,3 +1,5 @@
+import { ensureLocationReference } from "../../../../../../lib/location-reference-generation";
+import { getCurrentUserId } from "../../../../../../lib/auth-server";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
@@ -5,8 +7,9 @@ import { generateMaiVideoProfileImage } from "../../../../../../lib/media-provid
 import { isFlowImageModel, isMuseImageModel, resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
 import { readMaiVideoAuthCookie } from "../../../../../../lib/maivideo-auth-shared";
 import type { MediaGenerationSettings } from "../../../../../../lib/project-types";
-import { markRenderStale, now, readChunkOutput, readData, saveChunkOutput, updateData } from "../../../../../../lib/server-store";
+import { markRenderStale, now, readChunkOutput, readData, readProjectForMedia, saveChunkOutput, updateData } from "../../../../../../lib/server-store";
 import { sceneReferenceLocationId } from "../../../../../../lib/scene-reference-assignments";
+import { dataPath } from "../../../../../../lib/data-directory";
 
 export const runtime = "nodejs";
 
@@ -26,13 +29,12 @@ function usesLocationReference(scene: Record<string, unknown>, locationId: strin
 
 export async function GET(_request: Request, context: { params: Promise<{ slug: string; locationId: string }> }) {
   const { slug, locationId } = await context.params;
-  const data = await readData();
-  const project = data.projects.find((item) => item.slug === slug);
+  const project = await readProjectForMedia(slug);
   if (!project) return NextResponse.json({ message: "Không tìm thấy project." }, { status: 404 });
   const location = (project.locations || []).find((item) => item.id === locationId);
   if (!location?.referenceImagePath) return NextResponse.json({ message: "Không tìm thấy ảnh bối cảnh." }, { status: 404 });
   const safeSlug = project.slug.trim().replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 100) || "project";
-  const locationRoot = path.resolve(process.cwd(), "data", "media", safeSlug, "locations");
+  const locationRoot = dataPath("media", safeSlug, "locations");
   const resolvedPath = path.resolve(process.cwd(), location.referenceImagePath);
   if (!resolvedPath.startsWith(`${locationRoot}${path.sep}`)) return NextResponse.json({ message: "Ảnh bối cảnh không thuộc project này." }, { status: 403 });
   try {
@@ -57,6 +59,11 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     const providerAuthToken = isMuseImageModel(mediaGeneration.imageModel) || isFlowImageModel(mediaGeneration.imageModel) ? readMaiVideoAuthCookie(request.headers.get("cookie")) : "";
     if ((isMuseImageModel(mediaGeneration.imageModel) || isFlowImageModel(mediaGeneration.imageModel)) && !providerAuthToken) {
       return NextResponse.json({ code: "PROVIDER_SESSION_REQUIRED", message: "Hãy đăng nhập MaiVideo để dùng API ảnh Muse.ai hoặc Flow." }, { status: 401 });
+    }
+    if (!location.referenceImagePath) {
+      await ensureLocationReference(await getCurrentUserId(), slug, locationId, providerAuthToken, mediaGeneration);
+      const fresh = (await readData()).projects.find(item => item.slug === slug)?.locations?.find(item => item.id === locationId);
+      return NextResponse.json({ ok: true, location: fresh });
     }
     const image = await generateMaiVideoProfileImage({ projectSlug: slug, profileKind: "locations", profileId: locationId, prompt, mediaGeneration, providerAuthToken, contentGenre: project.contentGenre, secondaryGenres: project.secondaryGenres, storySetting: project.storySetting, settingNotes: project.settingNotes, visualStyle: project.visualStyle, imageStyle: project.imageStyle });
     const updated = await updateData(async (current) => {

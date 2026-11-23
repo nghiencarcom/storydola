@@ -1,0 +1,76 @@
+name: Báo lỗi
+description: Báo lỗi khi cài đặt, khởi động hoặc sử dụng StoryAI
+title: "[Lỗi]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Không đính kèm `.env`, thư mục `data/`, API key, token đăng nhập hoặc log chưa rà soát. Hãy xóa thông tin xác thực và dữ liệu riêng trước khi gửi.
+  - type: input
+    id: operating-system
+    attributes:
+      label: Hệ điều hành
+      description: Ghi phiên bản macOS hoặc Windows.
+      placeholder: macOS 15 / Windows 11
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Phiên bản Node.js
+      description: Kết quả của lệnh `node --version`.
+      placeholder: v22.x.x
+    validations:
+      required: true
+  - type: input
+    id: git-version
+    attributes:
+      label: Phiên bản Git
+      description: Kết quả của lệnh `git --version`.
+    validations:
+      required: false
+  - type: input
+    id: ffmpeg-version
+    attributes:
+      label: Phiên bản FFmpeg (nếu có lỗi render video)
+      description: Kết quả của lệnh `ffmpeg -version`.
+    validations:
+      required: false
+  - type: input
+    id: ffprobe-version
+    attributes:
+      label: Phiên bản FFprobe (nếu có lỗi render video)
+      description: Kết quả của lệnh `ffprobe -version`.
+    validations:
+      required: false
+  - type: input
+    id: storyai-version
+    attributes:
+      label: Phiên bản StoryAI hoặc Git commit
+      description: Xem dòng Runtime trong `logs/storyai-supervisor.log`.
+    validations:
+      required: false
+  - type: textarea
+    id: steps
+    attributes:
+      label: Các bước tái hiện
+      description: Ghi chính xác thao tác và lệnh đã chạy.
+      placeholder: |
+        1. Mở Terminal...
+        2. Chạy npm start...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Kết quả mong đợi
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Kết quả thực tế và lỗi
+      description: Dán thông báo từ Terminal và log liên quan sau khi đã xóa bí mật.
+    validations:
+      required: true

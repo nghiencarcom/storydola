@@ -67,6 +67,9 @@ function ensureLocalConfig() {
 }
 
 function updateFromMain() {
+  const gitCommand = isWindows ? "git.exe" : "git";
+  if (!commandWorks(gitCommand, ["--version"])) return { updated: false };
+
   const inRepo = capture("git", ["rev-parse", "--is-inside-work-tree"]);
   if (inRepo !== "true") {
     log("This folder is not a Git checkout. Automatic updates require cloning the repository with Git.");
@@ -165,14 +168,55 @@ function ensureProductionBuild() {
   }
 }
 
-function commandWorks(command) {
-  const result = spawnSync(command, ["-version"], {
+function commandWorks(command, args = ["-version"]) {
+  const result = spawnSync(command, args, {
     cwd: projectRoot,
     stdio: "ignore",
     shell: isWindows,
     windowsHide: true,
   });
   return result.status === 0;
+}
+
+function installHint(tool) {
+  if (tool === "node") {
+    return process.platform === "win32"
+      ? "install with `winget install --id OpenJS.NodeJS.LTS --exact`; if already installed, update with `winget upgrade --id OpenJS.NodeJS.LTS --exact`"
+      : process.platform === "darwin"
+        ? "install with `brew install node` or download from https://nodejs.org/en/download/; update Homebrew Node.js with `brew upgrade node`"
+        : "Install Node.js 22 or newer from https://nodejs.org/en/download/";
+  }
+  if (tool === "git") {
+    return process.platform === "win32"
+      ? "winget install --id Git.Git --exact"
+      : process.platform === "darwin"
+        ? "brew install git (or download from https://git-scm.com/downloads/)"
+        : "Install Git from your OS package manager or https://git-scm.com/downloads/";
+  }
+  return process.platform === "win32"
+    ? "winget install --id Gyan.FFmpeg --exact (installs ffmpeg and ffprobe)"
+    : process.platform === "darwin"
+      ? "brew install ffmpeg (installs ffmpeg and ffprobe)"
+      : "Install FFmpeg with your OS package manager; both ffmpeg and ffprobe are required.";
+}
+
+function checkExternalTools() {
+  const gitCommand = isWindows ? "git.exe" : "git";
+  if (!commandWorks(gitCommand, ["--version"])) {
+    log("Git was not found in PATH. StoryAI can start, but cloning and automatic GitHub updates require Git.");
+    log(`Install Git: ${installHint("git")}`);
+  }
+
+  const ffmpegCommand = isWindows ? "ffmpeg.exe" : "ffmpeg";
+  const ffprobeCommand = isWindows ? "ffprobe.exe" : "ffprobe";
+  const missing = [];
+  if (!commandWorks(ffmpegCommand)) missing.push("ffmpeg");
+  if (!commandWorks(ffprobeCommand)) missing.push("ffprobe");
+  if (missing.length) {
+    log(`Missing ${missing.join(" and ")} in PATH. MP4 rendering requires both ffmpeg and ffprobe.`);
+    log(`Install both: ${installHint("ffmpeg")}`);
+    log("After installing, reopen the terminal and confirm `ffmpeg -version` and `ffprobe -version` both work.");
+  }
 }
 
 function portFromConfig() {
@@ -272,16 +316,18 @@ async function serve(port) {
 
 async function main() {
   const [major] = process.versions.node.split(".").map(Number);
-  if (major < 22) throw new Error(`Node.js 22 or newer is required. Current version: ${process.versions.node}`);
+  if (major < 22) {
+    throw new Error(`Node.js 22 or newer is required. Current version: ${process.versions.node}. Install or update Node.js: ${installHint("node")}`);
+  }
 
+  checkExternalTools();
   ensureLocalConfig();
   updateFromMain();
+  const appVersion = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8")).version;
+  const gitCommit = capture("git", ["rev-parse", "--short", "HEAD"]) || "source archive";
+  log(`Runtime: StoryAI ${appVersion}; Node.js ${process.versions.node}; ${process.platform}/${process.arch}; Git ${gitCommit}.`);
   ensureDependencies();
   ensureProductionBuild();
-
-  if (!commandWorks(isWindows ? "ffmpeg.exe" : "ffmpeg") || !commandWorks(isWindows ? "ffprobe.exe" : "ffprobe")) {
-    log("FFmpeg/FFprobe was not found in PATH. StoryAI will start, but MP4 rendering needs FFmpeg installed.");
-  }
 
   const port = portFromConfig();
   await assertPortAvailable(port);

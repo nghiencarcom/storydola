@@ -1,3 +1,5 @@
+import { EPISODE_LOCATION_BIBLE_GUIDANCE, IMAGE_SCENE_VARIETY_GUIDANCE } from "./image-scene-guidance";
+import { VIDEO_REFERENCE_RULES } from "./video-prompt-policy";
 import { AI_DRAMA_CAMERA_COMBO_GUIDANCE } from "./ai-drama-video-prompt-guidance";
 
 const AI_DRAMA_CAMERA_COMBO_GUIDANCE_LINES = AI_DRAMA_CAMERA_COMBO_GUIDANCE
@@ -45,106 +47,59 @@ End hook: [A specific unresolved consequence that leads into A03.]
 [Duplicate the A02 block for every remaining episode in this project.]
 
 CONTINUITY RULES:
+- ${IMAGE_SCENE_VARIETY_GUIDANCE}
+- ${EPISODE_LOCATION_BIBLE_GUIDANCE}
 - Preserve canonical names, ages, faces, costumes, relationships, locations, and prop ownership.
 - Use only the names in this project's source and bibles; preserve their spelling exactly and never copy sample names into a new project.
 - Connect every scene and episode by cause and effect; carry forward time, place, knowledge, and emotional state.
-- Every scene must be exactly 5, 10, or 15 seconds. Write dialogue first and split one cue per actual speaker turn. Estimate each cue duration independently from its read units, delivery pace, punctuation, and motivated pauses; target 3 read units/second or less and never exceed 3.5. Do not force minimum word counts, equal cue durations, extra turns, or filler. Keep cues within the scene, in chronological order, and match speaker names/timecodes in video_prompt. Intentional visual-led or silent scenes are exempt; leave dialogue_or_voiceover empty, dialogue_segments empty, and voiceover_target_sec at 0. Never put instructions in dialogue fields.
+- Every scene must be exactly 5, 10, or 15 seconds. Dialogue is optional: visual comedy, action-led and intentionally silent scenes need no speech or filler. For spoken scenes, count total spoken words across the entire scene and divide by scene duration, never by individual cue duration. The scene-level target is at most 3 words per second; 10/20/30 words for 5/10/15 seconds are advisory lower targets only. Word counts and scene-level speaking rate are warnings only, never grounds for rejecting JSON or fail/needs_changes. For dialogue_led, silence limits are mandatory: EACH continuous gap must be <=3s, and TOTAL silence must be <=4s per 10s scene or <=5s per 15s scene. Count leading, inter-cue and trailing gaps using the union of valid scene-relative cue intervals; exceeding either limit rejects import. Across adjacent dialogue_led scenes, previous trailing silence + any timeline gap + next leading silence must also be <=3s; visual_led/intentional silence breaks this check. Cue start_sec/end_sec are relative to the scene, not the episode timeline. Missing or invalid cues cannot establish speech coverage. visual_led and intentionally silent scenes are exempt from silence checks; mark intentional silence as dialogue_mode visual_led with empty dialogue fields. Keep scene-relative cues when speech exists, allocating turns naturally without mandatory speech density. Split exchanges into 2–4 timed turns when appropriate. Intentional visual-led or silent scenes are exempt and must not receive filler dialogue; leave dialogue_or_voiceover empty, dialogue_segments empty, and voiceover_target_sec at 0. Never put instructions in dialogue fields.
 - Each image_prompt is one finished scene image: the exact opening frame at 0 seconds, not a character/location sheet or collage. Use canonical names, describe only the visible blocking/action, composition, required props, project style and selected aspect ratio; the separate bibles define stable appearance and set design.
-- Each video_prompt must continue from that exact opening frame, hold the full composition and visible character positions for the first 0.5 seconds, then cover the entire scene with the exact camera time grid: 5s = 0–2.5 / 2.5–5; 10s = 0–2.5 / 2.5–5 / 5–7.5 / 7.5–10; 15s = 0–3 / 3–6 / 6–9 / 9–12 / 12–15. Every range states shot/angle, timed action or reaction, motivated camera path, diegetic SFX, and VFX (write “none” unless the story explicitly requires an effect). Keep exact spoken words only in dialogue_segments; video_prompt names the on-camera speaker and cue time without repeating dialogue.
+- When a character reference image is attached, use it as the sole visual identity source; specific age and facial-appearance descriptions are forbidden; general reference-binding/preservation rules are allowed in scene prompts. Frame-specific expression and acting are allowed. If no character image is attached, follow the canonical Character Bible/profile and do not invent or change age or identity. Preserve established age and identity in the Character Bible and character reference prompt.
+- Establish fixed left/right positions, landmarks, eyelines, and the 180-degree axis only from the source, location bible, prior scene, opening frame, or explicit blocking. Preserve the established axis through dialogue coverage; cross it only with a motivated visible move/reblocking that re-establishes screen direction. Do not invent fixed set details or exclusions such as “NO doors visible.”
+- Each video_prompt continues naturally from its exact initial image for a duration of 5, 10 or 15 seconds. No fixed opening hold, equal time grid, periodic camera change or maximum shot length. A continuous shot is allowed. Describe action, reaction, necessary camera path, SFX and VFX; use precise event timestamps only when synchronization matters. Preserve required effects and their timing. Exact dialogue belongs only in dialogue_segments.
 - Choose one named primary camera combo that fits the scene's beat and blocking; put its name plus the actual start framing, camera path/direction/speed, subject tracking, and end framing in camera_movement. Use the JSON sample's camera_combo_guidance as a menu, never a checklist. A secondary move is optional only when a real beat change motivates it and duration allows.
 - Prioritize combos #2, #3, #4, #6, #11, #12, #16, #18, #20, and #22 when their movement fits the story; use the other listed combos as fallbacks, not as required coverage.
 - Every episode must have an opening hook that lands in its first 5 seconds, a meaningful turning point, and an earned end hook. Start each next episode with the consequence of the prior end hook; avoid generic intros and recaps.
 - Keep production descriptions and prompts in English. Write dialogue in the selected project video language.`;
 
-export const AI_DRAMA_JSON_TEMPLATE = JSON.stringify({
-  schema: "scene-script.v1",
-  chunk_id: "A01",
-  episode_title: "[Episode title]",
-  prompt_guidance: {
-    character_image_prompt: "English base visual description only; the app appends the required 1:1 three-view character sheet (front, back, portrait). Do not ask for a scene or add sheet layout instructions.",
-    location_image_prompt: "English base environment description only; the app appends the required 1:1 four-direction location sheet (north, east, south, west). Do not include people or scene-specific action.",
-    scene_image_prompt: "Exactly one finished frame at 0 seconds, with only the canonical characters and location actually present in this scene. Never make a reference sheet or collage.",
-    video_prompt: "Select ONE primary camera combo that fits; name it and describe its physical path in camera_movement. Preserve the opening frame and follow the exact duration-specific camera grid. Keep spoken words only in dialogue_segments. Add speaker names and cue times that match the final dialogue_segments; do not repeat lines in the prompt. If dialogue_segments is empty, keep the scene silent with no speech or narration.",
-    dialogue: "Dialogue is optional. For speech, write the lines first, split one cue per actual speaker turn, and estimate start_sec/end_sec independently from read units, delivery_pace, punctuation, and motivated pauses. Do not reuse equal durations for different-length lines, force minimum counts, or add filler. Keep cues within duration_sec and synchronized with video_prompt. For a silent or visual_led scene, use dialogue_mode=visual_led, dialogue_or_voiceover=\"\", and dialogue_segments=[]. Never put instructions, placeholders, or narration in dialogue fields.",
-  },
-  camera_combo_guidance: AI_DRAMA_CAMERA_COMBO_GUIDANCE_LINES,
-  character_bible: [],
-  location_bible: [],
-  episode_hooks: {
-    opening_hook: "[A concrete action, visual reveal, or question in the first five seconds.]",
-    turning_point: "[The decision or discovery that changes the episode's direction.]",
-    end_hook: "[An earned consequence that leads directly into the next episode.]",
-  },
-  chunk_summary: "[Beginning, escalation, turning point, and outcome of this episode.]",
-  continuity_state: {
-    story_so_far: "[What has happened so far, without recapping it in the next episode.]",
-    active_characters: [],
-    active_locations: [],
-    important_props: [],
-    open_threads: [],
-    next_chunk_plan: "[Continue directly from this episode's final consequence.]",
-  },
-  scenes: [{
-    id: "S001",
-    start_sec: 0,
-    end_sec: 5,
-    duration_sec: 5,
-    act: "Opening hook",
-    purpose: "A small visual surprise creates a clear comic question.",
-    beat_summary: "A paper boat circles back to its starting point just as the rain begins.",
-    dialogue_mode: "visual_led",
-    dialogue_or_voiceover: "",
-    dialogue_segments: [],
-    voiceover_target_sec: 0,
-    media_type: "video",
-    characters: [],
-    location_name: "",
-    location_description: "",
-    image_keyword: "paper boat circles in a rain puddle",
-    video_keyword: "paper boat drifts in a small loop",
-    image_prompt: "One finished opening frame at 0 seconds: a small paper boat sits in a rain puddle beside a curb, a single circular ripple beginning to turn it back toward its starting point. Clear readable composition, playful family-friendly comedy, polished cinematic animation, selected project aspect ratio. No text or collage.",
-    video_prompt: "0.0–2.5s: Shot: low close-up at puddle level. Action: hold the opening frame for 0.5s, then let the paper boat drift in a tiny circle. Camera: slow lateral track following the boat. SFX: soft rain and a light water trickle. VFX: none. 2.5–5.0s: Shot: same close-up, slightly wider. Action: the boat returns to its starting point as one larger raindrop nudges it around again. Camera: settle into a gentle static hold. SFX: one soft plip from the raindrop. VFX: none. Silent visual gag; no speech or narration.",
-    acting_beat: "A visual gag builds through a simple repeated motion.",
-    blocking: "The paper boat remains within the puddle and returns to the same curb-side position.",
-    shot_size: "Low close-up",
-    camera_movement: "Gentle lateral track with the paper boat, then settle into a static close-up at its starting point.",
-    eye_line_action: "No visible character; direct attention to the boat's circular path.",
-    continuity_in: "The paper boat rests in the puddle as rain begins.",
-    continuity_out: "The boat returns to its starting point as the puddle continues to ripple.",
-    source_basis: "Illustrative silent visual scene used only to show the JSON fields.",
-    risk_flags: []
-  }]
-}, null, 2);
+/** Included inside every copied episode JSON, so generation does not depend on chat history. */
+export const EPISODE_PROMPT_GUIDANCE = {
+  scene_duration: "Choose exactly 5, 10 or 15 seconds per scene according to complete action, speech and reaction. The editable skeleton's 15s values are placeholders, not a required duration. After choosing durations, recalculate start_sec/end_sec consecutively from the episode timeline start; end_sec-start_sec must equal duration_sec. Dialogue and event times are scene-relative.",
+  natural_timing: "Use irregular, scene-motivated timing, not equal divisions or a preset 2.5s/3s grid. Vary beat lengths and count with action, dialogue, comic setup/payoff and emotional reactions; do not randomize timestamps arbitrarily. A single continuous shot may span the entire 5s/10s/15s clip. Motion may begin immediately; no mandatory opening hold, periodic cut/reframe or maximum shot length. Use exact event times only when synchronization matters. If time ranges are used, make them follow the real events, remain within duration_sec and preserve meaningful progression through the end; a range boundary is not automatically a cut. Do not copy the same timing pattern across scenes.",
+  visual_variety: IMAGE_SCENE_VARIETY_GUIDANCE,
+  episode_locations: EPISODE_LOCATION_BIBLE_GUIDANCE,
+  scene_image_prompt: "Describe one finished initial frame at 0s: canonical names, visible action/expression/blocking, composition, required props, lighting and selected project style/aspect ratio. No collage/contact sheet. With character references, do not describe concrete age or facial traits; expressions and gaze are allowed. Preserve general reference-binding rules. Without an image, follow canonical profiles without invention.",
+  character_image_prompt: "For creating the character reference itself only: English base character appearance; the app appends the 1:1 front/back/portrait sheet. Once this reference is attached to a scene, do not restate concrete age/facial traits in scene prompts.",
+  location_image_prompt: "English base environment only: specify spatial zones, center landmark, doors/windows on named walls and connections to other places; preserve supplied geography. The app appends the 1:1 north/east/south/west location sheet. No scene-specific action or people.",
+  video_prompt: "Write a precise, shootable English prompt: scene duration, causal action and visible reaction, feasible camera plan, action-synced SFX and necessary VFX, prop handling and ending state. Use natural timing, either one continuous shot or motivated variable-length beats. Preserve all required camera movements and effects. Keep exact spoken words only in dialogue_segments; do not repeat their timeline in video_prompt because the API adds it separately. Keep reference rules, genre/style and other static context out of scene-specific prose when the API adds them separately; never copy this entire guidance/menu into video_prompt.",
+  action_and_visibility: "State who does what, to which object/person, what becomes perceptible, and the resulting reaction. Important actions must be visible in the chosen framing. If an insert excludes a character/object needed for the next action, specify a feasible reframe or motivated cut before that action is shown. Do not invent action to decorate the scene.",
+  camera_precision: "Choose a camera plan that serves the scene; use camera_combo_guidance as a menu, never a checklist. Specify actual start framing, path/direction/speed, tracked subject, focus target and end framing. Choose one concrete target, not 'prop or face' or 'specified framing'. Keep camera_movement and video_prompt consistent. Preserve established geography/eyelines and dialogue axis; do not combine opposing movements or force a change at a time interval. Static framing is allowed when motivated.",
+  prop_continuity: "Use blocking and continuity_in/out to identify owners, hand/contact/transfer when relevant, prop position/state and the exact ending state. Objects do not change owner or position without visible causal action. Carry knowledge, emotion, location and time into the next scene. Copy story-critical prop/end-state constraints into video_prompt, not only metadata.",
+  sound_and_vfx: "State continuous ambience once. Sync each necessary SFX/VFX to its visible trigger, with event time, duration/fade and placement where needed. Preserve explicitly required VFX; never blanket-replace them with none. If no effect is required, say none once. Effects must fit the selected world/rendering and keep essential acting/props readable. No invented speech, laugh track, comic stings, score, UI or decorative effects.",
+  reference_rules: VIDEO_REFERENCE_RULES,
+  reference_usage: "The API maps actual uploaded images in order. Use canonical names in scene prose; never invent Image numbers, attachments or characters. With attached character images, concrete ages/facial features are forbidden, while the general REFERENCE RULES above must remain. Do not copy reference-sheet pose/background into scenes. Respect location landmarks/materials and the initial scene state.",
+  genre_and_performance: "Follow the project genre/tone and source, not the sample scene. Funny: readable setup, surprise and reaction with a motivated comic pause; do not force a joke into every beat. Drama: intent, subtext, listening and believable emotional progression. Family: natural relationships and practical shared actions; do not force warmth or reconciliation. Genres may mix; choose the rhythm that fits this scene. Describe observable acting rather than vague emotional labels alone.",
+  dialogue: "Dialogue is optional: visual comedy, action-led and intentionally silent scenes need no speech or filler. For spoken scenes, count total spoken words across the entire scene and divide by scene duration, never by individual cue duration. The scene-level target is at most 3 words per second; 10/20/30 words for 5/10/15 seconds are advisory lower targets only. Word counts and scene-level speaking rate are warnings only, never grounds for rejecting JSON or fail/needs_changes. For dialogue_led, silence limits are mandatory: EACH continuous gap must be <=3s, and TOTAL silence must be <=4s per 10s scene or <=5s per 15s scene. Count leading, inter-cue and trailing gaps using the union of valid scene-relative cue intervals; exceeding either limit rejects import. Across adjacent dialogue_led scenes, previous trailing silence + any timeline gap + next leading silence must also be <=3s; visual_led/intentional silence breaks this check. Cue start_sec/end_sec are relative to the scene, not the episode timeline. Missing or invalid cues cannot establish speech coverage. visual_led and intentionally silent scenes are exempt from silence checks; mark intentional silence as dialogue_mode visual_led with empty dialogue fields. Keep scene-relative cues when speech exists, allocating turns naturally without mandatory speech density. Exact utterances and speaker names belong in dialogue_segments. Silent scenes use empty dialogue fields and voiceover_target_sec=0.",
+  prompt_budget: "The final API prompt, including appended dialogue, references, execution and project style, must remain below 5000 characters. Keep sufficient scene detail and leave room for appended context. Remove genuine duplicate instructions, not necessary action/camera/VFX descriptions; no arbitrary short target and no mid-sentence truncation. If it cannot fit without loss, report the conflict for editing instead of silently dropping content.",
+  final_check: "Before returning JSON, check: action visible in frame; one unambiguous camera/focus plan; no contradictory movement; causal prop ownership; precise end state; one authoritative dialogue timeline; calculate total spoken words divided by scene duration; word counts and scene-level rate only warn; dialogue_led continuous gaps <=3s and total silence <=4s/10s or <=5s/15s are mandatory; visual_led/silent scenes are exempt; allow silent visual comedy; effects retained; reference rules intact; no concrete age/facial descriptions with references; no fixed time grid/forced opening hold. Replace all instructional placeholders with source-grounded content, preserve canonical names and IDs, and return valid scene-script.v1 JSON.",
+};
+
+// The new-project page and episode modal use the same instruction-only skeleton.
+// Function declarations are hoisted; shared guidance above is initialized first.
+export const AI_DRAMA_JSON_TEMPLATE = createEpisodeScriptTemplate("A01", 1, 1);
 
 /** Build an editable scene-script.v1 skeleton for one existing project episode. */
-export function createEpisodeScriptTemplate(chunkId: string, sceneStart: number, sceneEnd: number, timelineStartSec = 0) {
+export function createEpisodeScriptTemplate(chunkId: string, sceneStart: number, sceneEnd: number, timelineStartSec = 0, projectContext: {
+  contentGenre?: string; secondaryGenres?: string[]; visualStyle?: string; imageStyle?: string; language?: string;
+  existing_locations?: Array<{ name: string; description: string }>;
+} = {}) {
   const normalizedChunkId = chunkId.trim().toUpperCase();
-  const videoBeat = (start: string, end: string, purpose: string, opening = false) =>
-    `${start}–${end}s: Shot: [shot size and angle]. Action: ${opening ? "Preserve the exact opening image and all visible character positions for 0.0–0.5s, then " : ""}[${purpose}]. Camera: [execute the single primary combo named in camera_movement; specify path/speed or motivated cut and reframe without breaking screen direction]. SFX: [one timed diegetic sound cue, or none beyond established ambience]. VFX: [none unless an explicit story event requires one].`;
-  const openingVideoPrompt = [
-    videoBeat("0.0", "3.0", "show the episode hook immediately, then its first reaction", true),
-    videoBeat("3.0", "6.0", "advance the hook through a clue, response, or obstacle"),
-    videoBeat("6.0", "9.0", "show the next cause-and-effect action and reaction"),
-    videoBeat("9.0", "12.0", "escalate the stakes with a visible change"),
-    videoBeat("12.0", "15.0", "end on a consequential turn that motivates the next beat"),
-    "Use one named primary camera combo from camera_combo_guidance for the entire scene; a secondary move is optional only if the story beat changes. Keep exact dialogue only in dialogue_segments. Add on-camera speaker cues here only for actual non-empty dialogue segments; when dialogue_segments is empty, show the scene silently with no speech or narration. Never put instructions or placeholders in dialogue fields. State continuous ambience once. No unsupported sounds or props.",
-  ].join(" ");
-  const ongoingVideoPrompt = [
-    videoBeat("0.0", "3.0", "continue directly from the previous scene and preserve its established state", true),
-    videoBeat("3.0", "6.0", "advance the cause-and-effect action and show reactions"),
-    videoBeat("6.0", "9.0", "reveal information or complicate the current goal"),
-    videoBeat("9.0", "12.0", "escalate toward the scene turn"),
-    videoBeat("12.0", "15.0", "end with a change that motivates the next scene"),
-    "Use one named primary camera combo from camera_combo_guidance for the entire scene; a secondary move is optional only if the story beat changes. Keep exact dialogue only in dialogue_segments. Add on-camera speaker cues here only for actual non-empty dialogue segments; when dialogue_segments is empty, show the scene silently with no speech or narration. Never put instructions or placeholders in dialogue fields. State continuous ambience once. No unsupported sounds or props.",
-  ].join(" ");
-  const endingVideoPrompt = [
-    videoBeat("0.0", "3.0", "continue directly from the previous scene and preserve its established state", true),
-    videoBeat("3.0", "6.0", "advance the immediate consequence"),
-    videoBeat("6.0", "9.0", "reveal or complicate the central question"),
-    videoBeat("9.0", "12.0", "build toward the episode's end hook"),
-    videoBeat("12.0", "15.0", "show an earned discovery or consequence that leads directly into the next episode"),
-    "Use one named primary camera combo from camera_combo_guidance for the entire scene; a secondary move is optional only if the story beat changes. Keep exact dialogue only in dialogue_segments. Add on-camera speaker cues here only for actual non-empty dialogue segments; when dialogue_segments is empty, show the scene silently with no speech or narration. Never put instructions or placeholders in dialogue fields. State continuous ambience once. No unsupported sounds or props.",
-  ].join(" ");
+  const naturalVideoPrompt = (purpose: string) =>
+    `DURATION: [actual 5/10/15s]. ACTION: [${purpose}; who acts on what, what becomes visible, then the observable reaction]. TIMING: [natural irregular event timing driven by this scene; no equal grid or mandatory 0.5s hold; use timestamps only when needed]. CAMERA: [start shot/angle, feasible path/speed, one precise focus target and ending composition; keep each important action visible; continuous shot allowed]. SFX: [sync cues to actual contact/trigger; ambience once]. VFX: [keep required effect, trigger/time/duration/fade/placement; none once if absent]. PROP/END STATE: [ownership/handling and exact ending positions/state for the next scene]. Follow prompt_guidance; the API adds dialogue, references, execution and project style separately.`;
+  const openingVideoPrompt = naturalVideoPrompt("show the episode hook and its consequence");
+  const ongoingVideoPrompt = naturalVideoPrompt("continue the previous state, advance the goal and show the consequence");
+  const endingVideoPrompt = naturalVideoPrompt("show an earned turn/consequence leading into the next episode");
+  const singleSceneVideoPrompt = naturalVideoPrompt("open with a source-grounded hook, develop its consequence and end on an earned turn leading into the next episode");
   const scenes = Array.from({ length: Math.max(1, sceneEnd - sceneStart + 1) }, (_, index) => {
     const sceneNumber = sceneStart + index;
     const timelineStart = timelineStartSec + index * 15;
@@ -177,15 +132,17 @@ export function createEpisodeScriptTemplate(chunkId: string, sceneStart: number,
       image_keyword: "[Từ khóa hình ảnh chính]",
       video_keyword: "[Từ khóa hành động/chuyển động chính]",
       image_prompt: "[English: describe exactly ONE finished 0-second opening frame; use canonical character names, frame-specific action/expression/blocking, shot size/angle, foreground/midground/background, required props, project style, and selected aspect ratio. Let separate Character/Location Bible references define stable appearance and set design. Never request a reference sheet, grid, collage, or multiple moments here.]",
-      video_prompt: index === 0
+      video_prompt: sceneStart === sceneEnd
+        ? singleSceneVideoPrompt
+        : index === 0
         ? openingVideoPrompt
         : index === sceneEnd - sceneStart
           ? endingVideoPrompt
           : ongoingVideoPrompt,
-      acting_beat: "[Biểu cảm và chuyển biến cảm xúc của từng nhân vật]",
+      acting_beat: "[Observable acting/reaction and emotional progression grounded in this scene; no invented performance or appearance details]",
       blocking: "[Vị trí nhân vật, hướng nhìn, chuyển động và quyền sở hữu đạo cụ]",
       shot_size: "[Cỡ cảnh]",
-      camera_movement: "[One named primary combo from camera_combo_guidance plus actual start framing, camera path/direction/speed, subject tracking, and end framing]",
+      camera_movement: "[Choose a motivated plan from camera_combo_guidance; give actual start framing, path/direction/speed, tracked subject, one concrete focus target and end framing; static or continuous shot allowed; no periodic changes]",
       eye_line_action: "[Hướng nhìn và thời điểm đổi hướng nhìn]",
       continuity_in: "[Trạng thái nối tiếp từ cảnh trước: nhân vật, địa điểm, cảm xúc và đạo cụ]",
       continuity_out: "[Trạng thái để cảnh sau tiếp tục tự nhiên]",
@@ -198,13 +155,8 @@ export function createEpisodeScriptTemplate(chunkId: string, sceneStart: number,
     schema: "scene-script.v1",
     chunk_id: normalizedChunkId,
     episode_title: "[Tên tập ngắn, gợi tò mò và gắn với nội dung thật]",
-    prompt_guidance: {
-      scene_image_prompt: "Exactly one finished opening frame at 0 seconds. Stable appearance and location layout belong in the separate bibles, not repeated as a contact sheet.",
-      character_image_prompt: "English base character appearance only; the app appends the 1:1 front/back/portrait reference sheet.",
-      location_image_prompt: "English base environment only; the app appends the 1:1 north/east/south/west reference sheet.",
-      video_prompt: "Select ONE primary named camera combo that fits the story beat and describe its path in camera_movement. Preserve the opening frame for 0.5s and follow the duration-specific grid: 5s = 0–2.5/2.5–5; 10s = 0–2.5/2.5–5/5–7.5/7.5–10; 15s = 0–3/3–6/6–9/9–12/12–15. Every beat names shot, action/reaction, camera, SFX, and VFX. Exact dialogue belongs only in dialogue_segments. Add speaker cues only for actual lines; if dialogue_segments is empty, do not add speech or narration.",
-    dialogue: "Dialogue is optional. For speech, write the lines first, split one cue per actual speaker turn, and estimate start_sec/end_sec independently from read units, delivery_pace, punctuation, and motivated pauses. Do not reuse equal durations for different-length lines, force minimum counts, or add filler. Keep cues within duration_sec and synchronized with video_prompt. For a silent or visual_led scene, use dialogue_mode=visual_led, dialogue_or_voiceover=\"\", and dialogue_segments=[]. Never put instructions, placeholders, or narration in dialogue fields.",
-    },
+    project_context: { ...projectContext, timeline_start_sec: timelineStartSec },
+    prompt_guidance: EPISODE_PROMPT_GUIDANCE,
     camera_combo_guidance: AI_DRAMA_CAMERA_COMBO_GUIDANCE_LINES,
     character_bible: [],
     location_bible: [],
@@ -222,6 +174,6 @@ export function createEpisodeScriptTemplate(chunkId: string, sceneStart: number,
       open_threads: [],
       next_chunk_plan: "[Cảnh đầu tập tiếp nối trực tiếp hệ quả này]",
     },
-      scenes,
+    scenes,
   }, null, 2);
 }

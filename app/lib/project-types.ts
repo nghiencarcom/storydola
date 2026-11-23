@@ -131,8 +131,6 @@ export type DialogueSegmentAudio = {
   createdAt: string;
 };
 
-export type DialogueDeliveryPace = "measured" | "natural" | "brisk";
-
 /** One independently voiced, scene-local line of dialogue. */
 export type DialogueSegment = {
   id: string;
@@ -140,14 +138,8 @@ export type DialogueSegment = {
   speakerName?: string;
   text: string;
   startMs: number;
-  /** Scene-local cue end time; generated audio keeps its natural duration. */
+  /** Optional subtitle target end; the audio itself keeps its natural duration. */
   endMs?: number;
-  /** Intended acting pace; timing estimates use this when supplied. */
-  deliveryPace?: DialogueDeliveryPace;
-  /** Intentional pause after this line, before the next speaker/beat. */
-  pauseAfterMs?: number;
-  /** Whether overlap with the next cue is an intentional interruption. */
-  intentionalOverlap?: boolean;
   audio?: DialogueSegmentAudio;
   /** Translated line text keyed by target voice language, e.g. en or ja. */
   translations?: Record<string, string>;
@@ -205,6 +197,9 @@ export type SceneMediaJob = {
   mediaGeneration?: Partial<MediaGenerationSettings>;
   /** Exact composed video prompt sent to the provider for the active/recent job. */
   submittedPrompt?: string;
+  /** Distinguish waiting/preparing from a request that may have reached the provider. */
+  submissionTracked?: boolean;
+  providerRequestStartedAt?: string;
   /** Seedance checkpoint so a poll can resume the existing provider task. */
   seedanceTaskId?: string;
   /** Provider creation time anchors the Seedance 30-minute polling deadline. */
@@ -260,6 +255,8 @@ export type RenderState = {
   manifestPath?: string;
   outputPath?: string;
   subtitlePath?: string;
+  blenderProjectPath?: string;
+  blenderScriptPath?: string;
   sceneCount?: number;
   durationSec?: number;
   /** Render includes usable sound from TTS and/or the source video. */
@@ -287,9 +284,11 @@ export type RenderVisualEffect = "none" | "fog" | "rain" | "fire" | "fireflies" 
 export type RenderColorFilter = "None" | "Warm" | "Cool" | "Vintage" | "B&W";
 export type RenderOverlayPosition = "top-left" | "top-right" | "center" | "bottom-left" | "bottom-right";
 export type RenderTitlePosition = "top" | "center" | "bottom";
+export type RenderEngine = "ffmpeg" | "blender";
 
 /** FastEdit-compatible post-processing settings applied to the final MP4. */
 export type RenderSettings = {
+  renderer: RenderEngine;
   speed: number;
   enableRandomPanZoom: boolean;
   useRandomInterval: boolean;
@@ -326,8 +325,6 @@ export type RenderSettings = {
 export type SceneAiReview = {
   status: SceneAiReviewStatus;
   score: number;
-  /** Separate 0–100 fit score for per-line dialogue cue timing. */
-  dialogueTimingScore?: number;
   summary: string;
   issues: string[];
   checks: Record<string, SceneAiCheckStatus>;
@@ -440,6 +437,7 @@ export type ProjectCharacter = {
 
 /** A canonical location sheet, commonly a four-view environment reference. */
 export type ProjectLocation = {
+  imageGeneration?: { status: "queued" | "running" | "ready" | "failed"; jobId?: string; error?: string; mediaGeneration?: Partial<MediaGenerationSettings>; updatedAt: string };
   id: string;
   name: string;
   aliases?: string[];
@@ -589,7 +587,7 @@ export type DramaProjectPlan = {
 
 export type CreateProjectInput = Pick<StoryProject, "title" | "sourceUrl" | "sourceText" | "presetId" | "durationMinutes" | "chunkSize" | "language" | "contentGenre" | "secondaryGenres" | "storySetting" | "settingNotes" | "visualStyle" | "imageStyle" | "aspectRatio" | "mediaSource" | "voiceProvider" | "voiceId" | "voiceName" | "voiceLanguage"> & Partial<Pick<StoryProject, "scriptMode" | "scriptFormat" | "durationMode" | "durationSeconds" | "mediaGeneration">> & { deferSourceIngest?: boolean; dramaPlan?: DramaProjectPlan };
 
-export type UpdateProjectInput = Partial<Pick<StoryProject, "title" | "sourceUrl" | "sourceText" | "presetId" | "durationMinutes" | "chunkSize" | "language" | "contentGenre" | "secondaryGenres" | "storySetting" | "settingNotes" | "visualStyle" | "imageStyle" | "aspectRatio" | "mediaSource" | "mediaGeneration" | "voiceProvider" | "voiceId" | "voiceName" | "voiceLanguage" | "status" | "scriptMode" | "scriptFormat" | "durationMode" | "durationSeconds">>;
+export type UpdateProjectInput = Partial<Pick<StoryProject, "title" | "sourceUrl" | "sourceText" | "presetId" | "durationMinutes" | "chunkSize" | "language" | "contentGenre" | "secondaryGenres" | "storySetting" | "settingNotes" | "visualStyle" | "imageStyle" | "aspectRatio" | "mediaSource" | "mediaGeneration" | "voiceProvider" | "voiceId" | "voiceName" | "voiceLanguage" | "status" | "scriptMode" | "scriptFormat" | "durationMode" | "durationSeconds" | "dramaPlan">>;
 
 export type StoryAIData = {
   projects: StoryProject[];

@@ -16,6 +16,8 @@ export const FLOW_IMAGE_MODEL_OPTIONS: ImageGenerationModelOption[] = [
 export const DEFAULT_SEEDANCE_VIDEO_MODEL_ID = "seedance-2.5";
 export const DEFAULT_MUSE_VIDEO_MODEL_ID = "muse-video";
 export const DEFAULT_FLOW_VIDEO_MODEL_ID = "flow-omni-1.1-flash";
+export const MINIMAX_H3_VIDEO_MODEL_ID = "minimax-h3";
+export const WAN_3_VIDEO_MODEL_ID = "wan-3.0";
 export const FLOW_VIDEO_MODEL_OPTION: VideoGenerationModelOption = {
   id: DEFAULT_FLOW_VIDEO_MODEL_ID,
   label: "Flow Omni 1.1 Flash",
@@ -171,12 +173,19 @@ export function preferredVideoQuality(modelId: string | undefined, currentQualit
 export function videoDurationOptions(model?: VideoGenerationModelOption, quality = "") {
   if (model?.provider === "muse") return [5, 10];
   if (model?.provider === "flow") return [6, 8, 10];
-  const maximumDuration = 15;
-  const supported = model?.supportedDurationsSec?.filter((duration) => Number.isInteger(duration) && duration > 0 && duration <= maximumDuration);
+  const { min, max } = videoDurationBoundsForModel(model, quality);
+  const supported = model?.supportedDurationsSec?.filter((duration) => Number.isInteger(duration) && duration >= min && duration <= max);
   if (supported?.length) return [...new Set(supported)].sort((left, right) => left - right);
-  const minimum = Math.max(1, Math.round(model?.minDurationSec || 1));
-  const maximum = Math.min(maximumDuration, Math.max(minimum, Math.round(model?.maxDurationByQuality?.[quality] || model?.maxDurationSec || 15)));
-  return Array.from({ length: maximum - minimum + 1 }, (_, index) => minimum + index);
+  return Array.from({ length: max - min + 1 }, (_, index) => min + index);
+}
+
+export function videoDurationBoundsForModel(model?: VideoGenerationModelOption, quality = "") {
+  if (model?.provider === "muse") return { min: 5, max: 10 };
+  if (model?.provider === "flow") return { min: 6, max: 10 };
+  const min = Math.max(1, Math.round(model?.minDurationSec || 1));
+  const configuredMax = model?.maxDurationByQuality?.[quality] || model?.maxDurationSec || 15;
+  const max = Math.max(min, Math.round(configuredMax));
+  return { min, max };
 }
 
 export function normalizeVideoDuration(requested: number, model?: VideoGenerationModelOption, quality = "") {
@@ -254,8 +263,8 @@ export function resolveMediaGenerationSettings(settings?: Partial<MediaGeneratio
   const flowReferenceMode = settings?.flowReferenceMode === "frames" ? "frames" : "ingredients";
   const seedanceChatMode = settings?.seedanceChatMode === "Pro" ? "Pro" : "Fast";
   const pixverse = isPixverseVideoSettings({ videoProvider, videoModel });
-  const maxVideoDuration = videoProvider === "muse" ? 10 : videoProvider === "flow" ? 10 : 15;
-  const minVideoDuration = 1;
+  const maxVideoDuration = videoProvider === "muse" ? 10 : videoProvider === "flow" ? 10 : videoProvider === "maivideo" && videoModel === WAN_3_VIDEO_MODEL_ID ? 30 : 15;
+  const minVideoDuration = videoProvider === "maivideo" && videoModel === MINIMAX_H3_VIDEO_MODEL_ID ? 5 : videoProvider === "maivideo" && videoModel === WAN_3_VIDEO_MODEL_ID ? 2 : 1;
   const maiVideoSeedance = videoProvider === "maivideo" && isMaiVideoSeedanceModel(videoModel);
   const requiresOffPeak = videoProvider === "maivideo" && isVideoOffPeakRequired(videoModel);
   return {

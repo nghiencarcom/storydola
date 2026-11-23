@@ -1,20 +1,60 @@
-# Chạy StoryAI trên Windows bằng npm
+# Chạy StoryAI trên macOS và Windows bằng npm
 
-StoryAI chạy trực tiếp trên máy, mở giao diện trong trình duyệt tại `http://localhost:3011`. Cách này không cần Docker.
+StoryAI chạy trực tiếp trên máy và mở giao diện trong trình duyệt tại `http://localhost:3011`. Chỉ cần Node.js và chạy `npm start` trong Terminal hoặc PowerShell; không cần Docker.
 
-## Cài một lần
+## Yêu cầu
 
-Mở PowerShell và cài Node.js, Git for Windows, FFmpeg/FFprobe bằng WinGet:
+Cài Node.js 22 trở lên và Git. Cả FFmpeg và FFprobe đều cần nếu muốn render MP4.
+
+Node.js/npm phải được cài trước khi chạy `npm start`; npm không thể tự cài Node.js vì bản thân npm cần Node.js để hoạt động. Nếu Git hoặc FFmpeg/FFprobe chưa có trong `PATH`, `npm start` sẽ in hướng dẫn cài tương ứng và vẫn chạy StoryAI nếu có thể. Thiếu Git thì cập nhật tự động không hoạt động; thiếu một trong hai công cụ media thì không render MP4 được.
+
+Trên Windows, có thể cài bằng WinGet trong PowerShell:
 
 ```powershell
 winget install --id OpenJS.NodeJS.LTS --exact
 winget install --id Git.Git --exact
+```
+
+Đóng rồi mở lại PowerShell sau khi cài để nạp `PATH` mới. Nếu không cần render MP4, có thể bỏ qua bước cài FFmpeg.
+
+Nếu cần render MP4, cài FFmpeg và FFprobe bằng gói Gyan:
+
+```powershell
 winget install --id Gyan.FFmpeg --exact
 ```
 
-Đóng rồi mở lại PowerShell để nạp `PATH` mới. Máy cần có WinGet (Windows Package Manager/App Installer). Nếu chưa có WinGet, cài **App Installer** từ Microsoft Store trước. Các lệnh FFmpeg cần chạy được trong PowerShell.
+Gói này có cả `ffmpeg.exe` và `ffprobe.exe`. Đóng rồi mở lại PowerShell, sau đó xác nhận cả hai lệnh đều chạy được:
 
-Sau đó mở PowerShell tại thư mục muốn đặt StoryAI và chạy:
+```powershell
+ffmpeg -version
+ffprobe -version
+```
+
+Trên macOS, cài Node.js 22 trở lên và Git bằng bộ cài hoặc package manager bạn đang dùng. Nếu cần render MP4, cài thêm FFmpeg.
+
+Nếu đã có Homebrew, có thể cài bằng Terminal:
+
+```sh
+brew install node git
+# Chỉ cần nếu muốn render MP4:
+brew install ffmpeg
+```
+
+Homebrew cài cả lệnh `ffmpeg` và `ffprobe` trong gói này.
+
+Nếu chưa dùng Homebrew, tải Node.js từ [nodejs.org](https://nodejs.org/en/download/) và Git từ [git-scm.com](https://git-scm.com/downloads/). Có thể cài Homebrew tại [brew.sh](https://brew.sh/).
+
+Kiểm tra cài đặt trước khi clone:
+
+```sh
+node --version
+npm --version
+git --version
+```
+
+Node.js phải là phiên bản 22 trở lên. Nếu dùng render MP4, cả `ffmpeg -version` và `ffprobe -version` đều phải chạy thành công.
+
+Mở Terminal hoặc PowerShell tại thư mục muốn đặt StoryAI và chạy:
 
 ```powershell
 git clone https://github.com/nghiencarcom/storydola.git StoryAI
@@ -22,13 +62,58 @@ cd StoryAI
 npm start
 ```
 
-Lần chạy đầu sẽ tự cài thư viện npm, build ứng dụng, tạo file `.env` cùng khóa mã hóa riêng cho máy, rồi mở trình duyệt. Người dùng đăng nhập bằng tài khoản MaiVideo.
+Lần chạy đầu tự cài thư viện npm, build ứng dụng, tạo `.env` cùng khóa mã hóa riêng cho máy, rồi mở trình duyệt. Người dùng đăng nhập bằng tài khoản MaiVideo.
 
 ## Mở ứng dụng và cập nhật
 
-Mỗi lần muốn mở StoryAI, vào thư mục `StoryAI` trong PowerShell và chạy `npm start`. Với bản clone sạch trên nhánh `main`, lệnh này kiểm tra và tải mã mới từ GitHub, cài lại thư viện nếu cần, build khi mã nguồn thay đổi rồi khởi động ứng dụng. Cần có Internet để kiểm tra bản cập nhật.
+Mỗi lần muốn mở StoryAI, vào thư mục `StoryAI` trong Terminal hoặc PowerShell và chạy `npm start`. Với bản clone sạch trên nhánh `main`, lệnh này kiểm tra và tải mã mới từ GitHub, cài lại thư viện nếu cần, build khi mã nguồn thay đổi rồi khởi động ứng dụng. Cần có Internet để kiểm tra bản cập nhật.
 
 Giữ cửa sổ Terminal mở trong lúc sử dụng. Nhấn `Ctrl+C` để dừng ứng dụng. Nếu đã sửa mã nguồn trực tiếp, launcher sẽ bỏ qua cập nhật tự động để giữ các chỉnh sửa đó.
+
+Khi maintainer đẩy commit mới lên nhánh `main`, bản clone sạch sẽ nhận mã đó ở lần chạy `npm start` tiếp theo.
+
+## Khi gặp lỗi
+
+Giữ nguyên nội dung lỗi trong Terminal. StoryAI cũng ghi log tại `logs/storyai-supervisor.log`; dòng `Runtime` có phiên bản StoryAI, Node.js và hệ điều hành để tiện chẩn đoán. Khi báo lỗi trên [GitHub Issues](https://github.com/nghiencarcom/storydola/issues/new/choose), gửi hệ điều hành, các bước tái hiện, thông báo lỗi và phần log liên quan.
+
+Không gửi file `.env`, thư mục `data/`, API key, token đăng nhập hoặc log chưa rà soát. Hãy xóa thông tin cá nhân và thông tin xác thực khỏi log trước khi đăng công khai.
+
+## Kết nối Codex, Claude Code và Antigravity
+
+StoryAI cung cấp MCP server chạy local qua `stdio`. Coding agent dùng CLI/tài khoản đã đăng nhập của chính nó để viết và điều phối; StoryAI vẫn lưu project và render trên máy. Tạo ảnh/video theo provider đã cấu hình. OmniVoice TTS gọi MaiVideo Public API bằng API key đã lưu trong **Cài đặt**; key được giữ trong StoryAI và không được gửi vào prompt hay trả về cho agent. TTS dùng `POST /api/v1/tts`, còn danh sách voice lấy từ `GET /api/v1/voices` theo [tài liệu API MaiVideo](https://maivideo.top/docs).
+
+1. Khởi động StoryAI, để ứng dụng chạy trong lúc agent làm việc, rồi đăng nhập MaiVideo trong trình duyệt. Cấu hình API/provider tạo media trong **Cài đặt** như bình thường.
+2. Mở **Cài đặt → Kết nối coding agent qua MCP**, chọn agent rồi nhấn **Kết nối**. StoryAI tự tạo token khi cần và cài cấu hình cho Codex, Claude Code hoặc Antigravity. Nếu file cấu hình đã có, StoryAI sao lưu file trước khi cập nhật.
+3. Tải lại MCP trong agent hoặc khởi động lại agent. Khi cần, mở **Cấu hình thủ công và token MCP** để sao chép cấu hình thay vì cài tự động.
+
+StoryAI ghi cấu hình user vào `~/.codex/config.toml` cho Codex, `~/.claude.json` cho Claude Code và `~/.gemini/config/mcp_config.json` cho Antigravity. Các MCP server khác trong file được giữ lại. Antigravity có thể tải lại cấu hình từ **Settings → Customizations → Installed MCP Servers**.
+
+Sau khi kết nối, có thể yêu cầu agent **“Dùng StoryAI MCP, tự viết kịch bản nguồn AI Drama từ ý tưởng sau; tạo project và viết/import JSON từng tập theo đúng mẫu StoryAI. Làm lần lượt từng tập, nối continuity; chưa tạo ảnh, voice hoặc render.”** Agent dùng chính model/tài khoản đã đăng nhập của Codex, Claude Code hoặc Antigravity để viết nội dung; người dùng không cần cung cấp API key viết kịch bản. StoryAI lưu bible, synopsis và outline làm kịch bản nguồn, rồi `storyai_get_episode_script_context` cung cấp canon, scene range, continuity và JSON mẫu cho từng chunk. Agent tự viết rồi gọi `storyai_import_episode_script` một tập `scene-script.v1` mỗi lần.
+
+Ví dụ prompt đầy đủ:
+
+> Dùng StoryAI MCP. Từ ý tưởng [mô tả ý tưởng], tự phát triển kịch bản nguồn AI Drama bằng tiếng Việt: logline, synopsis có kết thúc, bible nhân vật/bối cảnh với tên canonical, continuity rules và outline đủ số tập theo project. Tạo project AI Drama thời lượng 10 phút, 20 cảnh mỗi tập. Sau đó lấy context từng tập, tự viết đúng số scene ID và schema `scene-script.v1`, nối continuity rồi import lần lượt. Chỉ viết và nhập kịch bản; chưa tạo ảnh/video, voice/TTS hoặc render.
+
+Nếu đã có project, yêu cầu agent lấy project bằng MCP rồi viết tiếp từ chunk còn thiếu. `storyai_get_episode_script_context` trả về range và số cảnh chính xác; mỗi tập phải có các ID đó, timeline liên tục toàn series, thời lượng cảnh AI Drama 5/10/15 giây, `location_name` và tên nhân vật canonical. JSON không chứa voice ID, model, provider hay API key. Lỗi validator khi import được trả thẳng cho agent để sửa rồi nhập lại.
+
+Tạo ảnh/video vẫn gọi provider đã cấu hình trong StoryAI/MaiVideo khi người dùng yêu cầu; TTS vẫn đi qua OmniVoice MaiVideo. Việc agent viết kịch bản nguồn và JSON không gọi API viết kịch bản do StoryAI cấu hình.
+
+Xếp job tạo ảnh/video sẽ gọi provider đã chọn và có thể phát sinh phí tài khoản MaiVideo/Seedance. MCP token chỉ truy cập project của tài khoản đã đăng nhập, cho phép đọc/cập nhật/import/tạo media/render và không cho phép xóa project. StoryAI mã hóa bản lưu token agent và phiên MaiVideo trong `data/` bằng `STORYAI_CREDENTIALS_ENCRYPTION_KEY` hoặc `SEEDANCE_CREDENTIALS_ENCRYPTION_KEY`; mỗi agent cũng lưu token trong file cấu hình local để kết nối.
+
+## Dựng hoạt hình bằng Blender local
+
+StoryAI có chế độ render hoạt hình bằng Blender theo workflow scene Python của [video-studio-kit](https://github.com/owlinthebarnai/video-studio-kit), cùng tinh thần render local của 1VideoTool. Cài Blender 4.2 trở lên. StoryAI tự dò Blender trong `~/Applications/Blender.app`, `/Applications/Blender.app` hoặc `PATH`; nếu cài ở vị trí khác, đặt `STORYAI_BLENDER_PATH` trỏ tới executable Blender.
+
+1. Mở project và yêu cầu Codex, Claude Code hoặc Antigravity đọc project/kịch bản cảnh, rồi dựng một cảnh Blender liên tục giữ nhận diện nhân vật, bối cảnh và các nhịp thời gian.
+2. Agent lưu script `bpy` tại `data/outputs/<project-slug>/blender/scene.py`. StoryAI cung cấp đường dẫn script này qua MCP; script đọc JSON project/cảnh và tham số render do StoryAI truyền vào.
+3. Chọn **Blender · dựng hoạt cảnh 3D local** ở phần render của project rồi nhấn render. Qua MCP, gọi `storyai_render_project` với `settings.renderer="blender"`; tool trả về ngay khi render bắt đầu. Sau đó gọi `storyai_wait_for_render` lặp lại đến khi trạng thái là `completed` hoặc `failed`.
+4. StoryAI chạy Blender trên máy và lưu MP4 cùng file `.blend` có thể mở để sửa tiếp trong thư mục output của project.
+
+Agent nên dựng và kiểm tra vài still đại diện các đoạn đầu/giữa/cuối bằng Blender trước khi render toàn bộ, theo quy trình của video-studio-kit. StoryAI không tự viết scene Blender thay agent; coding agent phải tạo `scene.py` trước khi gọi render. Chế độ Blender hiện xuất hình ảnh/hoạt cảnh local nhưng chưa ghép tiếng TTS hoặc âm thanh gốc. Tạo voice vẫn dùng OmniVoice MaiVideo như các chế độ khác.
+
+- [Codex MCP](https://developers.openai.com/codex/mcp)
+- [Claude Code MCP](https://code.claude.com/docs/en/mcp)
+- [Antigravity MCP](https://developers.google.com/knowledge/mcp)
 
 ## Dữ liệu và cấu hình
 
@@ -36,8 +121,8 @@ Giữ cửa sổ Terminal mở trong lúc sử dụng. Nhấn `Ctrl+C` để d�
 - File `.env` và thư mục `data/` không bị ghi đè khi cập nhật. Không xóa hoặc đổi `SEEDANCE_CREDENTIALS_ENCRYPTION_KEY` sau khi đã lưu API key.
 - Sao lưu cả `data/` và `.env`. Khi chuyển sang máy khác, chép chúng vào thư mục StoryAI mới để khôi phục dữ liệu và giữ nguyên khóa mã hóa.
 - Ảnh chọn từ MaiVideo Media Library được tải về thư mục `data/` local; thư viện gốc vẫn thuộc tài khoản MaiVideo.
-- Tính năng render MP4 cần FFmpeg và FFprobe trong `PATH`. Các tích hợp HTMLVideo và OmniVoice mặc định tìm dịch vụ local ở cổng 3000 và 8000.
+- Tính năng render MP4 cần FFmpeg và FFprobe trong `PATH`. Tích hợp HTMLVideo mặc định tìm dịch vụ local ở cổng 3000; OmniVoice TTS dùng MaiVideo Public API và API key trong Cài đặt.
 
 ## Tải mã nguồn ZIP
 
-Có thể tải **Source code (zip)** từ [GitHub Releases](https://github.com/nghiencarcom/storydola/releases). Giải nén, cài thư viện bằng `npm ci`, rồi chạy `npm start`. Bản ZIP không có metadata Git nên không tự tải cập nhật; dùng `git clone` ở hướng dẫn trên để nhận cập nhật tự động.
+Có thể tải **Source code (zip)** từ [GitHub Releases](https://github.com/nghiencarcom/storydola/releases). Giải nén rồi chạy `npm start`. Bản ZIP không có metadata Git nên không tự tải cập nhật; dùng `git clone` ở hướng dẫn trên để nhận cập nhật tự động.

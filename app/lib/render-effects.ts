@@ -1,6 +1,7 @@
 import type { RenderColorFilter, RenderSettings, RenderVisualEffect } from "./project-types";
 
 export const DEFAULT_RENDER_SETTINGS: RenderSettings = {
+  renderer: "ffmpeg",
   // Keep StoryAI projects at normal playback speed unless a user changes it.
   speed: 1.0,
   enableRandomPanZoom: true,
@@ -64,6 +65,7 @@ export function normalizeRenderSettings(input?: Partial<RenderSettings> | null):
     ? null
     : Math.max(0, Math.min(86_400, finite(rawTrimEndValue, 0)));
   return {
+    renderer: oneOf(raw.renderer, ["ffmpeg", "blender"] as const, DEFAULT_RENDER_SETTINGS.renderer),
     speed: Math.max(0.5, Math.min(3, finite(raw.speed, DEFAULT_RENDER_SETTINGS.speed))),
     enableRandomPanZoom: bool(raw.enableRandomPanZoom, DEFAULT_RENDER_SETTINGS.enableRandomPanZoom),
     useRandomInterval: bool(raw.useRandomInterval, DEFAULT_RENDER_SETTINGS.useRandomInterval),

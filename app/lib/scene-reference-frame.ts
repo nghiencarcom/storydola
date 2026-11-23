@@ -5,6 +5,7 @@ import { resolveMediaGenerationSettings } from "./media-generation-settings";
 import { generateMaiVideoImageForScene } from "./media-provider";
 import { previousSceneContinuityReference, readProjectScenes, sceneReferenceImage, type StoredScene } from "./scene-store";
 import { saveGeneratedSceneReferenceImage } from "./scene-media-output";
+import { dataPath } from "./data-directory";
 
 type SceneRecord = StoredScene;
 
@@ -36,7 +37,7 @@ async function referenceFileIsAvailable(projectSlug: string, reference: Record<s
   const localPath = typeof reference.localPath === "string" ? reference.localPath.trim() : "";
   if (!localPath) return false;
   const safeSlug = projectSlug.trim().replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 100) || "project";
-  const root = path.resolve(process.cwd(), "data", "media", safeSlug);
+  const root = dataPath("media", safeSlug);
   const imagePath = path.resolve(process.cwd(), localPath);
   if (!imagePath.startsWith(`${root}${path.sep}`)) return false;
   try {

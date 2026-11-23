@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { renderFileResponse, type RenderFileKind } from "../../../../../../../lib/render-file-response";
 import { readData } from "../../../../../../../lib/server-store";
 import { FALLBACK_VIDEO_LANGUAGES } from "../../../../../../../lib/omnivoice";
+import { dataPath } from "../../../../../../../lib/data-directory";
 
 export const runtime = "nodejs";
 
@@ -22,7 +23,7 @@ export async function GET(request: Request, context: { params: Promise<{ slug: s
   const localPath = kind === "video" ? render?.outputPath : kind === "subtitle" ? render?.subtitlePath : render?.manifestPath;
   return renderFileResponse(request, {
     localPath,
-    outputRoot: path.resolve(process.cwd(), "data", "outputs", project.slug, "episodes", chunk.id),
+    outputRoot: dataPath("outputs", project.slug, "episodes", chunk.id),
     kind,
     filenameBase: `${project.slug}-tap-${String(chunkIndex + 1).padStart(2, "0")}${language ? `-${language.toLowerCase()}` : ""}`,
     missingMessage: "Tập chưa có file render tương ứng.",

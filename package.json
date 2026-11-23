@@ -3,17 +3,22 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 3011",
-    "build": "next build",
+    "dev": "PORT=${PORT:-3012} next dev -p ${PORT:-3012}",
+    "build": "next build --webpack",
     "start": "node scripts/start-storyai.js",
-    "start:server": "node scripts/start-next-server.js",
-    "start:supervised": "node scripts/start-storyai.js",
+    "start:server": "PORT=${PORT:-3012} node scripts/start-next-server.js",
+    "start:supervised": "PORT=${PORT:-3012} ./scripts/start-supervised.sh",
+    "mcp": "node scripts/storyai-mcp.mjs",
     "lint": "next lint"
   },
   "dependencies": {
+    "@fal-ai/client": "^1.11.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "next": "16.2.12",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "sharp": "^0.35.5",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "20.19.43",

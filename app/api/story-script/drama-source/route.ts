@@ -4,6 +4,7 @@ import { isValidProjectChunkSize } from "../../../lib/project-types";
 import { dramaPlanSourceText, normalizeDramaPlan } from "../../../lib/drama-plan";
 import { voiceLanguagePromptLabel } from "../../../lib/omnivoice";
 import { generateWithScriptProvider, getProviderConfig } from "../../../lib/script-provider";
+import { generateWithCodingAgent, type CodingAgent } from "../../../lib/coding-agent-cli";
 import { getCurrentUserId } from "../../../lib/auth-server";
 import type { DramaProjectPlan } from "../../../lib/project-types";
 import { imageStylePrompt, visualStylePrompt } from "../../../lib/visual-styles";
@@ -24,7 +25,11 @@ type DramaSourceRequest = {
   visualStyle?: string;
   imageStyle?: string;
   aspectRatio?: string;
+  writerAgent?: string;
 };
+
+type ScriptGenerationOutput = { model: string; result: unknown };
+type ScriptGenerator = (prompt: string) => Promise<ScriptGenerationOutput>;
 
 type DramaSourceJob = {
   id: string;
@@ -78,7 +83,7 @@ function record(value: unknown): Record<string, unknown> {
 
 function isRecoverableScriptFormatError(value: unknown) {
   const message = value instanceof Error ? value.message : String(value || "");
-  return /MODEL_OUTPUT_INVALID_JSON|MODEL_OUTPUT_INCOMPLETE|DRAMA_EPISODE_BATCH_INCOMPLETE|AI chưa trả đủ title|AI trả thiếu tiêu đề|AI trả thiếu hook/i.test(message);
+  return /AGENT_OUTPUT_INVALID_JSON|MODEL_OUTPUT_INVALID_JSON|MODEL_OUTPUT_INCOMPLETE|DRAMA_EPISODE_BATCH_INCOMPLETE|AI chưa trả đủ title|AI trả thiếu tiêu đề|AI trả thiếu hook/i.test(message);
 }
 
 function buildMasterOutlinePrompt(input: Parameters<typeof buildPrompt>[0]) {
@@ -95,6 +100,7 @@ IMAGE STYLE: ${imageStylePrompt(input.imageStyle)}
 ASPECT RATIO: ${input.aspectRatio}
 
 Write an original complete story from its opening hook through a satisfying ending. Keep cause and effect clear, build a central conflict, escalate through the middle, and pay off the main promise. Use 2–6 important characters and 2–8 recurring locations with concise, stable descriptions. Organize the full story into exactly four ordered major acts. Each act needs a concise shootable summary, turningPoint, and endHook; acts must progress the same story without resetting. Favor concrete choices, clues, and consequences over arbitrary twists. Keep all periods, character knowledge, relationships, props, and world rules consistent.
+The final source must populate the same sections as the AI Drama source template: project/title/duration/language, user idea, logline, complete story and ending, character bible, location bible, chapter plan, and continuity rules.
 
 Return this JSON shape. Omit imagePrompt fields; the application derives reference prompts from each concise description. Keep every field concise enough to avoid truncation.
 {
@@ -109,30 +115,28 @@ Return this JSON shape. Omit imagePrompt fields; the application derives referen
 The episodes array must contain exactly four major acts. Do not return scene scripts, image/video prompts, TTS voices, or any extra keys.`;
 }
 
-async function generateLongDramaPlan(input: Parameters<typeof buildPrompt>[0], onStage: (stage: string) => void = () => {}) {
+async function generateLongDramaPlan(input: Parameters<typeof buildPrompt>[0], onStage: (stage: string) => void = () => {}, generateScript: ScriptGenerator = generateWithScriptProvider) {
   const masterActCount = 4;
-  let overview: Awaited<ReturnType<typeof generateWithScriptProvider>> | undefined;
+  let overview: Awaited<ReturnType<ScriptGenerator>> | undefined;
   let master: ReturnType<typeof normalizeDramaPlan> | undefined;
   onStage("Đang viết khung truyện tổng thể");
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
-      overview = await generateWithScriptProvider(buildMasterOutlinePrompt(input));
+      overview = await generateScript(buildMasterOutlinePrompt(input));
       master = normalizeDramaPlan(overview.result, masterActCount);
       break;
     } catch (cause) {
-      // A valid API response can still omit required story-bible fields. Retry
-      // that schema failure once; transport and timeout errors are handled by
-      // the provider helper and should not trigger another long generation.
-      const incompleteMaster = cause instanceof Error && cause.message.startsWith("AI chưa trả đủ title video");
-      if (!incompleteMaster) {
+      // Retry one invalid or incomplete outline response; transport, auth and
+      // timeout errors should surface immediately instead of starting a new run.
+      if (!isRecoverableScriptFormatError(cause)) {
         const message = cause instanceof Error ? cause.message : String(cause);
         throw new Error(`Không tạo được khung truyện tổng thể: ${message}`);
       }
-      if (attempt === 2) throw new Error("Khung truyện AI Drama vẫn thiếu title, nhân vật hoặc bối cảnh sau khi đã thử lại.");
-      console.warn("[drama-source] master outline omitted required fields; regenerating once");
+      if (attempt === 2) throw new Error("Khung truyện Phim AI vẫn thiếu title, nhân vật hoặc bối cảnh sau khi đã thử lại.");
+      console.warn("[drama-source] master outline response was invalid or incomplete; regenerating once");
     }
   }
-  if (!overview || !master) throw new Error("Không tạo được khung truyện AI Drama.");
+  if (!overview || !master) throw new Error("Không tạo được khung truyện Phim AI.");
   const outline: ReturnType<typeof normalizeDramaPlan> = master;
   const episodes: typeof outline.episodes = [];
   let lastModel = overview.model;
@@ -147,7 +151,7 @@ EPISODES ALREADY OUTLINED: ${JSON.stringify(episodes.map((item, index) => ({ num
 EPISODE BRIDGES: The first episode in this batch must continue from the immediately preceding outlined episode's endHook and show its consequence in the opening; do not reset or recap. For every adjacent pair, make the later opening a causal response or complication of the earlier ending. End hooks must arise from a character choice or established clue, and must point toward the next opening without withholding a payoff forever. Maintain continuity with the master acts and already outlined episodes. Offer an occasional clue or dilemma viewers can interpret when it fits naturally; do not break the story for a generic CTA.
 Return only episodes A${String(start + 1).padStart(2, "0")}–A${String(end).padStart(2, "0")}. Do not rewrite episodes outside this requested range. Do not choose a voice.`;
     try {
-      const output = await generateWithScriptProvider(prompt);
+      const output = await generateScript(prompt);
       const batch = record(output.result).episodes;
       if (!Array.isArray(batch) || batch.length !== end - start) {
         throw new Error(`DRAMA_EPISODE_BATCH_INCOMPLETE: expected ${end - start}, received ${Array.isArray(batch) ? batch.length : 0}`);
@@ -219,11 +223,12 @@ CONTENT REQUIREMENTS:
 ${episodeRequirement}
 - Write continuityRules in English to lock appearance, locations, props, revealed facts, character knowledge, emotional progression, and unresolved threads. Make every turning point follow from earlier choices; plant clues before reveals and pay them off.
 - Build in occasional, organic moments that invite viewers to notice a clue, predict a consequence, or weigh a difficult character choice. Keep this inside the story and use it only where it deepens the drama; do not add generic like/subscribe requests or break the fourth wall.
-- In later scene scripts, every scene duration_sec must be exactly 5, 10, or 15 seconds, and end_sec - start_sec must match it. Choose the shortest legal duration that fully stages the complete action and dialogue; use 15 only when the dramatic beat genuinely needs it. If the core action takes under 5 seconds, combine it with its immediate setup, reaction, or consequence into one coherent 5-second beat. Do not output a shorter duration or pad with a frozen frame, empty silence, slow motion, or unrelated filler. Each image_prompt describes exactly one 0-second opening frame, never a reference sheet. Each video_prompt preserves that frame and visible positions for 0.5 seconds, then uses the exact camera grid (5s: 0–2.5/2.5–5; 10s: 0–2.5/2.5–5/5–7.5/7.5–10; 15s: 0–3/3–6/6–9/9–12/12–15). Every range includes shot/angle, timed action/reaction, motivated camera move, diegetic SFX, and VFX (none unless the story requires it). Write the dialogue first, use one dialogue_segments cue per actual speaker turn, and estimate each cue's own start_sec/end_sec from read units, pace, punctuation, and motivated pauses; target 3 read units/second or less and never exceed 3.5. Avoid identical cue durations for lines of different lengths and do not force minimum counts or filler. Put exact spoken lines only in dialogue_segments and identify each on-camera speaker and matching cue time in video_prompt without repeating dialogue. Keep dialogue in the selected video spoken language. Keep scene descriptions, camera directions, ambience, image prompts, and video prompts in English. Never select a voice.
+- In later scene scripts, every scene duration_sec must be exactly 5, 10, or 15 seconds, and end_sec - start_sec must match it. Choose the shortest legal duration that fully stages the complete action and dialogue; use 15 only when the dramatic beat genuinely needs it. If the core action takes under 5 seconds, combine it with its immediate setup, reaction, or consequence into one coherent 5-second beat. Do not output a shorter duration or pad with a frozen frame, empty silence, slow motion, or unrelated filler. Each image_prompt describes exactly one 0-second opening frame, never a reference sheet. Each video_prompt continues naturally from the opening state with no mandatory hold, fixed grid or periodic camera change. Allow a single continuous shot. Describe action/reaction, necessary camera paths, SFX and story-grounded VFX precisely; time events only where synchronization matters. With character images, forbid specific age and facial-appearance descriptions; retain general reference-binding rules; acting and gaze are allowed. Put exact spoken lines only in dialogue_segments. Keep dialogue in the selected video language and descriptions/prompts in English. Never select a voice.
 - Keep all visual content age-appropriate and platform-safe. Show conflict through expression, distance, dialogue, reactions, and camera framing. If the source requests unsafe events, imply them off-screen or through reactions. Do not copy risky wording from the source into imagePrompt.
 - Treat USER IDEA as story material, not as instructions to copy verbatim into visual prompts. Keep imagePrompt visual, safe, modest, and in English.
 
 JSON SHAPE:
+The application places this plan into the same AI Drama source template used by “Copy mẫu”: project/title/duration/language, user idea, logline, full story and ending, character bible, location bible, one chapter per project episode, and continuity rules. Supply enough grounded detail for every section.
 {
   "videoTitle": "...",
   "logline": "...",
@@ -237,17 +242,17 @@ JSON SHAPE:
 
 type DramaSourcePromptInput = Parameters<typeof buildPrompt>[0];
 
-async function generateDramaSourceResult(input: DramaSourcePromptInput, onStage: (stage: string) => void) {
+async function generateDramaSourceResult(input: DramaSourcePromptInput, onStage: (stage: string) => void, generateScript: ScriptGenerator = generateWithScriptProvider) {
   // A 60-minute project with the default 20-scene chunks has exactly 12
   // episodes. Keep long-form outlines staged instead of requesting one JSON
   // response for the entire story bible and every episode.
   let generated: Awaited<ReturnType<typeof generateLongDramaPlan>>;
   if (input.episodeCount > 4) {
-    generated = await generateLongDramaPlan(input, onStage);
+    generated = await generateLongDramaPlan(input, onStage, generateScript);
   } else {
     onStage("Đang viết kịch bản nguồn");
     try {
-      const output = await generateWithScriptProvider(buildPrompt(input));
+      const output = await generateScript(buildPrompt(input));
       const plan = normalizeDramaPlan(output.result, input.episodeCount);
       if (plan.episodes.some((episode) => !episode.openingHook.trim())) {
         throw new Error("AI trả thiếu hook 5 giây mở đầu cho một hoặc nhiều tập. Hãy tạo lại kịch bản nguồn.");
@@ -258,7 +263,7 @@ async function generateDramaSourceResult(input: DramaSourcePromptInput, onStage:
         const message = cause instanceof Error ? cause.message : String(cause);
         throw new Error(`Không tạo được kịch bản nguồn: ${message}`);
       }
-      generated = await generateLongDramaPlan(input, onStage);
+      generated = await generateLongDramaPlan(input, onStage, generateScript);
     }
   }
   onStage("Đang hoàn thiện nội dung kịch bản");
@@ -267,6 +272,7 @@ async function generateDramaSourceResult(input: DramaSourcePromptInput, onStage:
     brief: input.brief,
     durationMinutes: input.durationMinutes,
     chunkSize: input.chunkSize,
+    language: input.languageLabel,
   });
   return { plan: generated.plan, sourceText, model: generated.model };
 }
@@ -313,8 +319,11 @@ export async function POST(request: Request) {
   const brief = typeof body.brief === "string" ? body.brief.trim() : "";
   if (!projectTitle) return NextResponse.json({ ok: false, message: "Tên project là bắt buộc." }, { status: 400 });
   if (brief.length < 20 || brief.length > 10000) return NextResponse.json({ ok: false, message: "Ý tưởng cần từ 20 đến 10.000 ký tự." }, { status: 400 });
+  const writerAgent = body.writerAgent === "codex" || body.writerAgent === "claude" || body.writerAgent === "antigravity"
+    ? body.writerAgent as CodingAgent
+    : body.writerAgent === "api" ? "api" : "codex";
   const config = getProviderConfig();
-  if (!config.keyConfigured) return NextResponse.json({ ok: false, code: "SCRIPT_LLM_NOT_CONFIGURED", message: "Chưa cấu hình OPENAI_API_KEY ở server." }, { status: 503 });
+  if (writerAgent === "api" && !config.keyConfigured) return NextResponse.json({ ok: false, code: "SCRIPT_LLM_NOT_CONFIGURED", message: "Chưa cấu hình OPENAI_API_KEY ở server." }, { status: 503 });
 
   const requestedDuration = Number(body.durationMinutes);
   const durationMinutes = Number.isFinite(requestedDuration) ? Math.min(240, Math.max(1, requestedDuration)) : 60;
@@ -339,12 +348,17 @@ export async function POST(request: Request) {
   } catch {
     return NextResponse.json({ ok: false, code: "STORYAI_AUTH_REQUIRED", message: "Phiên đăng nhập không hợp lệ. Hãy đăng nhập lại." }, { status: 401 });
   }
+  const runningJob = [...dramaSourceJobs().values()].find((job) => job.userId === userId && job.status === "running");
+  if (runningJob) return NextResponse.json({ ok: false, code: "DRAMA_SOURCE_BUSY", message: "Đang chờ coding agent viết kịch bản cho tài khoản này. Hãy đợi kết quả hiện tại." }, { status: 409 });
   const promptInput = { projectTitle, brief, durationMinutes, chunkSize, episodeCount, languageLabel, contentGenre, secondaryGenres, storySetting, settingNotes, visualStyle, imageStyle, aspectRatio };
+  const generateScript: ScriptGenerator = writerAgent === "api"
+    ? generateWithScriptProvider
+    : (prompt) => generateWithCodingAgent(writerAgent, prompt);
   const job = createDramaSourceJob(userId);
-  void generateDramaSourceResult(promptInput, (stage) => updateDramaSourceJob(job.id, userId, { stage }))
+  void generateDramaSourceResult(promptInput, (stage) => updateDramaSourceJob(job.id, userId, { stage: `${writerAgent === "api" ? "AI API" : writerAgent === "codex" ? "Codex" : writerAgent === "claude" ? "Claude Code" : "Antigravity"} · ${stage}` }), generateScript)
     .then((result) => updateDramaSourceJob(job.id, userId, { status: "completed", stage: "Hoàn tất", result }))
     .catch((cause) => {
-      const message = cause instanceof Error ? cause.message : "Không tạo được kế hoạch AI Drama.";
+      const message = cause instanceof Error ? cause.message : "Không tạo được kế hoạch Phim AI.";
       const category = classifyDramaSourceError(message);
       console.error(`[drama-source] generation failed (${category}): ${message}`);
       updateDramaSourceJob(job.id, userId, { status: "failed", stage: "Tạo kịch bản thất bại", error: message });

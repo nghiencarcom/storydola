@@ -1,3 +1,4 @@
+import { generateWithCodingAgent } from "../../../../lib/coding-agent-cli";
 import { NextResponse } from "next/server";
 import { generateWithScriptProvider, getProviderConfig } from "../../../../lib/script-provider";
 import { readProjectScenes } from "../../../../lib/scene-store";
@@ -113,13 +114,19 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     chunks = [chunk];
   }
 
-  const config = getProviderConfig();
-  if (!config.keyConfigured) return NextResponse.json({ message: "Chưa cấu hình Script LLM server-side để tạo gợi ý." }, { status: 503 });
+  const agent = body.agent;
+  if (agent !== undefined && agent !== "codex" && agent !== "claude" && agent !== "antigravity") {
+    return NextResponse.json({ message: "Hãy chọn coding agent hợp lệ." }, { status: 400 });
+  }
+  if (!agent && !getProviderConfig().keyConfigured) return NextResponse.json({ message: "Chưa cấu hình Script LLM server-side để tạo gợi ý." }, { status: 503 });
 
   try {
     const sceneRecords = await readProjectScenes(project) as Record<string, unknown>[];
     const briefs = await Promise.all(chunks.map((chunk) => chunkBrief(project, chunk, sceneRecords)));
-    const generated = await generateWithScriptProvider(publishingPrompt(project, target, briefs));
+    const prompt = publishingPrompt(project, target, briefs);
+    const generated = agent
+      ? await generateWithCodingAgent(agent, prompt, { promptOnlyJson: true })
+      : await generateWithScriptProvider(prompt);
     const packageSet = normalizeSet(generated.result);
     if (!packageSet) return NextResponse.json({ message: "AI trả về gói title/thumbnail chưa đủ cấu trúc. Hãy thử lại." }, { status: 502 });
     const savedSet: VideoPublishingSet = { ...packageSet, updatedAt: now(), source: "ai" };

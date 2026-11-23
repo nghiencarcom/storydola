@@ -1,3 +1,4 @@
+import { EPISODE_LOCATION_BIBLE_GUIDANCE, IMAGE_SCENE_VARIETY_GUIDANCE } from "./image-scene-guidance";
 import type { DramaProjectPlan, ProjectCharacter, ProjectLocation } from "./project-types";
 import { characterReferencePrompt, locationReferencePrompt } from "./ai-drama-reference-prompts";
 import { sanitizeDramaVisualPrompt } from "./visual-prompt-safety";
@@ -16,13 +17,13 @@ export function normalizeDramaPlan(value: unknown, expectedEpisodes: number): Dr
     const item = record(value);
     const name = line(item.name, 80);
     const description = line(item.description, 1200);
-    return { name, description, imagePrompt: characterReferencePrompt(name, sanitizeDramaVisualPrompt(line(item.imagePrompt, 3000) || description)) };
+    return { name, description, imagePrompt: characterReferencePrompt(name, sanitizeDramaVisualPrompt((typeof item.imagePrompt === "string" ? item.imagePrompt.trim() : "") || description)) };
   }).filter((item) => item.name).slice(0, 20) : [];
   const locations = Array.isArray(input.locations) ? input.locations.map((value) => {
     const item = record(value);
     const name = line(item.name, 100);
     const description = line(item.description, 1200);
-    return { name, description, imagePrompt: locationReferencePrompt(name, sanitizeDramaVisualPrompt(line(item.imagePrompt, 3000) || description)) };
+    return { name, description, imagePrompt: locationReferencePrompt(name, sanitizeDramaVisualPrompt((typeof item.imagePrompt === "string" ? item.imagePrompt.trim() : "") || description)) };
   }).filter((item) => item.name).slice(0, 30) : [];
   const episodes = Array.isArray(input.episodes) ? input.episodes.map((value) => {
     const item = record(value);
@@ -48,12 +49,13 @@ export function normalizeDramaPlan(value: unknown, expectedEpisodes: number): Dr
   };
 }
 
-export function dramaPlanSourceText(plan: DramaProjectPlan, input: { projectTitle: string; brief: string; durationMinutes: number; chunkSize: number }) {
+export function dramaPlanSourceText(plan: DramaProjectPlan, input: { projectTitle: string; brief: string; durationMinutes: number; chunkSize: number; language?: string }) {
   const totalScenes = Math.ceil((input.durationMinutes * 60) / 15);
   return [
     `PROJECT: ${input.projectTitle}`,
     `VIDEO TITLE: ${plan.videoTitle}`,
     `TARGET DURATION: ${input.durationMinutes} minutes`,
+    `VIDEO LANGUAGE: ${input.language || "Use the language selected in project settings"}`,
     `USER IDEA: ${input.brief}`,
     `LOGLINE: ${plan.logline}`,
     `FULL STORY AND ENDING: ${plan.synopsis}`,
@@ -68,7 +70,9 @@ export function dramaPlanSourceText(plan: DramaProjectPlan, input: { projectTitl
       return `A${String(index + 1).padStart(2, "0")} · ${item.title} · S${String(sceneStart).padStart(3, "0")}–S${String(sceneEnd).padStart(3, "0")}\n  ${item.summary}\n  Opening hook: ${item.openingHook}\n  Turn: ${item.turningPoint}\n  End hook: ${item.endHook}`;
     }),
     `CONTINUITY RULES: ${plan.continuityRules}`,
-    "For each scene, duration_sec must be exactly 5, 10, or 15, and end_sec - start_sec must match. Choose the shortest legal duration that stages the complete dramatic beat. If the core action takes under 5 seconds, combine it with its immediate setup, reaction, or consequence into one coherent 5-second beat; never use a shorter duration or pad with a frozen frame, empty silence, slow motion, or unrelated filler. Make the video prompt describe purposeful action throughout the full scene. Supply a precise visual image prompt, dialogue_mode (dialogue_led or visual_led), and separate timed dialogue_segments per speaker turn. Write dialogue first, split one cue per real speaker turn, then calculate each cue time independently from read units, delivery pace, punctuation, and a motivated pause; target at most 3 read units per second and never exceed 3.5. Do not enforce minimum word counts, equal cue durations, or filler. Keep cue times and speaker names synchronized with video_prompt. visual_led or intentionally silent scenes are exempt and must not receive filler dialogue. Include a compelling opening hook in the first five seconds of each episode and an earned end hook that becomes the next episode’s opening consequence. Do not select TTS voices.",
+    IMAGE_SCENE_VARIETY_GUIDANCE,
+    EPISODE_LOCATION_BIBLE_GUIDANCE,
+    "For each scene, duration_sec must be exactly 5, 10, or 15, and end_sec - start_sec must match. Choose the shortest legal duration that stages the complete dramatic beat. If the core action takes under 5 seconds, combine it with its immediate setup, reaction, or consequence into one coherent 5-second beat; never use a shorter duration or pad with a frozen frame, empty silence, slow motion, or unrelated filler. Make the video prompt describe purposeful action throughout the full scene. Supply a precise visual image prompt, dialogue_mode (dialogue_led or visual_led), and separate timed dialogue_segments per speaker. Dialogue is optional: visual comedy, action-led and intentionally silent scenes need no speech or filler. For spoken scenes, count total spoken words across the entire scene and divide by scene duration, never by individual cue duration. The scene-level target is at most 3 words per second; 10/20/30 words for 5/10/15 seconds are advisory lower targets only. Word counts and scene-level speaking rate are warnings only, never grounds for rejecting JSON or fail/needs_changes. For dialogue_led, silence limits are mandatory: EACH continuous gap must be <=3s, and TOTAL silence must be <=4s per 10s scene or <=5s per 15s scene. Count leading, inter-cue and trailing gaps using the union of valid scene-relative cue intervals; exceeding either limit rejects import. Across adjacent dialogue_led scenes, previous trailing silence + any timeline gap + next leading silence must also be <=3s; visual_led/intentional silence breaks this check. Cue start_sec/end_sec are relative to the scene, not the episode timeline. Missing or invalid cues cannot establish speech coverage. visual_led and intentionally silent scenes are exempt from silence checks; mark intentional silence as dialogue_mode visual_led with empty dialogue fields. Keep scene-relative cues when speech exists, allocating turns naturally without mandatory speech density. Split exchanges into 2–4 timed turns when the beat supports it. visual_led or intentionally silent scenes are exempt and must not receive filler dialogue. Include a compelling opening hook in the first five seconds of each episode and an earned end hook that becomes the next episode's opening consequence. Do not select TTS voices.",
   ].join("\n\n");
 }
 
@@ -133,8 +137,10 @@ export function buildDramaChunkSourceText({
     previousEpisode ? `IMMEDIATE PREVIOUS CHAPTER — CAUSAL HAND-OFF (use generated continuity context as the source of truth when available):\nTitle: ${previousEpisode.title}\nSummary: ${previousEpisode.summary.slice(0, 1400)}\nEnding hook: ${previousEpisode.endHook}\nStart this chapter with the consequence or complication of that ending. Do not recap or reset.` : "",
     `CURRENT CHAPTER A${String(chunkIndex + 1).padStart(2, "0")} · ${selectedEpisode.title}\n${selectedEpisode.summary}\nOpening hook: ${selectedEpisode.openingHook}\nTurning point: ${selectedEpisode.turningPoint}\nEnd hook: ${selectedEpisode.endHook}`,
     nextEpisode ? `NEXT CHAPTER SEED (foreshadow only where natural; do not skip this chapter's payoff):\nTitle: ${nextEpisode.title}\nSummary: ${nextEpisode.summary.slice(0, 1000)}\nOpening hook: ${nextEpisode.openingHook}` : "",
+    IMAGE_SCENE_VARIETY_GUIDANCE,
+    EPISODE_LOCATION_BIBLE_GUIDANCE,
     "DRAMA CRAFT: Connect adjacent scenes by cause and effect; carry action, location/time, props, character knowledge, and emotional state forward. Make each scene change a goal, relationship, information, stakes, or power. Keep dialogue natural, specific to the speaker, concise, and driven by subtext; remove redundant recap and exposition. End this chapter on an earned consequence that gives the next chapter a clear starting point.",
-    "DIALOGUE PACING: Mark a scene dialogue_led only when spoken exchange carries its dramatic beat; mark action/discovery/performance-led scenes visual_led. Write only the dialogue the beat needs. Split dialogue into one cue per actual speaker turn, then estimate each cue independently from its text, read units, delivery pace, punctuation, and motivated pauses. Longer lines generally need longer time windows; do not assign equal durations to different-length lines. Target 3 read units/second or less; 3.5 is the hard ceiling. Keep cues chronological, inside the scene, and in sync with each speaker cue in video_prompt. No minimum word counts, forced turns, or filler. Silent or visual_led scenes are exempt. The episode opening hook must land in its first five seconds, and the ending must create an earned hook passed into the next episode.",
+    "DIALOGUE PACING: Mark a scene dialogue_led only when spoken exchange carries its dramatic beat; mark action/discovery/performance-led scenes visual_led. Dialogue is optional: visual comedy, action-led and intentionally silent scenes need no speech or filler. For spoken scenes, count total spoken words across the entire scene and divide by scene duration, never by individual cue duration. The scene-level target is at most 3 words per second; 10/20/30 words for 5/10/15 seconds are advisory lower targets only. Word counts and scene-level speaking rate are warnings only, never grounds for rejecting JSON or fail/needs_changes. For dialogue_led, silence limits are mandatory: EACH continuous gap must be <=3s, and TOTAL silence must be <=4s per 10s scene or <=5s per 15s scene. Count leading, inter-cue and trailing gaps using the union of valid scene-relative cue intervals; exceeding either limit rejects import. Across adjacent dialogue_led scenes, previous trailing silence + any timeline gap + next leading silence must also be <=3s; visual_led/intentional silence breaks this check. Cue start_sec/end_sec are relative to the scene, not the episode timeline. Missing or invalid cues cannot establish speech coverage. visual_led and intentionally silent scenes are exempt from silence checks; mark intentional silence as dialogue_mode visual_led with empty dialogue fields. Keep scene-relative cues when speech exists, allocating turns naturally without mandatory speech density. Use 2–4 timed turns where appropriate; keep lines story-specific and leave natural reaction pauses. Silent or visual_led scenes are exempt; do not add filler. The episode opening hook must land in its first five seconds, and the ending must create an earned hook passed into the next episode.",
     `CONTINUITY RULES: ${sourceContinuityRules || plan.continuityRules}`,
   ].filter(Boolean).join("\n\n");
 }

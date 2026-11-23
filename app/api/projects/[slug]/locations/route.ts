@@ -9,6 +9,7 @@ import { readMaiVideoAuthCookie, resolveMaiVideoAuthBaseUrl } from "../../../../
 import { readProjectScenes, sceneMediaLocalPath } from "../../../../lib/scene-store";
 import { makeActivity, markRenderStale, now, readChunkOutput, readData, saveChunkOutput, updateData } from "../../../../lib/server-store";
 import { sceneReferenceLocationId } from "../../../../lib/scene-reference-assignments";
+import { dataPath, relativeDataPath } from "../../../../lib/data-directory";
 
 export const runtime = "nodejs";
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -134,7 +135,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     const media = scene?.media && typeof scene.media === "object" ? scene.media as Record<string, unknown> : {};
     const localPath = scene ? sceneMediaLocalPath(scene) : "";
     if (!scene || media.kind !== "image" || media.status !== "ready" || !localPath) return NextResponse.json({ message: "Ảnh cảnh đã chọn không còn khả dụng." }, { status: 400 });
-    const mediaRoot = path.resolve(process.cwd(), "data", "media", safeSlug(project.slug));
+    const mediaRoot = dataPath("media", safeSlug(project.slug));
     const sourcePath = path.resolve(process.cwd(), localPath);
     if (!sourcePath.startsWith(`${mediaRoot}${path.sep}`)) return NextResponse.json({ message: "Ảnh cảnh không thuộc project này." }, { status: 403 });
     try { bytes = await readFile(sourcePath); } catch { return NextResponse.json({ message: "Không đọc được ảnh cảnh đã chọn." }, { status: 404 }); }
@@ -150,7 +151,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
 
   const existingLocation = (project.locations || []).find((item) => normalizeEntityName(item.name) === normalizeEntityName(name));
   const id = existingLocation?.id || `loc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const relativePath = path.join("data", "media", safeSlug(project.slug), "locations", `${id}.${detected.extension}`);
+  const relativePath = relativeDataPath("media", safeSlug(project.slug), "locations", `${id}.${detected.extension}`);
   const absolutePath = path.join(process.cwd(), relativePath);
   await mkdir(path.dirname(absolutePath), { recursive: true });
   await writeFile(absolutePath, bytes);

@@ -4,12 +4,13 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { NextResponse } from "next/server";
 
-export type RenderFileKind = "video" | "subtitle" | "manifest";
+export type RenderFileKind = "video" | "subtitle" | "manifest" | "blend";
 
 function contentType(kind: RenderFileKind) {
   if (kind === "video") return "video/mp4";
   if (kind === "subtitle") return "application/x-subrip; charset=utf-8";
-  return "application/json; charset=utf-8";
+  if (kind === "manifest") return "application/json; charset=utf-8";
+  return "application/octet-stream";
 }
 
 function safeFilename(value: string) {
@@ -32,12 +33,12 @@ export async function renderFileResponse(request: Request, options: {
   }
 
   const download = new URL(request.url).searchParams.get("download") === "1";
-  const extension = options.kind === "video" ? "mp4" : options.kind === "subtitle" ? "srt" : "json";
+  const extension = options.kind === "video" ? "mp4" : options.kind === "subtitle" ? "srt" : options.kind === "blend" ? "blend" : "json";
   const filename = `${safeFilename(options.filenameBase)}.${extension}`;
   try {
     const details = await stat(resolvedPath);
     if (!details.isFile()) throw new Error("NOT_FILE");
-    if (options.kind !== "video") {
+    if (options.kind === "subtitle" || options.kind === "manifest") {
       const body = await readFile(resolvedPath);
       return new NextResponse(body, { headers: {
         "Content-Type": contentType(options.kind),

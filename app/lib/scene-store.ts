@@ -86,6 +86,10 @@ export function previousSceneInSameLocation(scenes: StoredScene[], scene: Stored
 export function previousSceneContinuityReference(scenes: StoredScene[], scene: StoredScene): SceneContinuityReference | undefined {
   const previous = previousSceneInSameLocation(scenes, scene);
   if (!previous) return undefined;
+  if (previous.chunkId !== scene.chunkId) return undefined;
+  const previousTime = String(previous.time_of_day ?? previous.timeOfDay ?? "").trim().toLowerCase();
+  const currentTime = String(scene.time_of_day ?? scene.timeOfDay ?? "").trim().toLowerCase();
+  if (previousTime && currentTime && previousTime !== currentTime) return undefined;
   const image = sceneReferenceImage(previous);
   if (!image || image.kind !== "image" || image.status !== "ready" || image.stale === true || typeof image.localPath !== "string" || !image.localPath.trim()) return undefined;
   const provider = typeof image.provider === "string" ? image.provider.toLowerCase() : "";

@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { dataPath } from "./data-directory";
 
-const MEDIA_ROOT = path.join(process.cwd(), "data", "media", "timelapse");
+const MEDIA_ROOT = dataPath("media", "timelapse");
 
 export type TimelapseImageMime = "image/png" | "image/jpeg" | "image/webp";
 

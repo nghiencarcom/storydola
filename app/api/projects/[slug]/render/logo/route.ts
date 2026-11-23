@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
 import { readData } from "../../../../../lib/server-store";
+import { relativeDataPath } from "../../../../../lib/data-directory";
 
 export const runtime = "nodejs";
 
@@ -35,7 +36,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   }
 
   const safeSlug = slug.replace(/[^a-z0-9-]/gi, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || "project";
-  const relativePath = path.join("data", "uploads", safeSlug, `logo-${Date.now()}.${extension}`);
+  const relativePath = relativeDataPath("uploads", safeSlug, `logo-${Date.now()}.${extension}`);
   const absolutePath = path.join(process.cwd(), relativePath);
   await mkdir(path.dirname(absolutePath), { recursive: true });
   await writeFile(absolutePath, Buffer.from(await file.arrayBuffer()));

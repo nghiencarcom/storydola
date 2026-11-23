@@ -1,27 +1,31 @@
-# StoryAI distribution
+# Install and run StoryAI
 
-## Direct Windows use with npm
+StoryAI runs on the user's computer as a local web app. It does not require Docker.
 
-Recommended for users who want to run StoryAI directly in a terminal without Docker.
+## Requirements
 
-Requirements: Node.js 22 or newer, Git for Windows, and FFmpeg/FFprobe in `PATH` for MP4 rendering.
+- Node.js 22 or newer
+- Git, for cloning and automatic updates
+- FFmpeg and FFprobe, only if you need MP4 rendering
 
-```powershell
+## Install
+
+```sh
 git clone https://github.com/nghiencarcom/storydola.git StoryAI
 cd StoryAI
 npm start
 ```
 
-`npm start` creates local `.env` and its encryption key on first run, installs dependencies if needed, builds the production app, and serves it at `http://localhost:3011`. On later starts, it fast-forwards a clean clone on `main` to the latest commit, then reinstalls dependencies or rebuilds only when required. If the source folder contains local tracked changes, the updater skips `git pull` to preserve them.
+The first run creates a local `.env` file and encryption key, installs npm dependencies, builds the production app, and opens `http://localhost:3011`. Keep the terminal open while using StoryAI. Press `Ctrl+C` to stop it.
 
-## Optional Docker distribution
+On a clean clone of the `main` branch, `npm start` checks GitHub for updates before starting. Downloaded source ZIPs do not contain Git metadata, so they do not update automatically.
 
-The public GHCR image remains available at `ghcr.io/nghiencarcom/storydola:latest`. The release asset `storyai-installer.zip` is for Docker-based installs. Users following the direct npm method should clone the repository as described above; downloading GitHub's source ZIP does not include Git metadata and therefore cannot auto-update.
+When the maintainer pushes a commit to `main`, users receive it the next time they run `npm start` from a clean clone. Keep the terminal output if an update or build fails.
 
-## Data and updates
+## Local data
 
-- Each user keeps projects, media, renders, and API credentials in local `data/` and `.env` files.
-- Git ignores those local files, so pulling source updates leaves them in place.
-- Back up `data/` and `.env` together. Keep `SEEDANCE_CREDENTIALS_ENCRYPTION_KEY` unchanged to read saved API credentials.
-- npm-based updates are checked when the user runs `npm start`; running instances do not hot-swap code in the background.
-- Docker-based installations check the image when their launcher runs.
+Projects, media, renders, and credentials stay in the local `data/` directory and `.env` file. Back them up together. Keep `SEEDANCE_CREDENTIALS_ENCRYPTION_KEY` unchanged to read saved credentials.
+
+## Troubleshooting
+
+Check the terminal output first. StoryAI also writes runtime details and server output to `logs/storyai-supervisor.log`. Include the operating system, `node --version`, the steps that caused the error, and the relevant sanitized log lines in a GitHub issue. Never attach `.env`, `data/`, API keys, or login tokens.

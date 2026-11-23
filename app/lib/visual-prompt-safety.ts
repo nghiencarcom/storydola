@@ -30,13 +30,24 @@ function promptLanguageReplacement(term: string, vietnamese: string, english: st
 
 /** Rewrite risky wording in visual prompt text; scene fields outside prompts stay unchanged. */
 export function sanitizeDramaVisualPrompt(value: string) {
-  return value
+  // Preserve explicit exclusions and ordinary non-person interactions. Rewriting
+  // "no blood" or "hit the button" changes otherwise harmless prompt semantics.
+  const preserved: string[] = [];
+  const protect = (text: string) => {
+    const index = preserved.push(text) - 1;
+    return `PROMPTSAFEPLACEHOLDER${index}END`;
+  };
+  const protectedValue = value
+    .replace(/\b(?:no|without|avoid|do not show)\s+(?:(?:graphic|physical|sexual)\s+)?(?:violence|blood|gore|nudity|weapons?)(?:\s*,\s*(?:blood|gore|nudity|weapons?))*\b/gi, protect)
+    .replace(/\b(?:hit|hits|hitting|shoot|shooting)\s+(?:(?:the|a)\s+)?(?:button|key|switch|photo|photograph|scene|film)\b/gi, protect);
+  return protectedValue
     .replace(phrasePattern(violenceActionTerms), (_match, prefix: string, term: string) => `${prefix}${promptLanguageReplacement(term, "đối đầu căng thẳng nhưng không tiếp xúc", "tense non-contact confrontation")}`)
     .replace(phrasePattern(nudityTerms), (_match, prefix: string, term: string) => `${prefix}${promptLanguageReplacement(term, "trang phục kín đáo, phù hợp bối cảnh", "fully clothed in modest, age-appropriate clothing")}`)
     .replace(phrasePattern(graphicDetailTerms), (_match, prefix: string, term: string) => `${prefix}${promptLanguageReplacement(term, "sự việc chỉ được gợi qua phản ứng nhân vật và không gian", "the event is implied through character reactions and the setting")}`)
     .replace(phrasePattern(weaponTerms), (_match, prefix: string, term: string) => `${prefix}${promptLanguageReplacement(term, "đạo cụ trung tính", "neutral prop")}`)
     .replace(/\s+([,.;:!?])/g, "$1")
     .replace(/ {2,}/g, " ")
+    .replace(/PROMPTSAFEPLACEHOLDER(\d+)END/g, (_match, index) => preserved[Number(index)])
     .trim();
 }
 

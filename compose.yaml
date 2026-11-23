@@ -12,7 +12,6 @@ services:
       HOSTNAME: 0.0.0.0
       PORT: 3011
       MAIVIDEO_HTMLVIDEO_BASE_URL: ${STORYAI_HTMLVIDEO_BASE_URL:-http://host.docker.internal:3000}
-      MAIVIDEO_OMNIVOICE_API_BASE_URL: ${STORYAI_OMNIVOICE_BASE_URL:-http://host.docker.internal:8000}
     ports:
       - "${STORYAI_BIND_HOST:-127.0.0.1}:${STORYAI_PORT:-3011}:3011"
     volumes:

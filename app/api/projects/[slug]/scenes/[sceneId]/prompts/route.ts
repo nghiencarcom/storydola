@@ -16,7 +16,7 @@ export async function PUT(request: Request, context: { params: Promise<{ slug: s
   const snapshot = await readData();
   const project = snapshot.projects.find((item) => item.slug === slug);
   if (!project) return NextResponse.json({ message: "Không tìm thấy project." }, { status: 404 });
-  if (project.presetId !== "ai-drama") return NextResponse.json({ message: "Sửa prompt theo cảnh chỉ áp dụng cho AI Drama." }, { status: 409 });
+  if (project.presetId !== "ai-drama") return NextResponse.json({ message: "Sửa prompt theo cảnh chỉ áp dụng cho Phim AI." }, { status: 409 });
   if (project.videoQueue?.status === "running") return NextResponse.json({ message: "Queue video đang chạy. Hãy tạm dừng queue trước khi sửa prompt." }, { status: 409 });
 
   const body = asRecord(await request.json().catch(() => ({})));

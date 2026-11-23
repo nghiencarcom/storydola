@@ -11,6 +11,7 @@ import { MAX_SCENE_MEDIA_UPLOAD_BYTES, SCENE_MEDIA_UPLOAD_CHUNK_BYTES, SCENE_MED
 import { saveGeneratedSceneMedia } from "../../../../../../../lib/scene-media-output";
 import { readData } from "../../../../../../../lib/server-store";
 import type { SceneMediaAsset, StoryProject } from "../../../../../../../lib/project-types";
+import { dataPath, relativeDataPath } from "../../../../../../../lib/data-directory";
 
 export const runtime = "nodejs";
 
@@ -37,7 +38,7 @@ class UploadRequestError extends Error {
   }
 }
 
-const uploadRoot = path.join(process.cwd(), "data", "tmp", "scene-media-uploads");
+const uploadRoot = dataPath("tmp", "scene-media-uploads");
 const finalizingSessions = new Set<string>();
 
 function getUserId(request: Request) {
@@ -228,7 +229,7 @@ async function completeUpload(userId: string, project: StoryProject, sceneId: st
     const { scene } = await findProjectScene(project, sceneId);
     if (!scene) throw new UploadRequestError("Không tìm thấy cảnh.", 404);
     const safeSceneId = scene.id.replace(/[^a-z0-9_-]/gi, "-");
-    const relativePath = path.join("data", "media", project.slug, scene.chunkId, `${safeSceneId}-upload-${uploadId}.${extension}`);
+    const relativePath = relativeDataPath("media", project.slug, scene.chunkId, `${safeSceneId}-upload-${uploadId}.${extension}`);
     const absolutePath = path.resolve(process.cwd(), relativePath);
     await mkdir(path.dirname(absolutePath), { recursive: true });
     await rm(absolutePath, { force: true });

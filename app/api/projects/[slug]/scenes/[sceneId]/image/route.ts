@@ -1,3 +1,6 @@
+import { ensureLocationReference } from "../../../../../../lib/location-reference-generation";
+import { getCurrentUserId } from "../../../../../../lib/auth-server";
+import { sceneReferenceLocationId } from "../../../../../../lib/scene-reference-assignments";
 import { NextResponse } from "next/server";
 import { generateMaiVideoImageForScene } from "../../../../../../lib/media-provider";
 import { isFlowImageModel, isMuseImageModel, resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
@@ -15,7 +18,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 export async function POST(request: Request, context: { params: Promise<{ slug: string; sceneId: string }> }) {
   const { slug, sceneId } = await context.params;
   const data = await readData();
-  const project = data.projects.find((item) => item.slug === slug);
+  let project = data.projects.find((item) => item.slug === slug);
   if (!project) return NextResponse.json({ message: "Không tìm thấy project." }, { status: 404 });
 
   const { scene, scenes } = await findProjectScene(project, sceneId);
@@ -32,6 +35,11 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     return NextResponse.json({ code: "PROVIDER_SESSION_REQUIRED", message: "Hãy đăng nhập MaiVideo để dùng API ảnh Muse.ai hoặc Flow." }, { status: 401 });
   }
   try {
+    const locationId = sceneReferenceLocationId(scene, "image");
+    if (project.presetId === "ai-drama" && locationId) {
+      await ensureLocationReference(await getCurrentUserId(), slug, locationId, providerAuthToken);
+      project = (await readData()).projects.find(item => item.slug === slug) || project;
+    }
     const media = await generateMaiVideoImageForScene({
       projectSlug: slug,
       chunkId: chunk.id,

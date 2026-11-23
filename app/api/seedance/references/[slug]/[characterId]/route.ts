@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { verifySeedanceCharacterReferenceSignature, type SeedanceReferenceType } from "../../../../../lib/seedance-reference-links";
 import { readProjectScenes, sceneReferenceImageLocalPath } from "../../../../../lib/scene-store";
 import { readDataForUser } from "../../../../../lib/server-store";
+import { dataPath } from "../../../../../lib/data-directory";
 
 export const runtime = "nodejs";
 
@@ -35,14 +36,14 @@ export async function GET(request: Request, context: { params: Promise<{ slug: s
     if (!character?.referenceImagePath) return NextResponse.json({ message: "Không tìm thấy ảnh tham chiếu." }, { status: 404 });
     imagePath = path.resolve(process.cwd(), character.referenceImagePath);
     contentType = character.referenceImageMimeType;
-    const mediaRoot = path.resolve(process.cwd(), "data", "media", safeSlug, "characters");
+    const mediaRoot = dataPath("media", safeSlug, "characters");
     if (!imagePath.startsWith(`${mediaRoot}${path.sep}`)) return NextResponse.json({ message: "Ảnh tham chiếu không thuộc project này." }, { status: 403 });
   } else if (type === "location") {
     const location = project.locations?.find((item) => item.id === referenceId);
     if (!location?.referenceImagePath) return NextResponse.json({ message: "Không tìm thấy ảnh bối cảnh." }, { status: 404 });
     imagePath = path.resolve(process.cwd(), location.referenceImagePath);
     contentType = location.referenceImageMimeType;
-    const mediaRoot = path.resolve(process.cwd(), "data", "media", safeSlug, "locations");
+    const mediaRoot = dataPath("media", safeSlug, "locations");
     if (!imagePath.startsWith(`${mediaRoot}${path.sep}`)) return NextResponse.json({ message: "Ảnh bối cảnh không thuộc project này." }, { status: 403 });
   } else {
     const scene = (await readProjectScenes(project)).find((item) => item.id === referenceId);
@@ -50,7 +51,7 @@ export async function GET(request: Request, context: { params: Promise<{ slug: s
     const localPath = sceneReferenceImageLocalPath(scene);
     if (!localPath) return NextResponse.json({ message: "Cảnh chưa có ảnh cảnh." }, { status: 404 });
     imagePath = path.resolve(process.cwd(), localPath);
-    const mediaRoot = path.resolve(process.cwd(), "data", "media", safeSlug);
+    const mediaRoot = dataPath("media", safeSlug);
     if (!imagePath.startsWith(`${mediaRoot}${path.sep}`)) return NextResponse.json({ message: "Ảnh cảnh không thuộc project này." }, { status: 403 });
     if (!contentType) {
       const extension = path.extname(imagePath).toLowerCase();

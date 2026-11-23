@@ -1,0 +1,44 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const ts = require('typescript');
+const cache = new Map();
+function load(file) {
+  file = path.resolve(file);
+  if (cache.has(file)) return cache.get(file);
+  const exports = {};
+  cache.set(file, exports);
+  const context = { exports, require: name => load(path.resolve(path.dirname(file), `${name}.ts`)) };
+  vm.createContext(context);
+  vm.runInContext(ts.transpile(fs.readFileSync(file, 'utf8'), { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS }), context);
+  return exports;
+}
+
+const {characterReferencePrompt, locationReferencePrompt} = load('app/lib/ai-drama-reference-prompts.ts');
+const {sanitizeDramaVisualPrompt} = load('app/lib/visual-prompt-safety.ts');
+const {AI_DRAMA_JSON_TEMPLATE} = load('app/lib/project-script-templates.ts');
+const character = characterReferencePrompt('Mai', 'Mai, apparent age 32, blue blouse, black shoes.');
+assert.equal(characterReferencePrompt('Mai', character), character, 'Managed instructions must not accumulate');
+assert(character.includes('plain white or neutral background'));
+const location = locationReferencePrompt('Shop', 'Shop. Door on north wall, window on east wall. Physical label OPEN on the counter.');
+assert(location.includes('upper-left NORTH, upper-right EAST, lower-left SOUTH, lower-right WEST'));
+assert(location.includes('Door on north wall'));
+assert(location.includes('Physical labels or signage are allowed'));
+assert.equal(locationReferencePrompt('Shop', location), location);
+const longBase = 'Original stable appearance. ' + 'Detailed canonical costume. '.repeat(100) + 'Unique silver ring on left hand.';
+assert(characterReferencePrompt('Mai', longBase).includes('Unique silver ring on left hand.'), 'Never silently truncate a canonical detail');
+assert.throws(() => characterReferencePrompt('Mai', 'x'.repeat(10000)), /REFERENCE_PROMPT_TOO_LONG/);
+assert.equal(sanitizeDramaVisualPrompt('No blood, gore. Hit the button.'), 'No blood, gore. Hit the button.');
+assert(!sanitizeDramaVisualPrompt('A violent attack.').includes('violent attack'));
+const guide = JSON.parse(AI_DRAMA_JSON_TEMPLATE).prompt_guidance;
+assert(guide.visual_variety.includes('do not stage every event in the initial room'));
+assert(guide.visual_variety.includes('never relabel an existing room'));
+assert(guide.visual_variety.includes('do not randomize camera angles'));
+const provider = fs.readFileSync('app/lib/media-provider.ts', 'utf8');
+assert(provider.includes('Do not use a neutral studio background or turn the room into an isolated miniature'));
+assert(provider.includes('SCENE_IMAGE_PROMPT_TOO_LONG'));
+assert(provider.includes('Diegetic text on a required prop'));
+const store = fs.readFileSync('app/lib/scene-store.ts', 'utf8');
+assert(store.includes('previous.chunkId !== scene.chunkId'));
+console.log('Passed: reference idempotence, floor-plan views, no detail truncation, safe exclusions, variety guidance and prompt integration.');

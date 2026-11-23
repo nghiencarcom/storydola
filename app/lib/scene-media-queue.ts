@@ -1,3 +1,5 @@
+import { ensureLocationReference } from "./location-reference-generation";
+import { withProviderSubmissionCheckpoint, canSafelyResumeUnsubmittedJob } from "./provider-submission-checkpoint";
 import { randomUUID } from "node:crypto";
 import type { SceneMediaJob, SceneMediaJobStatus, SceneMediaAsset, StoryProject } from "./project-types";
 import { generateMaiVideoImageForScene, generateMaiVideoVideoForScene, isSeedancePendingStatusMessage, MediaProviderJobPendingError, SeedanceGenerationError } from "./media-provider";
@@ -11,7 +13,9 @@ import { seedancePublicBaseUrlErrorMessage, seedancePublicBaseUrlIssue } from ".
 import { makeActivity, now, readDataForUser, updateDataForUser } from "./server-store";
 import { sceneReferenceCharacterIds, sceneReferenceLocationId } from "./scene-reference-assignments";
 
-const CONCURRENCY = 20;
+// Submit a large scene batch concurrently; provider submission is asynchronous,
+// so workers can create many jobs without waiting for earlier videos to finish.
+const CONCURRENCY = 100;
 export const INTERRUPTED_PROVIDER_JOB_LEGACY_ERROR = "Máy chủ đã khởi động lại trước khi nhận được kết quả. Bấm tạo lại để chạy job mới.";
 export const INTERRUPTED_PROVIDER_JOB_ERROR = "Máy chủ đã khởi động lại trước khi ứng dụng nhận được mã tác vụ từ provider; chưa thể tự kiểm tra trạng thái job này.";
 type SceneMediaQueueEntry = {
@@ -242,6 +246,17 @@ async function recoverInterruptedJobs(userId: string, slug: string) {
         continue;
       }
       if (job.status !== "running" || job.workerId === WORKER_ID) continue;
+      if (canSafelyResumeUnsubmittedJob(job)) {
+        job.status = "queued";
+        job.workerId = undefined;
+        job.error = undefined;
+        job.finishedAt = undefined;
+        job.stage = undefined;
+        job.attempt = Math.max(0, job.attempt - 1);
+        job.updatedAt = now();
+        changed = true;
+        continue;
+      }
       const canResumeProviderPoll = job.kind === "video" && job.provider === "higgsfield" && Boolean(job.higgsfieldJobId) && job.stage !== "higgsfield_create"
         || job.kind === "video" && (job.provider === "seedance" || job.provider === "muse") && Boolean(job.seedanceTaskId) && job.stage !== "seedance_create"
         || Boolean(job.maiVideoJobId && (job.provider === "maivideo-image" || job.provider === "maivideo-video" || job.provider === "flow-image" || job.provider === "flow"));
@@ -282,6 +297,8 @@ async function claimNextJob(userId: string, slug: string): Promise<{ job: SceneM
     if (project.sceneMediaJobs.filter((job) => job.status === "running" && job.workerId === WORKER_ID).length >= CONCURRENCY) return undefined;
     const job = project.sceneMediaJobs.find((item) => item.status === "queued");
     if (!job) return undefined;
+    job.submissionTracked = true;
+    job.providerRequestStartedAt = undefined;
     job.status = "running";
     job.attempt += 1;
     job.startedAt = now();
@@ -312,14 +329,23 @@ function userFacingError(value: unknown) {
   }
   const publicBaseUrlMessage = seedancePublicBaseUrlErrorMessage(code);
   if (publicBaseUrlMessage) return publicBaseUrlMessage;
-  if (code === "AI_DRAMA_SCENE_DURATION_UNSUPPORTED") return "Model video này không hỗ trợ đúng thời lượng 5, 10 hoặc 15 giây của cảnh AI Drama. Hãy chọn model khác.";
+  if (code === "AI_DRAMA_SCENE_DURATION_UNSUPPORTED") return "Model video này không hỗ trợ đúng thời lượng 5, 10 hoặc 15 giây của cảnh Phim AI. Hãy chọn model khác.";
   if (value instanceof SeedanceGenerationError) return value.message;
   return code || "Không tạo được media cho cảnh.";
 }
 
 async function runJob(userId: string, slug: string, job: SceneMediaJob, signal: AbortSignal) {
+  return withProviderSubmissionCheckpoint(async () => {
+    signal.throwIfAborted();
+    if (!await updateJob(userId, slug, job.id, (current) => {
+      current.providerRequestStartedAt ||= now();
+    })) throw new Error("SCENE_MEDIA_JOB_SUPERSEDED");
+  }, () => runJobWithCheckpoint(userId, slug, job, signal));
+}
+
+async function runJobWithCheckpoint(userId: string, slug: string, job: SceneMediaJob, signal: AbortSignal) {
   try {
-    const project = await projectForUser(userId, slug);
+    let project = await projectForUser(userId, slug);
     if (!project) throw new Error("Không tìm thấy project.");
     const scenes = await readProjectScenes(project);
     const scene = scenes.find((item) => item.id === job.sceneId);
@@ -340,6 +366,13 @@ async function runJob(userId: string, slug: string, job: SceneMediaJob, signal: 
       : settings.videoProvider === "muse" || settings.videoProvider === "flow";
     const providerAuthToken = usesGateway ? await getProviderSessionToken(userId, job.id) : "";
     if (usesGateway && !providerAuthToken) throw new Error("PROVIDER_SESSION_REQUIRED");
+    const locationId = sceneReferenceLocationId(scene, job.kind === "image" ? "image" : "video");
+    const needsLocation = job.kind === "image" || settings.videoUseLocationReferences;
+    if (project.presetId === "ai-drama" && locationId && needsLocation) {
+      await ensureLocationReference(userId, slug, locationId, providerAuthToken);
+      project = (await projectForUser(userId, slug)) || project;
+    }
+
     if (job.kind === "video" && settings.videoProvider === "higgsfield" && !higgsfieldAuthToken) throw new Error("HIGGSFIELD_SESSION_REQUIRED");
     if (job.kind === "video" && (settings.videoProvider === "seedance" || settings.videoProvider === "muse" || settings.videoProvider === "flow")) {
       const videoReferenceCharacterIds = sceneReferenceCharacterIds(scene, "video");

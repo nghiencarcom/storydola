@@ -10,9 +10,8 @@ const nextConfig = {
     "/*": ["./data/**/*"],
   },
   experimental: {
-    // Scene media uploads use 50 MiB raw chunks, matching FB and MaiVideo.
-    // Leave room for form overhead before the request reaches the route.
-    proxyClientMaxBodySize: 55 * 1024 * 1024,
+    // Sales-video accepts up to 100 MiB of files plus multipart form overhead.
+    proxyClientMaxBodySize: 105 * 1024 * 1024,
   },
 };
 

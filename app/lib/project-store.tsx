@@ -1,5 +1,6 @@
 "use client";
 
+import { deleteSelectedProjects } from "./delete-projects-client";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { Activity, CreateProjectInput, StoryProject, UpdateProjectInput, WorkspacePayload } from "./project-types";
 import type { StoryPresetId } from "./story-presets";
@@ -15,6 +16,7 @@ type ProjectContextValue = {
   createProject: (input: CreateProjectInput, presetScope: StoryPresetId) => Promise<StoryProject>;
   updateProject: (slug: string, patch: UpdateProjectInput) => Promise<StoryProject | undefined>;
   deleteProject: (slug: string) => Promise<void>;
+  deleteProjects: (slugs: string[]) => ReturnType<typeof deleteSelectedProjects>;
 };
 
 const ProjectContext = createContext<ProjectContextValue | null>(null);
@@ -115,6 +117,14 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
       const payload = await requestJson<{ project: StoryProject }>(`/api/projects/${encodeURIComponent(slug)}`, { method: "PATCH", body: JSON.stringify(patch) });
       await refresh();
       return payload.project;
+    },
+    deleteProjects: async (slugs) => {
+      const result = await deleteSelectedProjects(slugs, slug => requestJson(`/api/projects/${encodeURIComponent(slug)}`, { method: "DELETE" }));
+      const deleted = new Set(result.deleted);
+      setProjects(current => current.filter(project => !deleted.has(project.slug)));
+      setActivities(current => current.filter(activity => !deleted.has(activity.projectSlug || "")));
+      await refresh().catch(() => undefined);
+      return result;
     },
     deleteProject: async (slug) => {
       await requestJson<{ ok: true }>(`/api/projects/${encodeURIComponent(slug)}`, { method: "DELETE" });

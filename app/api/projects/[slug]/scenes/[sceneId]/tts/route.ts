@@ -15,6 +15,7 @@ import { hasExplicitDialogueSegments, isTemplateDialogueText, readDialogueSegmen
 import { wavDurationMs } from "../../../../../../lib/wav-duration";
 import type { DialogueSegment, StoryProject } from "../../../../../../lib/project-types";
 import { FALLBACK_VIDEO_LANGUAGES } from "../../../../../../lib/omnivoice";
+import { dataPath, relativeDataPath } from "../../../../../../lib/data-directory";
 
 export const runtime = "nodejs";
 
@@ -95,8 +96,8 @@ export async function GET(request: Request, context: { params: Promise<{ slug: s
   if (!localPath) return NextResponse.json({ message: "Cảnh chưa có audio TTS." }, { status: 404 });
 
   const resolvedPath = path.resolve(process.cwd(), localPath);
-  const audioRoot = path.resolve(process.cwd(), "data", "media", safeSegment(project.slug), "tts");
-  const legacyAudioRoot = path.resolve(process.cwd(), "data", "audio", safeSegment(project.slug));
+  const audioRoot = dataPath("media", safeSegment(project.slug), "tts");
+  const legacyAudioRoot = dataPath("audio", safeSegment(project.slug));
   if (!resolvedPath.startsWith(`${audioRoot}${path.sep}`) && !resolvedPath.startsWith(`${legacyAudioRoot}${path.sep}`)) return NextResponse.json({ message: "Audio không thuộc project này." }, { status: 403 });
   try {
     const details = await stat(resolvedPath);
@@ -136,6 +137,7 @@ export async function GET(request: Request, context: { params: Promise<{ slug: s
 
 export async function POST(request: Request, context: { params: Promise<{ slug: string; sceneId: string }> }) {
   const { slug, sceneId } = await context.params;
+  const userId = request.headers.get("x-storyai-user-id")?.trim() || undefined;
   const snapshot = await readData();
   const project = snapshot.projects.find((item) => item.slug === slug);
   if (!project) return NextResponse.json({ message: "Không tìm thấy project." }, { status: 404 });
@@ -150,7 +152,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     ? FALLBACK_VIDEO_LANGUAGES.find((item) => item.toLowerCase() === requestedLanguage.toLowerCase()) || ""
     : "";
   if (requestedLanguage && !targetLanguage) return NextResponse.json({ message: "Ngôn ngữ voice không được hỗ trợ." }, { status: 400 });
-  if (targetLanguage && project.presetId !== "ai-drama") return NextResponse.json({ message: "Voice theo bản dịch chỉ áp dụng cho AI Drama." }, { status: 409 });
+  if (targetLanguage && project.presetId !== "ai-drama") return NextResponse.json({ message: "Voice theo bản dịch chỉ áp dụng cho Phim AI." }, { status: 409 });
   const segmentedScene = project.presetId === "ai-drama" && hasExplicitDialogueSegments(scene);
   const resolvedVoice = resolveProjectSceneVoice(scene, project);
   const voiceId = project.presetId === "ai-drama"
@@ -193,7 +195,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       let unchangedCount = 0;
       let failedCount = 0;
       const failures: string[] = [];
-      const audioRoot = path.join(process.cwd(), "data", "media", safeSegment(slug), "tts", safeSegment(chunk.id));
+      const audioRoot = dataPath("media", safeSegment(slug), "tts", safeSegment(chunk.id));
       for (const segment of segments) {
         const speaker = project.characters?.find((character) => character.id === segment.speakerCharacterId);
         const lineProject = {
@@ -301,9 +303,9 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     if (generate) {
       const text = sceneVoiceText(targetScene);
       textHash = createHash("sha256").update(text).digest("hex");
-      audioPath = path.join(process.cwd(), "data", "media", safeSegment(slug), "tts", safeSegment(chunk.id), `${safeSegment(scene.id)}.wav`);
+      audioPath = dataPath("media", safeSegment(slug), "tts", safeSegment(chunk.id), `${safeSegment(scene.id)}.wav`);
       const audio = asRecord(targetScene.audio);
-      const expectedPath = `data/media/${safeSegment(slug)}/tts/${safeSegment(chunk.id)}/${safeSegment(scene.id)}.wav`;
+      const expectedPath = relativeDataPath("media", safeSegment(slug), "tts", safeSegment(chunk.id), `${safeSegment(scene.id)}.wav`);
       const currentPath = String(audio.localPath || "").replace(/\\/g, "/");
       if (!force && audio.textHash === textHash && audio.voiceId === voiceId && audio.language === videoLanguage && currentPath === expectedPath) {
         try { unchanged = (await stat(audioPath)).isFile(); } catch { unchanged = false; }

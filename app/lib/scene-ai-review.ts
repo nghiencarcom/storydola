@@ -1,6 +1,8 @@
+import { validateDialogueBoundary, validateDialoguePacing } from "./dialogue-pacing";
+import { isAiDramaSceneDuration } from "./ai-drama-scene-timing";
 import { generateWithScriptProvider } from "./script-provider";
-import { countScriptWords } from "./script-utils";
-import { dialogueSegmentsText, readDialogueSegments, scoreDialogueTiming } from "./dialogue-segments";
+import { countScriptWords, MAX_TTS_WORDS_PER_SECOND } from "./script-utils";
+import { dialogueSegmentsText, readDialogueSegments } from "./dialogue-segments";
 import type { ProjectChunk, SceneAiCheckStatus, SceneAiReview, StoryProject } from "./project-types";
 import { contentGenresLabel, storySettingLabel } from "./content-genres";
 
@@ -12,7 +14,6 @@ type ModelReview = {
   summary: string;
   issues: string[];
   checks: Record<string, SceneAiCheckStatus>;
-  dialogueTimingScore?: number;
 };
 
 export type ChunkAiReviewSummary = {
@@ -57,7 +58,7 @@ function dialogueInfo(scene: SceneRecord) {
   const voice = dialogueSegmentsText(segments) || textValue(scene, "dialogue_or_voiceover", "voiceText", "voiceover");
   const mode = textValue(scene, "dialogue_mode", "dialogueMode").toLowerCase().replace(/[\s-]+/g, "_");
   const speakers = new Set(segments.map((segment) => String(segment.speakerName || segment.speakerCharacterId || "").trim()).filter(Boolean));
-  return { voice, mode, dialogueLed: mode === "dialogue_led" || (!mode && speakers.size >= 2), words: wordCount(voice), segments };
+  return { voice, mode, dialogueLed: mode === "dialogue_led" || (!mode && speakers.size >= 2), words: wordCount(voice) };
 }
 
 function clampScore(value: unknown, fallback = 0) {
@@ -116,30 +117,16 @@ function structuralReview(scene: SceneRecord, index: number, chunk: ProjectChunk
     const ranges = [...prompt.matchAll(/(\d+(?:\.\d+)?)\s*[–-]\s*(\d+(?:\.\d+)?)\s*(?:s|sec)?\s*:/gi)]
       .map((match) => ({ start: Number(match[1]), end: Number(match[2]) }))
       .filter((range) => Number.isFinite(range.start) && Number.isFinite(range.end) && range.end > range.start);
-    const overlongRange = ranges.find((range) => range.end - range.start > 3.01);
     const startSec = numberValue(scene, "start_sec", "startSec");
     const endSec = numberValue(scene, "end_sec", "endSec");
     const expectedDuration = numberValue(scene, "duration_sec", "durationSec")
       ?? (startSec !== undefined && endSec !== undefined && endSec > startSec ? endSec - startSec : 15);
-    const hasTimecodeDiscontinuity = ranges.some((range, rangeIndex) => rangeIndex > 0 && Math.abs(range.start - ranges[rangeIndex - 1].end) > 0.05);
-    const coversScene = ranges.length > 0 && Math.abs(ranges[0].start) <= 0.05 && Math.abs(ranges.at(-1)!.end - expectedDuration) <= 0.05;
-    const holdsOpeningFrame = /\b(?:hold|preserve|keep)\b[^.!?]{0,180}\b0\.5\s*(?:s|sec(?:ond)?s?)\b/i.test(prompt);
-    if (!ranges.length) {
+    // Time ranges are optional event cues, not a required camera grid.
+    const outOfBounds = ranges.some((range) => range.start < 0 || range.end > expectedDuration + 0.05);
+    if (outOfBounds) {
       checks.camera = "fail";
       checks.prompt = "fail";
-      issues.push(`${id}: prompt video chưa chia nhịp camera có timecode; cần góc/khung hình hoặc chuyển động camera mới không muộn hơn mỗi 3 giây.`);
-    } else if (overlongRange) {
-      checks.camera = "fail";
-      checks.prompt = "fail";
-      issues.push(`${id}: nhịp camera ${overlongRange.start.toFixed(1)}–${overlongRange.end.toFixed(1)}s kéo dài quá 3 giây; cần thêm thay đổi góc/khung hình hoặc reframe có chủ đích.`);
-    } else if (hasTimecodeDiscontinuity || !coversScene) {
-      checks.camera = "fail";
-      checks.prompt = "fail";
-      issues.push(`${id}: nhịp camera chưa phủ liên tục từ 0 đến ${expectedDuration}s; cần đủ timecode, không khoảng trống/chồng lấn và không để đuôi cảnh thiếu chỉ dẫn.`);
-    } else if (!holdsOpeningFrame) {
-      checks.camera = "fail";
-      checks.prompt = "fail";
-      issues.push(`${id}: prompt video phải giữ nguyên khung mở đầu 0.5 giây trước khi reframe hoặc di chuyển camera.`);
+      issues.push(`${id}: timecode sự kiện vượt thời lượng cảnh ${expectedDuration}s.`);
     } else checks.camera = "pass";
   }
 
@@ -158,6 +145,9 @@ function structuralReview(scene: SceneRecord, index: number, chunk: ProjectChunk
   if (duration === undefined || duration <= 0) {
     checks.timing = "fail";
     issues.push(`${id}: timecode start/end không hợp lệ.`);
+  } else if (aiDrama && !isAiDramaSceneDuration(duration)) {
+    checks.timing = "fail";
+    issues.push(`${id}: thời lượng ${duration.toFixed(1)}s phải là 5, 10 hoặc 15 giây.`);
   } else if (duration > 15) {
     checks.timing = "fail";
     issues.push(`${id}: thời lượng ${duration.toFixed(1)}s vượt giới hạn 15s.`);
@@ -165,23 +155,45 @@ function structuralReview(scene: SceneRecord, index: number, chunk: ProjectChunk
     checks.timing = "pass";
   }
   const words = dialogue.words;
-  const dialogueTiming = aiDrama ? scoreDialogueTiming(dialogue.segments, duration || 0) : undefined;
-  if (dialogueTiming) {
-    checks.dialogue_timing = dialogueTiming.status;
-    issues.push(...dialogueTiming.issues.map((issue) => `${id}: ${issue}`));
+  const dialogueMinimum = duration !== undefined && Math.abs(duration - 5) < 0.01
+    ? 10
+    : duration !== undefined && Math.abs(duration - 10) < 0.01
+      ? 20
+      : duration !== undefined && Math.abs(duration - 15) < 0.01
+        ? 30
+        : undefined;
+  const dialogueRange = duration === 5 ? "10–15" : duration === 10 ? "20–30" : "30–45";
+  if (aiDrama && dialogue.dialogueLed && dialogueMinimum !== undefined && words < dialogueMinimum) {
+    checks.voiceover = "warning";
+    issues.push(`${id}: cảnh thoại ${duration} giây có ${words} từ; mục tiêu là ${dialogueRange} từ để đủ nhịp hội thoại. Cảnh visual_led hoặc im lặng có chủ đích được miễn.`);
+  }
+  if (aiDrama && dialogue.dialogueLed && duration !== undefined) {
+    const pacing = validateDialoguePacing(scene, duration);
+    if (pacing.errors.length) {
+      checks.voiceover = "fail";
+      issues.push(...pacing.errors.map(issue => `${id}: ${issue}`));
+    }
+    if (pacing.warnings.length) {
+      if (checks.voiceover !== "fail") checks.voiceover = "warning";
+      issues.push(...pacing.warnings.map(issue => `${id}: ${issue}`));
+    }
   }
   if (targetDuration !== undefined && ((targetDuration <= 0 && !silentHold) || targetDuration > 15)) {
-    checks.voiceover = "fail";
+    if (checks.voiceover !== "fail") checks.voiceover = aiDrama ? "warning" : "fail";
     issues.push(`${id}: voiceover_target_sec phải nằm trong 1–15s.`);
   }
 
-  const maximumWordsForScene = Math.max(1, Math.floor((duration || 0) * 3));
-  if (aiDrama && voice && words > maximumWordsForScene) {
-    checks.voiceover = "fail";
-    issues.push(`${id}: tổng lời thoại ${words} đơn vị đọc vượt khả năng tối đa khoảng ${maximumWordsForScene} đơn vị trong ${duration?.toFixed(1) || "?"}s ở nhịp 3 đơn vị/giây.`);
-  } else if (aiDrama && voice && words > maximumWordsForScene * 0.85 && checks.voiceover !== "fail") {
+  const speakingRate = words / Math.max(0.001, duration || 0.001);
+  if (voice && speakingRate > MAX_TTS_WORDS_PER_SECOND + 0.01) {
+    if (checks.voiceover !== "fail") checks.voiceover = aiDrama ? "warning" : "fail";
+    issues.push(`${id}: tốc độ đọc dự kiến ${speakingRate.toFixed(2)} từ/giây, vượt giới hạn ${MAX_TTS_WORDS_PER_SECOND} từ/giây.`);
+  }
+  if (words > 60) {
+    if (checks.voiceover !== "fail") checks.voiceover = aiDrama ? "warning" : "fail";
+    issues.push(`${id}: voice-over có khoảng ${words} từ, dễ vượt nhịp 15s.`);
+  } else if (words > 45 && checks.voiceover !== "fail") {
     checks.voiceover = "warning";
-    issues.push(`${id}: tổng lời thoại gần chạm giới hạn nhịp đọc của cảnh; cần nghe lại audio sau khi render.`);
+    issues.push(`${id}: voice-over hơi dài (${words} từ), cần nghe lại khi render.`);
   }
 
   const media = asRecord(scene.media);
@@ -194,7 +206,7 @@ function structuralReview(scene: SceneRecord, index: number, chunk: ProjectChunk
     const actualType = String(media.kind || "").toLowerCase();
     if (aiDrama && actualType !== "video") {
       checks.media = "fail";
-      issues.push(`${id}: AI Drama cần media video nhưng hiện tại là ${actualType || "chưa xác định"}.`);
+      issues.push(`${id}: Phim AI cần media video nhưng hiện tại là ${actualType || "chưa xác định"}.`);
     } else if (requestedType && actualType && requestedType !== actualType) {
       checks.media = "warning";
       issues.push(`${id}: scene yêu cầu ${requestedType} nhưng media hiện tại là ${actualType}; cần người dùng xác nhận.`);
@@ -204,7 +216,7 @@ function structuralReview(scene: SceneRecord, index: number, chunk: ProjectChunk
   const failCount = Object.values(checks).filter((value) => value === "fail").length;
   const warningCount = Object.values(checks).filter((value) => value === "warning").length;
   const score = Math.max(0, 100 - failCount * 20 - warningCount * 7);
-  return { id, checks, issues: uniqueStrings(issues), score, dialogueTimingScore: dialogueTiming?.score };
+  return { id, checks, issues: uniqueStrings(issues), score };
 }
 
 function reviewInput(scene: SceneRecord, index: number, chunk: ProjectChunk) {
@@ -223,15 +235,6 @@ function reviewInput(scene: SceneRecord, index: number, chunk: ProjectChunk) {
     dialogue_mode: dialogue.mode || undefined,
     dialogue_word_count: dialogue.words,
     dialogue_or_voiceover: dialogue.voice,
-    dialogue_segments: dialogue.segments.map((segment) => ({
-      speaker_character: segment.speakerName || segment.speakerCharacterId || "NARRATOR",
-      text: segment.text,
-      start_sec: Number((segment.startMs / 1000).toFixed(3)),
-      ...(segment.endMs !== undefined ? { end_sec: Number((segment.endMs / 1000).toFixed(3)) } : {}),
-      ...(segment.deliveryPace ? { delivery_pace: segment.deliveryPace } : {}),
-      ...(segment.pauseAfterMs !== undefined ? { pause_after_sec: Number((segment.pauseAfterMs / 1000).toFixed(3)) } : {}),
-      ...(segment.intentionalOverlap ? { intentional_overlap: true } : {}),
-    })),
     continuity_in: textValue(scene, "continuity_in", "continuityIn"),
     continuity_out: textValue(scene, "continuity_out", "continuityOut"),
     image_keyword: textValue(scene, "image_keyword", "imageKeyword"),
@@ -260,8 +263,8 @@ TIÊU CHÍ CHẤT LƯỢNG KỂ CHUYỆN:
 - narrative: beat có mục tiêu/xung đột/thay đổi/hậu quả rõ không; cảnh kế tiếp có phát triển hoặc trả lời cảnh trước bằng quan hệ nhân quả không; có lặp beat, recap, twist vô cớ, hay hành động không được chuẩn bị không. Cảnh nên thay đổi ít nhất một yếu tố: mục tiêu, thông tin, quan hệ, rủi ro hoặc quyền chủ động.
 - Hook 5 giây: với cảnh mở tập ${openingSceneId}, kiểm tra phần 0–5s đầu trong video_prompt và lời thoại đầu tiên (nếu có). Phải mở thẳng bằng hành động/hình ảnh/câu hỏi/manh mối/xung đột/cứu giúp/hài hước phù hợp, để khán giả lập tức tự hỏi ai/vì sao/điều gì xảy ra tiếp/theo nhân vật có thành công không; khi phù hợp, cho khán giả lý do để đoán diễn biến hoặc chọn phe. Hook phải gắn với nội dung thật, không intro, recap hay teaser chung chung. Nếu thiếu hook hoặc 5 giây đầu chỉ giải thích chậm, đánh dấu narrative fail và needs_changes. Chọn một cách mở phù hợp, không ép đủ mọi kiểu và không ép hài vào cảnh nghiêm túc.
 - continuity: đối chiếu continuity_in/out của các cảnh liền nhau; trạng thái hành động, thời gian/địa điểm, đồ vật, kiến thức và cảm xúc phải tiếp nối hoặc có transition hợp lý. Đánh dấu lỗi khi có mâu thuẫn/hard reset rõ ràng, không chỉ vì cách chuyển cảnh mang tính lựa chọn phong cách.
-- voiceover/dialogue_timing: với AI Drama, lời thoại phải tự nhiên, đúng ngôn ngữ, có ý đồ/subtext và làm thay đổi nhịp trao đổi; tránh giải thích hình ảnh, nhắc lại thông tin hoặc câu sáo rỗng. dialogue_segments phải chia đúng một cue cho mỗi lượt người nói thực tế, theo thứ tự; không gộp người nói khác nhau. Đánh giá từng cue theo text, delivery_pace, dấu câu, start_sec/end_sec, pause_after_sec và duration_sec. Câu dài cần cửa sổ đọc dài hơn câu ngắn; đừng mặc định mọi cue có cùng thời lượng. Kiểm tra khoảng nghỉ có lý do, cue nằm trong cảnh, tốc độ không vượt 3 đơn vị đọc/giây (3,5 là trần cảnh báo nghiêm trọng), và video_prompt có khớp tên người nói/thời điểm hay không. Chỉ chấm điểm phần không có audio là ước lượng văn bản; không khẳng định chất lượng phát âm. Nếu câu khác độ dài rõ nhưng có cửa sổ gần bằng nhau, hoặc một lượt người nói bị gộp vào cue của người khác, giảm dialogue_timing_score và nêu cue cụ thể. Không ép số từ tối thiểu hoặc thêm thoại để lấp thời gian; visual_led/im lặng có chủ đích được miễn. Chỉ yêu cầu sửa khi có lỗi rõ; dùng warning cho nhận xét chủ quan.
-- camera: với AI Drama, yêu cầu khung mở đầu được giữ nguyên 0.5 giây, sau đó có thay đổi góc/khung hình hoặc reframe nhìn thấy được không muộn hơn mỗi 3.0 giây và phủ hết duration_sec. Ưu tiên lưới timecode cố định: 5 giây = 0–2.5, 2.5–5; 10 giây = 0–2.5, 2.5–5, 5–7.5, 7.5–10; 15 giây = 0–3, 3–6, 6–9, 9–12, 12–15. Ưu tiên combo phù hợp: hội thoại (wide establishing → OTS → reverse OTS → MCU → close-up slow push-in), drama/cảm xúc (medium → slow push-in → close-up → rack focus → reaction), đi bộ (medium-wide → tracking → leading → MCU), reveal (OTS/medium → pan → rack focus → push-in), action (wide → tracking → low angle → controlled handheld → close-up reaction), hero reveal (low-angle medium-wide → dolly-in → slight arc → close-up). Dùng như ngôn ngữ quay ưu tiên, không checklist; cắt cảnh không bắt buộc nếu continuous move/reframe đủ nhìn thấy. Chuyển động phải hợp thể loại, cảm xúc và hành động, giữ trục nhìn, không gian và continuity. Mọi đoạn dài hơn 3 giây, thiếu mốc camera, hoặc không giữ khung đầu 0.5 giây đều là lỗi cần sửa.
+- voiceover: với AI Drama, lời thoại phải tự nhiên khi nói, đúng ngôn ngữ đã chọn, có ý đồ/subtext phù hợp nhân vật và làm thay đổi nhịp trao đổi; tránh thoại giải thích điều khán giả vừa thấy, nhắc lại thông tin hoặc câu sáo rỗng. Với cảnh dialogue_led, dùng mục tiêu theo thời lượng: 5 giây = 10–15 từ, 10 giây = 20–30 từ, 15 giây = 30–45 từ; dưới lần lượt 10, 20, 30 từ chỉ là warning, không được fail/needs_changes chỉ vì thiếu từ. Tính tốc độ bằng tổng số từ chia thời lượng cả cảnh, không tính từng cue. Số từ và tốc độ chỉ warning. Với dialogue_led, khoảng nghỉ bắt buộc: mỗi khoảng nghỉ liên tục <=3s, tổng nghỉ <=4s/cảnh 10s và <=5s/cảnh 15s; vượt ngưỡng là fail/needs_changes. Tính cả đầu, giữa và cuối cảnh, gộp các cue chồng lấn trước khi tính. Phim hài hình ảnh hoặc im lặng không cần lời thoại. visual_led hoặc im lặng có chủ đích được miễn giới hạn nghỉ; dùng dialogue_mode visual_led cho cảnh im lặng. Đọc số từ từ dialogue_word_count. Không áp dụng mức tối thiểu cho visual_led, hành động, khám phá hình ảnh hoặc im lặng có chủ đích. Chỉ yêu cầu sửa khi có lỗi rõ; dùng warning cho nhận xét chủ quan.
+- camera: cảnh 5/10/15 giây có nhịp tự nhiên theo hành động, thoại, phản ứng và thể loại. Cho phép một cú máy liên tục; không yêu cầu giữ hình đầu 0.5 giây, lưới thời gian cố định, đổi góc định kỳ hay giới hạn độ dài shot. Kiểm tra tính khả thi của camera, screen direction, eyeline, continuity và thời điểm sự kiện quan trọng. Giữ camera/VFX cần thiết và timing của chúng. Không đánh lỗi chỉ vì thiếu các khoảng timecode hoặc shot dài hơn 3 giây. Với ảnh nhân vật tham chiếu, cấm mô tả tuổi/đặc điểm khuôn mặt cụ thể; giữ và cho phép REFERENCE RULES khoá face, apparent age, skin tone, hair, proportions, costume theo ảnh và khoá layout/materials theo ảnh bối cảnh. Cho phép diễn xuất, biểu cảm và hướng nhìn.
 - Chỉ dùng fail/needs_changes cho lỗi nghiêm trọng, mâu thuẫn hoặc lặp lại có bằng chứng trong dữ liệu; không phạt kịch bản chỉ vì khác sở thích thể loại. Không tự bịa chi tiết nguồn để đánh giá.
 
 Giới hạn quan trọng: bạn chỉ được đánh giá dữ liệu văn bản và metadata được cung cấp. Bạn không được khẳng định chất lượng hình ảnh thực tế, chuyển động, phát âm hay độ khớp pixel nếu không có dữ liệu âm thanh/hình ảnh để xem. Những điểm đó phải ghi là cần người dùng kiểm tra.
@@ -275,8 +278,7 @@ Trả về JSON duy nhất theo cấu trúc:
       "score": 0-100,
       "summary": "một câu ngắn",
       "issues": ["..."],
-      "dialogue_timing_score": 0-100 or null when the scene is silent,
-      "checks": {"timing":"pass|warning|fail","voiceover":"pass|warning|fail","dialogue_timing":"pass|warning|fail","narrative":"pass|warning|fail","continuity":"pass|warning|fail","prompt":"pass|warning|fail","camera":"pass|warning|fail","media":"pass|warning|fail"}
+      "checks": {"timing":"pass|warning|fail","voiceover":"pass|warning|fail","narrative":"pass|warning|fail","continuity":"pass|warning|fail","prompt":"pass|warning|fail","camera":"pass|warning|fail","media":"pass|warning|fail"}
     }
   ]
 }
@@ -323,7 +325,6 @@ function parseModelReviews(value: unknown) {
       summary: textValue(record, "summary", "reason") || (status === "passed" ? "AI pre-check không phát hiện lỗi nghiêm trọng." : "AI phát hiện điểm cần người dùng kiểm tra."),
       issues: uniqueStrings(rawIssues),
       checks,
-      ...(record.dialogue_timing_score !== undefined && record.dialogue_timing_score !== null ? { dialogueTimingScore: clampScore(record.dialogue_timing_score) } : {}),
     });
   }
   return reviews;
@@ -331,7 +332,6 @@ function parseModelReviews(value: unknown) {
 
 function combineReview(structural: ReturnType<typeof structuralReview>, modelReview: ModelReview | undefined, model: string, modelError: string, scene: SceneRecord): SceneRecord {
   const checks = { ...structural.checks, ...(modelReview?.checks || {}) };
-  if (structural.checks.dialogue_timing) checks.dialogue_timing = structural.checks.dialogue_timing;
   for (const [key, value] of Object.entries(structural.checks)) {
     if (value === "fail") checks[key] = "fail";
   }
@@ -352,7 +352,6 @@ function combineReview(structural: ReturnType<typeof structuralReview>, modelRev
   const review: SceneAiReview = {
     status,
     score,
-    dialogueTimingScore: structural.dialogueTimingScore ?? modelReview?.dialogueTimingScore,
     summary: modelReview?.summary || (modelError ? "Chưa có kết quả AI; cần chạy lại pre-check." : "AI pre-check đã kiểm tra cấu trúc cảnh."),
     issues,
     checks,
@@ -395,6 +394,13 @@ export async function evaluateChunkScenes({
 
   const evaluatedScenes = normalizedScenes.map((scene, index) => {
     const structural = structuralReview(scene, index, chunk, project.presetId === "ai-drama");
+    if (project.presetId === "ai-drama" && index > 0) {
+      const boundaryErrors = validateDialogueBoundary(normalizedScenes[index - 1], scene);
+      if (boundaryErrors.length) {
+        structural.checks.voiceover = "fail";
+        structural.issues.push(...boundaryErrors);
+      }
+    }
     const id = sceneId(scene, `S${String(chunk.sceneStart + index).padStart(3, "0")}`);
     return combineReview(structural, modelReviews.get(id), model, modelError, scene);
   });

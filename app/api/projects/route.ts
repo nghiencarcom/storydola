@@ -62,10 +62,10 @@ export async function GET() {
 export async function POST(request: Request) {
   const body = (await request.clone().json().catch(() => ({}))) as { presetId?: unknown };
   if (body.presetId === undefined || body.presetId === null || body.presetId === "") {
-    return NextResponse.json({ message: "Chưa xác định loại dự án. Hãy chọn AI Drama, AI Story hoặc Audio Story trước khi tạo." }, { status: 400 });
+    return NextResponse.json({ message: "Chưa xác định loại dự án. Hãy chọn Phim AI, AI Story hoặc Audio Story trước khi tạo." }, { status: 400 });
   }
   if (body.presetId !== "ai-story") {
-    return NextResponse.json({ message: "Hãy tạo AI Drama hoặc Audio Story từ luồng tạo riêng để không đổi nhầm loại dự án." }, { status: 400 });
+    return NextResponse.json({ message: "Hãy tạo Phim AI hoặc Audio Story từ luồng tạo riêng để không đổi nhầm loại dự án." }, { status: 400 });
   }
   return createProjectResponse(request, "ai-story");
 }

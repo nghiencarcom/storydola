@@ -13,11 +13,12 @@ import { providerSessionEncryptionReady, saveProviderSessionToken } from "../../
 import { seedancePublicBaseUrlErrorMessage, seedancePublicBaseUrlIssue } from "../../../../lib/seedance-reference-links";
 import { getProjectOrThrow, makeActivity, now, readData, updateData } from "../../../../lib/server-store";
 import { sceneReferenceCharacterIds, sceneReferenceLocationId } from "../../../../lib/scene-reference-assignments";
+import { dataPath } from "../../../../lib/data-directory";
 
 export const runtime = "nodejs";
 
 function emptyQueue(): VideoQueueState {
-  return { status: "idle", concurrency: 20, jobs: [], updatedAt: now() };
+  return { status: "idle", concurrency: 50, jobs: [], updatedAt: now() };
 }
 
 function mediaRecord(value: unknown) {
@@ -29,7 +30,7 @@ function isAlreadyAiVideo(scene: Record<string, unknown>, projectSlug: string) {
   if (media.kind !== "video" || media.status !== "ready" || media.stale === true || !["maivideo-video", "flow-video"].some((provider) => String(media.provider || "").startsWith(provider))) return false;
   const localPath = typeof media.localPath === "string" ? media.localPath.trim() : "";
   const resolved = localPath ? path.resolve(process.cwd(), localPath) : "";
-  const projectRoot = path.resolve(process.cwd(), "data", "media", projectSlug);
+  const projectRoot = dataPath("media", projectSlug);
   if (!resolved || !resolved.startsWith(`${projectRoot}${path.sep}`)) return false;
   try { return statSync(resolved).isFile(); } catch { return false; }
 }
@@ -199,7 +200,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   const updated = await updateData((data) => {
     const current = getProjectOrThrow(data, slug);
     const queue = current.videoQueue || emptyQueue();
-    queue.concurrency = Math.max(1, Math.min(20, Number(body.concurrency) || queue.concurrency || 20));
+    queue.concurrency = Math.max(1, Math.min(50, Number(body.concurrency) || queue.concurrency || 50));
     let added = 0;
     let retried = 0;
     for (const scene of candidates) {

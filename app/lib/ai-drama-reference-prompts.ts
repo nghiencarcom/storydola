@@ -29,7 +29,7 @@ function locationViewBlock(aspectRatio: string) {
       : "a clean 2×2 grid";
   return `LOCATION REFERENCE SHEET — REQUIRED FOUR CAMERA DIRECTIONS.
 Create one environment reference sheet as ${layout}, showing exactly four equally sized panels of the same location. Keep camera height, lens, distance and the shared center landmark consistent. Label the four directions only by their visual orientation, not with text: NORTH view (camera south of the landmark, facing north), EAST view (camera west, facing east), SOUTH view (camera north, facing south), and WEST view (camera east, facing west).
-Keep architecture, spatial layout, paths, materials, fixed landmarks, recurring set props, time of day, weather, lighting and palette consistent in every panel. These are four camera directions in one coherent place, not four alternate designs. Do not omit, duplicate or reorder a direction. No people, text, labels, logos or watermark.
+For a square sheet, panel order is upper-left NORTH, upper-right EAST, lower-left SOUTH, lower-right WEST. Use a shared floor-plan coordinate system: preserve each door, window and landmark on its specified wall, with physically consistent occlusion from opposite viewpoints. If cardinal positions are not supplied, establish one coherent arrangement for this reference only, then keep it identical across all views. Keep architecture, spatial layout, paths, materials, fixed landmarks, recurring set props, time of day, weather, lighting and palette consistent in every panel. These are four camera directions in one coherent place, not four alternate designs. Do not omit, duplicate or reorder a direction. No people, overlay text, panel labels, logos or watermark. Physical labels or signage are allowed only when explicitly required by the base environment; otherwise keep surfaces unlettered.
 ${referenceFrameInstruction(aspectRatio)}`;
 }
 
@@ -39,7 +39,6 @@ function cleanBasePrompt(prompt: string, kind: "character" | "location", name: s
     : prompt.replace(/\n\s*LOCATION REFERENCE SHEET — REQUIRED FOUR CAMERA DIRECTIONS[\s\S]*$/i, "");
   return promptWithoutManagedBlock
     .trim()
-    .slice(0, 2_100)
     .replace(/(?:^|[\n.])[^.\n]*(?:\bno\b|\bavoid\b|do not|don't)[^.\n]*(?:contact sheet|reference sheet|multi[- ]?view|collage|grid|panels?)[^.\n]*(?:[.]|$)/gi, "\n")
     .replace(/\s*\n\s*\n\s*/g, "\n\n")
     .trim() || `${kind === "character" ? "Character" : "Location"} reference for ${name}. Preserve a coherent, consistent visual identity.`;
@@ -48,13 +47,17 @@ function cleanBasePrompt(prompt: string, kind: "character" | "location", name: s
 export function characterReferencePrompt(name: string, prompt: string, aspectRatio = PROFILE_REFERENCE_ASPECT_RATIO) {
   const base = cleanBasePrompt(prompt, "character", name);
   const block = characterViewBlock(aspectRatio);
-  const budget = Math.max(0, 3_000 - block.length - 2);
-  return `${base.slice(0, budget)}\n\n${block}`.trim();
+  return checkedReferencePrompt(base, block);
 }
 
 export function locationReferencePrompt(name: string, prompt: string, aspectRatio = PROFILE_REFERENCE_ASPECT_RATIO) {
   const base = cleanBasePrompt(prompt, "location", name);
   const block = locationViewBlock(aspectRatio);
-  const budget = Math.max(0, 3_000 - block.length - 2);
-  return `${base.slice(0, budget)}\n\n${block}`.trim();
+  return checkedReferencePrompt(base, block);
+}
+
+function checkedReferencePrompt(base: string, block: string) {
+  const prompt = `${base}\n\n${block}`.trim();
+  if (prompt.length > 9_999) throw new Error("REFERENCE_PROMPT_TOO_LONG: rút gọn hướng dẫn lặp; không cắt đặc điểm nhân vật hoặc sơ đồ bối cảnh.");
+  return prompt;
 }
