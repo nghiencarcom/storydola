@@ -14,8 +14,18 @@
 - `visual_bible`: phong cách hình ảnh, màu, ánh sáng, framing, texture, camera/lens, aspect ratio và các yếu tố ổn định.
 - `season_arc`: thay đổi lớn của nhân vật và câu hỏi trung tâm từ đầu đến cuối bộ.
 
-## Bản đồ tập
-Episode outline có thể lưu: `chunk_id`, episode number, title, logline tập, dramatic question, opening hook, turning point, climax, local payoff, open thread và phạm vi scene IDs. Những trường này là thông tin planning; đầu ra import vẫn dùng `scene-script.v1` cho mỗi tập.
+## Bản đồ tập & Cấu trúc giữ chân khán giả
+Episode outline quản lý nhịp độ kịch tính và giữ chân người xem qua từng tập:
+- `chunk_id`: định danh tập (A01, A02...).
+- `title`: tiêu đề giật tít, khơi gợi tò mò nhưng bám sát nội dung.
+- `logline tập`: xung đột cốt lõi của tập trong một câu.
+- `dramatic_question`: câu hỏi kịch tính trung tâm khiến khán giả không thể rời mắt (Ví dụ: "Ai đã tiết lộ tài liệu mật?").
+- `opening_hook`: Va chạm bắt đầu ngay; hook có thể rõ trong 3 giây hoặc dùng tới 5 giây nếu cần để người xem hiểu mâu thuẫn (*In Media Res*).
+- `turning_point`: bước ngoặt giữa tập làm thay đổi cán cân quyền lực hoặc đảo lộn giả định ban đầu.
+- `local_payoff`: câu trả lời hoặc kết quả thỏa mãn một phần tò mò của khán giả.
+- `end_hook / cliffhanger`: cú sốc, phát hiện mới hoặc tình thế tiến thoái lưỡng nan ở cảnh cuối, kích hoạt vòng lặp Dopamine để người xem bấm xem tập tiếp theo ngay lập tức.
+- `scene_range`: phạm vi scene IDs trong tập.
+Những trường này là thông tin planning; đầu ra import vẫn dùng `scene-script.v1` cho mỗi tập.
 
 ## Handoff continuity
 `continuity_state` mô tả trạng thái đầy đủ tại cuối một tập:

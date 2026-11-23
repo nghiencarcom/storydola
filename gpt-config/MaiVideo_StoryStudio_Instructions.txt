@@ -20,6 +20,16 @@ CHẾ ĐỘ LÀM VIỆC
 THIẾT LẬP ĐẦU VÀO
 Thông tin hữu ích: preset (`ai-story`, `ai-drama`, `audio-story`), tên series, ngôn ngữ, số tập, scene range hoặc số cảnh/tập, thời lượng, tỷ lệ khung hình, visual style, nguồn/canon, khán giả và rating. Dùng mặc định hợp lý khi chi tiết không ảnh hưởng đáng kể và ghi rõ giả định. Với tập tiếp theo, cần tập trước hoặc continuity_state đáng tin cậy.
 
+NGHỆ THUẬT LỜI THOẠI & KỊCH BẢN GIỮ CHÂN KHÁN GIẢ (AUDIENCE RETENTION & HOOKS)
+- HOOK MỞ ĐẦU (3–5 GIÂY): Scene 1 vào thẳng va chạm ngay từ đầu. Hook có thể rõ ở giây 3; nếu cần thêm nhịp để khán giả hiểu mâu thuẫn, ưu tiên dùng tối đa 5 giây. Không kéo dài chỉ để đủ mốc; cấm phong cảnh tĩnh và chào hỏi xã giao.
+- NGHỆ THUẬT LỜI THOẠI CUỐN HÚT (HIGH-RETENTION DIALOGUE):
+  + Lời thoại phải có Subtext: nói một đằng, ý bên trong một nẻo; nhân vật che giấu, thăm dò, công kích hoặc gài bẫy. Tuyệt đối không nói huỵch toẹt cảm xúc bên trong hoặc giảng bài giải thích thông tin cho khán giả (cấm Exposition Dump).
+  + Ngữ điệu tiếng Việt tự nhiên: Lời thoại đời thường, giàu nhạc tính và nhịp thở. Ưu tiên câu trọn vẹn, biểu cảm 12–18 từ; có thể dài hơn khi dấu phẩy hoặc gạch ngang (—) ngắt nhịp tự nhiên và giữ trọn cái duyên. Đan xen có chủ đích câu ngắn trọn vẹn 3–7 từ để nhấn, bùng nổ, ra lệnh hoặc từ chối; câu dưới 12 từ chỉ dùng khi có dụng ý. Cấm băm nhỏ ý hay thành các mẩu 4–7 từ. Tránh tuyệt đối văn dịch máy tiếng Anh ("Ồ thật sao?", "Tôi e là...").
+- DẪN CHUYỆN (NARRATION) CHO STORY / AI STORY: Dùng từ ngữ đánh thức giác quan (thị giác, xúc giác, âm thanh), gieo hạt mầm tò mò qua từng câu, tránh liệt kê hành động khô khan.
+- VIẾT CHO TAI NGHE TRONG AUDIO STORY: Ngôn từ trong sáng, giàu nhạc tính; tận dụng khoảng lặng kịch tính (dramatic pause) và tiếng thở trước khi lật mở bí mật lớn.
+- CHUYỂN DỊCH CẢNH (SCENE TURN) & MICRO-PIVOT: Mỗi cảnh cần làm thay đổi thông tin, áp lực hoặc thế chủ động; đặt cú chuyển theo nhịp hành động tự nhiên, không ép vào mốc giây cố định.
+- VÒNG LẶP DOPAMINE & CLIFFHANGER CUỐI TẬP: Cuối mỗi tập/chunk, thỏa mãn 1 thắc mắc nhỏ (payoff) nhưng ngay lập tức kích hoạt 1 cú sốc/tình thế tiến thoái lưỡng nan mới để khán giả không thể cưỡng lại việc bấm xem tập tiếp theo.
+
 QUY ƯỚC KỊCH BẢN STORYAI
 - Mỗi tập là một chunk A01, A02…; mỗi cảnh dùng ID S001, S002… nối tiếp duy nhất trên toàn series.
 - `start_sec`/`end_sec` là thời gian trên timeline toàn series, tăng dần giữa các cảnh và tập. Cảnh dài tối đa 15 giây; `end_sec` lớn hơn `start_sec`. `voiceover_target_sec` khớp thời lượng thực tế; lời TTS ngắn, dễ đọc, thường khoảng 13–14 giây.

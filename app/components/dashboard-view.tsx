@@ -1,4566 +1,481 @@
-"use client";
-
-import type { VideoPromptCompactionReport } from "../lib/video-prompt-compaction";
-
-import Link from "next/link";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { isFlowStoryOnlyPreset, STORY_PRESETS } from "../lib/story-presets";
-import { useProjects } from "../lib/project-store";
-import { FALLBACK_VIDEO_LANGUAGES, voiceLanguageLabel, type OmniVoiceCatalog, type OmniVoiceOption } from "../lib/omnivoice";
-import { DEFAULT_RENDER_SETTINGS, normalizeRenderSettings } from "../lib/render-effects";
-import { DEFAULT_MEDIA_GENERATION_SETTINGS, IMAGE_DETAIL_LEVEL_LABELS, type DialogueSegment, type ImageGenerationModelOption, type MediaGenerationSettings, type MediaModelCatalog, type ProjectCharacter, type ProjectLocation, type RenderSettings, type SceneAiReview, type SceneMediaJob, type StoryProject, type VideoGenerationModelOption, type VideoPublishingSet } from "../lib/project-types";
-import { availableImageModels as filterAvailableImageModels, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, DEFAULT_SEEDANCE_VIDEO_MODEL_ID, HIGGSFIELD_SEEDANCE_MODEL_ID, imageDetailLevelsForModel, imageModelDisplayName, isFlowImageModel, isMuseImageModel, isPixverseVideoSettings, isTemporarilyHiddenMaiVideoSeedance25, isVideoOffPeakRequired, normalizeVideoDuration, preferredVideoQuality, resolveMediaGenerationSettings, videoDurationBoundsForModel, videoDurationOptions, videoModelDisplayName, videoQualitiesForModel, visibleVideoModels } from "../lib/media-generation-settings";
-import { estimateDialogueDurationMs, hasExplicitDialogueSegments, isTemplateDialogueText, readDialogueSegments } from "../lib/dialogue-segments";
-import { useSeedanceAccounts } from "../lib/seedance-accounts-client";
-import { isTemplateEntityName, normalizeEntityName } from "../lib/entity-name";
-import { contentGenresLabel, storySettingLabel } from "../lib/content-genres";
-import { characterReferencePrompt, locationReferencePrompt, PROFILE_REFERENCE_ASPECT_RATIO } from "../lib/ai-drama-reference-prompts";
-import { sceneReferenceCharacterIds, sceneReferenceLocationId, type SceneReferenceKind } from "../lib/scene-reference-assignments";
-import { sanitizeDramaVisualPrompt } from "../lib/visual-prompt-safety";
-import { MAX_SCENE_MEDIA_UPLOAD_BYTES } from "../lib/scene-media-upload-config";
-import { shouldChunkSceneMediaFile, uploadSceneMediaInChunks } from "../lib/scene-media-upload-client";
-import { createEpisodeScriptTemplate } from "../lib/project-script-templates";
-import { ShortDramaStudio } from "./short-drama-studio";
-import { Icon } from "./ui-icon";
-
-type SceneMediaPreview = {
-  kind?: "image" | "video";
-  provider?: string;
-  status?: "ready" | "failed";
-  stale?: boolean;
-  model?: string;
-  quality?: string;
-  durationSec?: number;
-  query?: string;
-  sourceUrl?: string;
-  localPath?: string;
-  referenceCharacterIds?: string[];
-  referenceLocationId?: string;
-  error?: string;
-};
-
-type SceneMediaJobPreview = Pick<SceneMediaJob, "id" | "sceneId" | "chunkId" | "sceneIndex" | "kind" | "status" | "attempt" | "createdAt" | "updatedAt" | "startedAt" | "finishedAt" | "error" | "provider" | "stage" | "submittedPrompt">;
-
-type SceneReviewStatus = "unreviewed" | "approved" | "needs_changes";
-type SceneReviewFilter = "all" | SceneReviewStatus;
-type SceneMediaFilter = "all" | "ready" | "missing" | "ai" | "stock";
-type SceneAiReviewStatus = "pending" | "passed" | "needs_changes" | "error";
-type SceneAiReviewFilter = "all" | SceneAiReviewStatus;
-
-type ScenePreview = Record<string, unknown> & {
-  id: string;
-  chunkId: string;
-  sceneIndex: number;
-  characterIds?: string[];
-  locationId?: string;
-  previewUrl?: string;
-  referenceImagePreviewUrl?: string;
-  videoReferenceImage?: SceneMediaPreview;
-  media?: SceneMediaPreview;
-  mediaJob?: SceneMediaJobPreview;
-  flowFrameEndSceneId?: string;
-  reviewStatus?: SceneReviewStatus;
-  reviewNote?: string;
-  aiReview?: SceneAiReview;
-};
-
-type SceneVideoPromptPreview = {
-  compaction?: VideoPromptCompactionReport;
-  prompt: string;
-  promptLength: number;
-  provider: string;
-  model: string;
-  dialogueCueCount: number;
-  dialogueIncluded: boolean;
-};
-
-type SceneVideoPromptPreviewState = {
-  loading?: boolean;
-  error?: string;
-  result?: SceneVideoPromptPreview;
-};
-
-const sceneMediaPollFields = [
-  "media",
-  "mediaJob",
-  "videoReferenceImage",
-  "video_reference_image",
-  "previewUrl",
-  "referenceImagePreviewUrl",
-  "reviewStatus",
-  "reviewNote",
-  "aiReview",
-] as const;
-
-function mergePolledSceneMedia(current: ScenePreview[], incoming: ScenePreview[]) {
-  let changed = current.length !== incoming.length
-    || current.some((scene, index) => scene.id !== incoming[index]?.id);
-  const currentById = new Map(current.map((scene) => [scene.id, scene]));
-  const merged = incoming.map((next) => {
-    const previous = currentById.get(next.id);
-    if (!previous) {
-      changed = true;
-      return next;
-    }
-    let sceneChanged = false;
-    for (const field of sceneMediaPollFields) {
-      if (JSON.stringify(previous[field]) !== JSON.stringify(next[field])) {
-        sceneChanged = true;
-        break;
-      }
-    }
-    if (!sceneChanged) return previous;
-    changed = true;
-    const refreshedMediaState = Object.fromEntries(sceneMediaPollFields.map((field) => [field, next[field]]));
-    return { ...previous, ...refreshedMediaState };
-  });
-  return changed ? merged : current;
-}
-
-type MaiVideoImagePreview = {
-  id: string;
-  name: string;
-  fileName: string;
-  previewUrl: string;
-  source: string;
-};
-
-const BATCH_PROFILE_IMAGE_CONCURRENCY = 5;
-const BATCH_TTS_EPISODE_CONCURRENCY = 5;
-const VIDEO_QUEUE_CONCURRENCY = 50;
-
-async function forEachConcurrent<T>(items: T[], concurrency: number, task: (item: T, index: number) => Promise<void>) {
-  let nextIndex = 0;
-  const workerCount = Math.min(items.length, Math.max(1, Math.floor(concurrency)));
-  await Promise.all(Array.from({ length: workerCount }, async () => {
-    while (true) {
-      const index = nextIndex++;
-      if (index >= items.length) return;
-      await task(items[index], index);
-    }
-  }));
-}
-
-function sceneText(scene: ScenePreview, ...keys: string[]) {
-  for (const key of keys) {
-    const value = scene[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return "";
-}
-
-function isUneditedLegacyEpisodeTemplateDraft(value: string, target: { id: string; sceneStart: number; sceneEnd: number }) {
-  try {
-    const payload = JSON.parse(value) as Record<string, unknown>;
-    if (payload.schema !== "scene-script.v1" || String(payload.chunk_id || "").toUpperCase() !== target.id.toUpperCase()) return false;
-    if (typeof payload.camera_combo_guidance !== "string" || !payload.camera_combo_guidance.includes("CAMERA COMBO LIBRARY")) return false;
-    if (!isTemplateEntityName(payload.episode_title) || !isTemplateEntityName(payload.chunk_summary)) return false;
-
-    const hooks = payload.episode_hooks && typeof payload.episode_hooks === "object" && !Array.isArray(payload.episode_hooks)
-      ? payload.episode_hooks as Record<string, unknown>
-      : {};
-    if (![hooks.opening_hook, hooks.turning_point, hooks.end_hook].every(isTemplateEntityName)) return false;
-
-    const biblesAreUnedited = (value: unknown) => Array.isArray(value) && value.every((item) => {
-      if (!item || typeof item !== "object" || Array.isArray(item)) return false;
-      const profile = item as Record<string, unknown>;
-      return isTemplateEntityName(profile.name)
-        && isTemplateEntityName(profile.description)
-        && isTemplateEntityName(profile.image_prompt ?? profile.imagePrompt);
-    });
-    if (!biblesAreUnedited(payload.character_bible) || !biblesAreUnedited(payload.location_bible)) return false;
-
-    const scenes = Array.isArray(payload.scenes) ? payload.scenes : [];
-    const expectedCount = target.sceneEnd - target.sceneStart + 1;
-    if (scenes.length !== expectedCount || expectedCount < 1) return false;
-    return scenes.every((value, index) => {
-      if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-      const scene = value as Record<string, unknown>;
-      const expectedId = `S${String(target.sceneStart + index).padStart(3, "0")}`;
-      const characters = Array.isArray(scene.characters) ? scene.characters : [];
-      const dialogueSegments = Array.isArray(scene.dialogue_segments) ? scene.dialogue_segments : [];
-      const dialogueSegmentsAreTemplate = dialogueSegments.every((item) => {
-        if (!item || typeof item !== "object" || Array.isArray(item)) return false;
-        const segment = item as Record<string, unknown>;
-        return isTemplateEntityName(segment.speaker_character ?? segment.speakerName)
-          && isTemplateDialogueText(segment.text);
-      });
-      return String(scene.id || "").toUpperCase() === expectedId
-        && isTemplateEntityName(scene.purpose)
-        && isTemplateEntityName(scene.beat_summary)
-        && isTemplateDialogueText(scene.dialogue_or_voiceover)
-        && isTemplateEntityName(scene.image_prompt)
-        && isTemplateEntityName(scene.location_name)
-        && isTemplateEntityName(scene.location_description)
-        && characters.length > 0
-        && characters.every(isTemplateEntityName)
-        && dialogueSegmentsAreTemplate;
-    });
-  } catch {
-    return false;
-  }
-}
-
-function sceneLocationName(scene: ScenePreview) {
-  const explicit = sceneText(scene, "location_name", "locationName", "location", "environment_name", "environmentName");
-  if (explicit) return isTemplateEntityName(explicit) ? "" : explicit;
-  const prompt = sceneText(scene, "image_prompt", "imagePrompt");
-  const match = prompt.match(/^\s*(?:one|a|an)\s+(?:[\w-]+\s+){0,3}(?:frame|shot|image)\s+(?:in|at|on|inside|aboard)\s+([^:;!?]+)/i);
-  if (!match) return "";
-  const inferred = match[1]
-    .replace(/\s+(?:as|while|where|when|during|before|after|at the moment)\b[\s\S]*$/i, "")
-    .replace(/^(?:the|a|an)\s+/i, "")
-    .replace(/[â€™']s(?=\s|$)/g, "")
-    .trim()
-    .replace(/[.,;:!?]+$/, "") || "";
-  return /^\d+(?:\.\d+)?\s*(?:s|sec|secs|second|seconds)?$/i.test(inferred) ? "" : inferred;
-}
-
-function sceneCharacterIds(scene: ScenePreview) {
-  const raw = scene.characterIds || scene.character_ids;
-  return Array.isArray(raw) ? [...new Set(raw.map((id) => String(id)))] : [];
-}
-
-function sceneSpeakerCharacterId(scene: ScenePreview | undefined, characters: ProjectCharacter[]) {
-  if (!scene) return "";
-  const hasExplicitId = Object.prototype.hasOwnProperty.call(scene, "speakerCharacterId") || Object.prototype.hasOwnProperty.call(scene, "speaker_character_id");
-  if (hasExplicitId) {
-    const explicitId = String(scene.speakerCharacterId || scene.speaker_character_id || "").trim();
-    return characters.some((character) => character.id === explicitId) ? explicitId : "";
-  }
-  const speaker = sceneText(scene, "speaker_character", "speakerCharacter", "speaker_name", "speakerName", "speaker");
-  const normalizedSpeaker = normalizeEntityName(speaker);
-  if (speaker && !["narrator", "voiceover", "none", "n a"].includes(normalizedSpeaker)) {
-    const matched = normalizedSpeaker ? characters.find((character) => normalizeEntityName(character.name) === normalizedSpeaker) : undefined;
-    if (matched) return matched.id;
-  }
-  const assigned = sceneCharacterIds(scene);
-  return assigned.length === 1 && characters.some((character) => character.id === assigned[0]) ? assigned[0] : "";
-}
-
-function sceneLocationId(scene?: ScenePreview) {
-  const value = scene?.locationId || scene?.location_id || scene?.environment_id || scene?.environmentId;
-  return typeof value === "string" ? value : "";
-}
-
-function sceneReferenceMedia(scene?: ScenePreview) {
-  const saved = scene?.videoReferenceImage || scene?.video_reference_image;
-  const savedRecord = saved && typeof saved === "object" && !Array.isArray(saved) ? saved as SceneMediaPreview : undefined;
-  const media = scene?.media?.kind === "image" ? scene.media : undefined;
-  const candidates = [savedRecord, media].filter((candidate): candidate is SceneMediaPreview => Boolean(candidate && candidate.kind === "image" && candidate.status === "ready"));
-  return candidates.find((candidate) => !candidate.stale) || candidates[0] || savedRecord || media;
-}
-
-async function clipboardPngBlob(blob: Blob): Promise<Blob> {
-  if (blob.type.toLowerCase() === "image/png") return blob;
-  if (typeof createImageBitmap !== "function") throw new Error("TrÃ¬nh duyá»‡t khÃ´ng chuyá»ƒn Ä‘Æ°á»£c áº£nh tham chiáº¿u sang PNG Ä‘á»ƒ copy.");
-  const bitmap = await createImageBitmap(blob);
-  try {
-    const canvas = document.createElement("canvas");
-    canvas.width = bitmap.width;
-    canvas.height = bitmap.height;
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("KhÃ´ng thá»ƒ chuáº©n bá»‹ áº£nh tham chiáº¿u Ä‘á»ƒ copy.");
-    context.drawImage(bitmap, 0, 0);
-    return await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob((png) => png ? resolve(png) : reject(new Error("KhÃ´ng thá»ƒ mÃ£ hÃ³a áº£nh tham chiáº¿u thÃ nh PNG.")), "image/png");
-    });
-  } finally {
-    bitmap.close();
-  }
-}
-
-function sceneAudioRecord(scene?: ScenePreview) {
-  return scene?.audio && typeof scene.audio === "object" && !Array.isArray(scene.audio)
-    ? scene.audio as Record<string, unknown>
-    : {};
-}
-
-function sceneDialogueSegments(scene: ScenePreview, characters: ProjectCharacter[]) {
-  return readDialogueSegments(scene, characters);
-}
-
-type SceneTimelineRow = {
-  kind: "dialogue" | "gap";
-  startSec: number;
-  endSec: number;
-  segment?: DialogueSegment;
-};
-
-function sceneTimelineRows(scene: ScenePreview, segments: DialogueSegment[]): SceneTimelineRow[] {
-  const durationSec = sceneDurationSeconds(scene);
-  const rows: SceneTimelineRow[] = [];
-  let cursor = 0;
-  for (const segment of segments) {
-    const startSec = Math.max(0, Math.min(durationSec, segment.startMs / 1000));
-    const inferredEnd = (segment.endMs ?? segment.startMs + estimateDialogueDurationMs(segment.text)) / 1000;
-    const endSec = Math.max(startSec, Math.min(durationSec, inferredEnd));
-    if (startSec > cursor + 0.01) rows.push({ kind: "gap", startSec: cursor, endSec: startSec });
-    if (endSec > startSec) rows.push({ kind: "dialogue", startSec, endSec, segment });
-    cursor = Math.max(cursor, endSec);
-  }
-  if (cursor < durationSec - 0.01) rows.push({ kind: "gap", startSec: cursor, endSec: durationSec });
-  if (!rows.length) rows.push({ kind: "gap", startSec: 0, endSec: durationSec });
-  return rows;
-}
-
-function profileImagePrompt(profile: { name: string; imagePrompt?: string; description?: string }, kind: "characters" | "locations") {
-  const prompt = profile.imagePrompt?.trim() || profile.description?.trim() || "";
-  return kind === "characters"
-    ? characterReferencePrompt(profile.name, prompt, PROFILE_REFERENCE_ASPECT_RATIO)
-    : locationReferencePrompt(profile.name, prompt, PROFILE_REFERENCE_ASPECT_RATIO);
-}
-
-function sceneNeedsDialogueExtraction(scene: ScenePreview) {
-  return !hasExplicitDialogueSegments(scene) && Boolean(sceneText(scene, "dialogue_or_voiceover", "dialogueOrVoiceover", "voiceText", "voiceover", "ttsVoice", "tts_voice"));
-}
-
-function sceneScriptCharacterNames(scene: ScenePreview) {
-  const raw = scene.characters || scene.character_names || scene.characterNames;
-  const names = Array.isArray(raw) ? raw.map((value) => {
-    if (typeof value === "string") return value.trim();
-    if (!value || typeof value !== "object" || Array.isArray(value)) return "";
-    const record = value as Record<string, unknown>;
-    return String(record.name || record.character_name || record.characterName || "").trim();
-  }) : [];
-  const speaker = sceneText(scene, "speaker_character", "speakerCharacter", "speaker_name", "speakerName", "speaker");
-  return [...new Set([...names, speaker].filter((name) => name && !isTemplateEntityName(name) && !["narrator", "voiceover", "none", "n a"].includes(normalizeEntityName(name))))];
-}
-
-function sceneFieldValue(scene: ScenePreview, ...keys: string[]) {
-  for (const key of keys) {
-    const value = scene[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-    if (typeof value === "number") return String(value);
-    if (Array.isArray(value) && value.length) return value.map((item) => typeof item === "string" ? item : JSON.stringify(item)).join(" Â· ");
-  }
-  return "";
-}
-
-function normalizePromptForComparison(value: string) {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function dialogueTimecodeMs(value: string) {
-  const match = value.trim().match(/^(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[,.](\d{1,3})$/);
-  if (!match) return undefined;
-  const hours = Number(match[1] || 0);
-  const minutes = Number(match[2]);
-  const seconds = Number(match[3]);
-  const milliseconds = Number(match[4].padEnd(3, "0"));
-  return (((hours * 60 + minutes) * 60 + seconds) * 1000) + milliseconds;
-}
-
-function parseDialogueSrt(value: string, characters: ProjectCharacter[]): DialogueSegment[] {
-  const blocks = value.replace(/\r/g, "").trim().split(/\n\s*\n/).filter(Boolean);
-  const output: DialogueSegment[] = [];
-  for (const block of blocks) {
-    const lines = block.split("\n").map((line) => line.trim()).filter(Boolean);
-    const timeIndex = lines.findIndex((line) => line.includes("-->"));
-    if (timeIndex < 0) continue;
-    const timing = lines[timeIndex].split("-->").map((part) => part.trim());
-    const startMs = dialogueTimecodeMs(timing[0] || "");
-    const endMs = dialogueTimecodeMs(timing[1] || "");
-    if (startMs === undefined || endMs === undefined || endMs <= startMs || endMs > 15_000) continue;
-    let text = lines.slice(timeIndex + 1).join(" ").trim();
-    if (!text) continue;
-    const prefix = text.match(/^\[([^\]]+)\]\s*(.*)$/) || text.match(/^([^:]{1,60}):\s*(.+)$/);
-    const speakerName = prefix?.[1]?.trim();
-    const normalized = normalizeEntityName(speakerName || "");
-    const speaker = characters.find((character) => normalizeEntityName(character.name) === normalized);
-    if ((speaker || normalized === "narrator") && prefix?.[2]?.trim()) text = prefix[2].trim();
-    output.push({
-      id: `line-${Date.now()}-${output.length + 1}`,
-      speakerCharacterId: speaker?.id || undefined,
-      speakerName: speaker?.name || (normalized === "narrator" ? "NARRATOR" : undefined),
-      text,
-      startMs,
-      endMs,
-    });
-  }
-  return output;
-}
-
-function secondsInput(milliseconds: number | undefined) {
-  return milliseconds === undefined ? "" : (milliseconds / 1000).toFixed(1);
-}
-
-function mediaSettingsForScene(scene: ScenePreview | undefined, project: StoryProject): MediaGenerationSettings {
-  const sceneSettings = scene?.mediaGeneration || scene?.media_generation;
-  const overrides = sceneSettings && typeof sceneSettings === "object" && !Array.isArray(sceneSettings)
-    ? sceneSettings as Partial<MediaGenerationSettings>
-    : {};
-  return resolveMediaGenerationSettings({
-    ...project.mediaGeneration,
-    ...overrides,
-    ...(project.presetId === "ai-drama" ? { videoDurationMode: "scene" } : {}),
-    ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
-  });
-}
-
-function sceneVideoDurationLimit(model: VideoGenerationModelOption | undefined, quality: string) {
-  return videoDurationBoundsForModel(model, quality).max;
-}
-
-function sceneDurationSeconds(scene: ScenePreview, fallback = 15) {
-  const start = Number(scene.start_sec ?? scene.startSec);
-  const end = Number(scene.end_sec ?? scene.endSec);
-  const exact = Number.isFinite(start) && Number.isFinite(end) && end > start ? end - start : Number(scene.duration_sec ?? scene.durationSec ?? scene.voiceover_target_sec ?? scene.voiceoverTargetSec);
-  return Number.isFinite(exact) && exact > 0 ? Math.min(15, Math.max(1, exact)) : Math.min(15, Math.max(1, fallback || 15));
-}
-
-function sceneTimeRange(scene: ScenePreview) {
-  const start = Number(scene.start_sec ?? scene.startSec);
-  const end = Number(scene.end_sec ?? scene.endSec);
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return "0â€“15s";
-  return `${start.toFixed(0)}â€“${end.toFixed(0)}s`;
-}
-
-function videoFailureStageLabel(stage?: string, provider?: string) {
-  const label = provider === "flow" ? "Flow" : provider === "muse" ? "Muse.ai" : "Seedance";
-  if (stage === "flow_create") return `Táº¡o job ${label}`;
-  if (stage === "flow_poll") return `Theo dÃµi job ${label}`;
-  if (stage === "flow_download") return `Táº£i video ${label}`;
-  if (stage === "flow_checkpoint") return `LÆ°u job ${label}`;
-  if (stage === "seedance_create") return `Táº¡o task ${label}`;
-  if (stage === "seedance_poll") return `Theo dÃµi task ${label}`;
-  if (stage === "seedance_download") return `Táº£i video ${label}`;
-  if (stage === "seedance_checkpoint") return `LÆ°u task ${label}`;
-  return "Lá»—i xá»­ lÃ½ video";
-}
-
-function videoProviderDisplayName(provider?: string) {
-  return provider === "flow" ? "Flow" : provider === "muse" ? "Muse.ai" : provider === "higgsfield" ? "Higgsfield" : provider === "seedance" ? "Seedance" : "MaiVideo";
-}
-
-function sceneNeedsImage(scene: ScenePreview, project: StoryProject) {
-  const reference = sceneReferenceMedia(scene);
-  if (reference?.status === "ready" && !reference.stale && reference.provider === "upload") return false;
-  if (!(reference?.status === "ready" && !reference.stale && (String(reference.provider || "").startsWith("maivideo-image") || String(reference.provider || "").startsWith("muse-image") || String(reference.provider || "").startsWith("flow-image")))) return true;
-  const settings = mediaSettingsForScene(scene, project);
-  if (reference.model && reference.model !== settings.imageModel) return true;
-  const expectedCharacters = settings.imageUseCharacterReferences ? sceneReferenceCharacterIds(scene, "image") : [];
-  const savedCharacters = Array.isArray(reference.referenceCharacterIds) ? reference.referenceCharacterIds.map(String) : [];
-  return JSON.stringify([...expectedCharacters].sort()) !== JSON.stringify([...savedCharacters].sort()) || String(reference.referenceLocationId || "") !== sceneReferenceLocationId(scene, "image");
-}
-
-function sceneNeedsAiVideo(scene: ScenePreview) {
-  return !(scene.media?.status === "ready" && scene.media.kind === "video" && !scene.media.stale && ["maivideo-video", "seedance", "flow-video", "upload"].some((provider) => String(scene.media?.provider || "").startsWith(provider)));
-}
-
-function sceneHasExistingAiVideo(scene: ScenePreview) {
-  const media = scene.media;
-  const provider = String(media?.provider || "");
-  return media?.status === "ready"
-    && media.kind === "video"
-    && !media.stale
-    && (provider.startsWith("maivideo-video") || provider.startsWith("seedance") || provider.startsWith("flow-video"));
-}
-
-function sceneHasActiveMediaJob(scene: ScenePreview) {
-  return scene.mediaJob?.status === "queued" || scene.mediaJob?.status === "running";
-}
-
-function sceneNumberLabel(scene: ScenePreview) {
-  const number = Number(scene.sceneNumber || String(scene.id).replace(/\D/g, ""));
-  return Number.isFinite(number) && number > 0 ? `S${String(number).padStart(3, "0")}` : scene.id;
-}
-
-function compactSceneText(value: string, max = 130) {
-  return value.length > max ? `${value.slice(0, max - 1).trimEnd()}â€¦` : value;
-}
-
-function sceneReviewStatus(scene: ScenePreview): SceneReviewStatus {
-  const value = String(scene.reviewStatus || scene.review_status || "unreviewed");
-  return value === "approved" || value === "needs_changes" ? value : "unreviewed";
-}
-
-function sceneReviewLabel(status: SceneReviewStatus) {
-  return status === "approved" ? "ÄÃ£ duyá»‡t" : status === "needs_changes" ? "Cáº§n sá»­a" : "Chá» ngÆ°á»i dÃ¹ng";
-}
-
-function sceneReviewTone(status: SceneReviewStatus) {
-  return status === "approved" ? "approved" : status === "needs_changes" ? "needs-changes" : "unreviewed";
-}
-
-function sceneAiReview(scene: ScenePreview): SceneAiReview {
-  const raw = scene.aiReview || (scene.ai_review as Partial<SceneAiReview> | undefined) || {};
-  const status = String(raw.status || "pending");
-  return {
-    status: ["passed", "needs_changes", "error"].includes(status) ? status as SceneAiReviewStatus : "pending",
-    score: Number.isFinite(Number(raw.score)) ? Math.max(0, Math.min(100, Number(raw.score))) : 0,
-    summary: String(raw.summary || "AI chÆ°a Ä‘Ã¡nh giÃ¡ cáº£nh nÃ y."),
-    issues: Array.isArray(raw.issues) ? raw.issues.map((issue) => String(issue)).filter(Boolean) : [],
-    checks: raw.checks && typeof raw.checks === "object" ? raw.checks : {},
-    model: raw.model,
-    createdAt: raw.createdAt,
-    error: raw.error,
-  };
-}
-
-function sceneAiReviewLabel(status: SceneAiReviewStatus) {
-  return status === "passed" ? "AI Ä‘áº¡t" : status === "needs_changes" ? "AI cáº§n sá»­a" : status === "error" ? "AI lá»—i" : "Chá» AI";
-}
-
-function sceneAiReviewTone(status: SceneAiReviewStatus) {
-  return status === "passed" ? "ai-passed" : status === "needs_changes" ? "ai-needs-changes" : status === "error" ? "ai-error" : "ai-pending";
-}
-
-function sceneMatchesAiReviewFilter(scene: ScenePreview, filter: SceneAiReviewFilter) {
-  return filter === "all" || sceneAiReview(scene).status === filter;
-}
-
-function sceneMediaReady(media?: SceneMediaPreview, aiDrama = false) {
-  return Boolean(media && media.status === "ready" && !media.stale && (!aiDrama || media.kind === "video"));
-}
-
-function sceneMediaKindLabel(media?: SceneMediaPreview, aiDrama = false) {
-  if (media?.stale) return "Cáº§n táº¡o láº¡i";
-  if (!media || media.status !== "ready") return "Thiáº¿u media";
-  if (aiDrama && media.kind !== "video") return "Sai loáº¡i media";
-  if (media.provider?.includes("muse")) return "Muse.ai";
-  if (media.provider?.includes("higgsfield")) return "Seedance 2.0 Â· Higgsfield";
-  if (media.model === "seedance-2.0-fast") return "Seedance 2.0 Â· PixVerse";
-  if (media.provider?.includes("seedance")) return "Seedance AI";
-  return media.provider?.startsWith("maivideo") ? "MaiVideo AI" : media.provider?.startsWith("pexels") ? "Stock" : "CÃ³ media";
-}
-
-function sceneMatchesMediaFilter(scene: ScenePreview, filter: SceneMediaFilter, aiDrama = false) {
-  const media = scene.media;
-  if (filter === "all") return true;
-  const ready = sceneMediaReady(media, aiDrama);
-  if (filter === "missing") return !ready;
-  if (filter === "ready") return ready;
-  if (filter === "ai") return ready && media?.kind === "video" && Boolean(media.provider?.startsWith("maivideo"));
-  return ready && Boolean(media?.provider?.startsWith("pexels"));
-}
-
-function StatusPill({ tone, children }: { tone: string; children: React.ReactNode }) {
-  return <span className={`status-pill ${tone}`}><span className="status-dot" />{children}</span>;
-}
-
-function projectProgress(project: StoryProject) {
-  return Math.min(100, Math.round((project.completedScenes / Math.max(1, project.totalScenes)) * 100));
-}
-
-function mediaSourceLabel(source: StoryProject["mediaSource"]) {
-  return source === "stock-image" ? "Stock áº£nh" : source === "stock-video" ? "Stock video" : source === "maivideo-image" ? "MaiVideo AI áº£nh" : source === "maivideo-video" ? "AI video Â· há»‡ thá»‘ng Ä‘Ã£ chá»n" : "Stock mix Â· MaiVideo fallback";
-}
-
-function projectRenderSettings(project: StoryProject, savedSettings?: Partial<RenderSettings> | null): RenderSettings {
-  const defaults = project.presetId === "ai-drama"
-    ? { ...DEFAULT_RENDER_SETTINGS, enableRandomPanZoom: false }
-    : DEFAULT_RENDER_SETTINGS;
-  return normalizeRenderSettings({ ...defaults, ...savedSettings });
-}
-
-export function DashboardView({ projectSlug }: { projectSlug?: string }) {
-  const { projects, ready } = useProjects();
-  const project = projectSlug ? projects.find((item) => item.slug === projectSlug) : projects[0];
-
-  if (!ready) return <div className="loading-state">Äang táº£i workspaceâ€¦</div>;
-  if (!project) return <div className="empty-page"><div className="empty-icon"><Icon name="folder" size={22} /></div><h1>ChÆ°a cÃ³ dá»± Ã¡n</h1><p>Táº¡o dá»± Ã¡n Ä‘áº§u tiÃªn Ä‘á»ƒ báº¯t Ä‘áº§u pipeline ká»‹ch báº£n.</p><Link className="primary-button" href="/projects/new"><Icon name="plus" size={16} />Táº¡o dá»± Ã¡n</Link></div>;
-
-  return <DashboardProjectContent key={project.slug} project={project} />;
-}
-
-function DashboardProjectContent({ project }: { project: StoryProject }) {
-  const { activities, updateProject, refresh } = useProjects();
-  const { accounts: seedanceAccounts, defaultAccountId: defaultSeedanceAccountId } = useSeedanceAccounts();
-  const [activeFilter, setActiveFilter] = useState("Táº¥t cáº£");
-  const [isRunning, setIsRunning] = useState(false);
-  const [showExtendEpisodes, setShowExtendEpisodes] = useState(false);
-  const [extendEpisodeCount, setExtendEpisodeCount] = useState(1);
-  const [extendingEpisodes, setExtendingEpisodes] = useState(false);
-  const [runningScriptChunkId, setRunningScriptChunkId] = useState("");
-  const [viewingScriptChunkId, setViewingScriptChunkId] = useState("");
-  const [sourceUrl, setSourceUrl] = useState(project?.sourceUrl || "");
-  const [sourceText, setSourceText] = useState(project?.sourceText || "");
-  const [runMessage, setRunMessage] = useState<{ tone: "success" | "error"; text: string } | null>(null);
-  const [publishingScope, setPublishingScope] = useState("series");
-  const [publishingBusy, setPublishingBusy] = useState(false);
-  const [publishingError, setPublishingError] = useState("");
-  const [publishingNotice, setPublishingNotice] = useState("");
-  const [scenes, setScenes] = useState<ScenePreview[]>([]);
-  const [scenesLoading, setScenesLoading] = useState(false);
-  const [sceneVideoPromptPreviews, setSceneVideoPromptPreviews] = useState<Record<string, SceneVideoPromptPreviewState>>({});
-  const sceneVideoPromptPreviewRequestIds = useRef<Record<string, number>>({});
-  const [copyingSceneVideoPromptId, setCopyingSceneVideoPromptId] = useState("");
-  const [copiedSceneVideoPromptId, setCopiedSceneVideoPromptId] = useState("");
-  const [copyingSceneVideoReferencesId, setCopyingSceneVideoReferencesId] = useState("");
-  const [copiedSceneVideoReferencesId, setCopiedSceneVideoReferencesId] = useState("");
-  const [preparedSceneVideoReferencesId, setPreparedSceneVideoReferencesId] = useState("");
-  const [sceneVideoReferenceCopyProgress, setSceneVideoReferenceCopyProgress] = useState<Record<string, { cacheKey: string; nextIndex: number; lastCopiedIndex: number; total: number; complete: boolean }>>({});
-  const [sceneVideoReferenceCopyNotice, setSceneVideoReferenceCopyNotice] = useState<{ sceneId: string; text: string } | null>(null);
-  const sceneVideoReferenceClipboardCache = useRef<Record<string, Blob[]>>({});
-  const sceneVideoReferenceClipboardPending = useRef<Record<string, Promise<Blob[]> | undefined>>({});
-  const [sceneUploadProgress, setSceneUploadProgress] = useState<{ sceneId: string; text: string } | null>(null);
-  const [sceneError, setSceneError] = useState("");
-  const [scenePromptDrafts, setScenePromptDrafts] = useState<Record<string, { imagePrompt: string; videoPrompt: string }>>({});
-  const [scenePromptSavingId, setScenePromptSavingId] = useState("");
-  const dialogueDirtySceneIdsRef = useRef(new Set<string>());
-  const [voiceCatalog, setVoiceCatalog] = useState<OmniVoiceCatalog | null>(null);
-  const [mediaCatalog, setMediaCatalog] = useState<MediaModelCatalog | null>(null);
-  const [mediaCatalogError, setMediaCatalogError] = useState("");
-  const [voiceCatalogLoading, setVoiceCatalogLoading] = useState(false);
-  const [sceneTtsSaving, setSceneTtsSaving] = useState(false);
-  const [sceneMediaSettingsSaving, setSceneMediaSettingsSaving] = useState(false);
-  const [batchMediaSettings, setBatchMediaSettings] = useState<MediaGenerationSettings>(DEFAULT_MEDIA_GENERATION_SETTINGS);
-  const [batchMediaBusy, setBatchMediaBusy] = useState(false);
-  const [batchMediaProgress, setBatchMediaProgress] = useState("");
-  const [batchRegenerateImages, setBatchRegenerateImages] = useState(false);
-  const [batchRegenerateVideos, setBatchRegenerateVideos] = useState(false);
-  const [selectedSceneId, setSelectedSceneId] = useState("");
-  const [sceneDetailOpen, setSceneDetailOpen] = useState(false);
-  const [dramaTab, setDramaTab] = useState<"scenes" | "characters" | "locations">("scenes");
-  const [profileBusyId, setProfileBusyId] = useState("");
-  const [profileImageBusyIds, setProfileImageBusyIds] = useState<Set<string>>(() => new Set());
-  const [profileBatchKinds, setProfileBatchKinds] = useState<Set<"characters" | "locations">>(() => new Set());
-  const [profileBatchProgress, setProfileBatchProgress] = useState<Record<"characters" | "locations", string>>({ characters: "", locations: "" });
-  const [newDramaProfile, setNewDramaProfile] = useState({ name: "", description: "", imagePrompt: "" });
-  const dramaReferenceSyncAttempted = useRef("");
-  const dramaSceneAssignmentAttempted = useRef("");
-  const [characterVoiceSavingId, setCharacterVoiceSavingId] = useState("");
-  const [generatingSceneId, setGeneratingSceneId] = useState("");
-  const [generatingSceneMediaKind, setGeneratingSceneMediaKind] = useState<"image" | "video" | "">("");
-  const [sceneSearch, setSceneSearch] = useState("");
-  const [sceneChunkFilter, setSceneChunkFilter] = useState("all");
-  const [sceneReviewFilter, setSceneReviewFilter] = useState<SceneReviewFilter>("all");
-  const [sceneAiReviewFilter, setSceneAiReviewFilter] = useState<SceneAiReviewFilter>("all");
-  const [sceneMediaFilter, setSceneMediaFilter] = useState<SceneMediaFilter>("all");
-  const [expandedDramaSceneId, setExpandedDramaSceneId] = useState("");
-  const [sceneImagePreview, setSceneImagePreview] = useState<ScenePreview | null>(null);
-  const [sceneReviewNote, setSceneReviewNote] = useState("");
-  const [characterName, setCharacterName] = useState("");
-  const [characterDescription, setCharacterDescription] = useState("");
-  const [characterImageSource, setCharacterImageSource] = useState<"upload" | "project" | "maivideo">("upload");
-  const [selectedCharacterMediaSceneId, setSelectedCharacterMediaSceneId] = useState("");
-  const [selectedMaiVideoImageId, setSelectedMaiVideoImageId] = useState("");
-  const [maiVideoLibraryImages, setMaiVideoLibraryImages] = useState<MaiVideoImagePreview[]>([]);
-  const [maiVideoLibraryLoading, setMaiVideoLibraryLoading] = useState(false);
-  const [maiVideoLibraryLoaded, setMaiVideoLibraryLoaded] = useState(false);
-  const [maiVideoLibraryError, setMaiVideoLibraryError] = useState("");
-  const [characterSaving, setCharacterSaving] = useState(false);
-  const [characterError, setCharacterError] = useState("");
-  const [locationName, setLocationName] = useState("");
-  const [locationAliases, setLocationAliases] = useState("");
-  const [locationDescription, setLocationDescription] = useState("");
-  const [locationImageSource, setLocationImageSource] = useState<"upload" | "project" | "maivideo">("upload");
-  const [selectedLocationMediaSceneId, setSelectedLocationMediaSceneId] = useState("");
-  const [selectedLocationMaiVideoImageId, setSelectedLocationMaiVideoImageId] = useState("");
-  const [locationSaving, setLocationSaving] = useState(false);
-  const [locationError, setLocationError] = useState("");
-  const [sceneCharacterSaving, setSceneCharacterSaving] = useState(false);
-  const [dialogueSavingSceneId, setDialogueSavingSceneId] = useState("");
-  const [dialogueTranslationLanguage, setDialogueTranslationLanguage] = useState(() => (project.language || "vi").toLowerCase().startsWith("vi") ? "en" : "vi");
-  const [dialogueTranslationSceneId, setDialogueTranslationSceneId] = useState("");
-  const [dialogueTranslationBatchProgress, setDialogueTranslationBatchProgress] = useState("");
-  const [dialogueTtsBatchProgress, setDialogueTtsBatchProgress] = useState("");
-  const [dialogueExtractingSceneId, setDialogueExtractingSceneId] = useState("");
-  const [dialogueExtractBatchProgress, setDialogueExtractBatchProgress] = useState("");
-  const [characterSyncing, setCharacterSyncing] = useState(false);
-  const [dialogueSrtDrafts, setDialogueSrtDrafts] = useState<Record<string, string>>({});
-  const [autoAssignCharactersBusy, setAutoAssignCharactersBusy] = useState(false);
-  const [reviewSaving, setReviewSaving] = useState(false);
-  const [aiReviewRunning, setAiReviewRunning] = useState(false);
-  const [aiReviewProgress, setAiReviewProgress] = useState("");
-  const [continuityRunning, setContinuityRunning] = useState(false);
-  const [renderRunning, setRenderRunning] = useState(false);
-  const [renderingChunkId, setRenderingChunkId] = useState("");
-  const [renderingLanguage, setRenderingLanguage] = useState("");
-  const [batchRenderProgress, setBatchRenderProgress] = useState("");
-  const [ttsRunning, setTtsRunning] = useState(false);
-  const [ttsChunkId, setTtsChunkId] = useState("");
-  const [deletingTtsChunkId, setDeletingTtsChunkId] = useState("");
-  const [ttsSceneId, setTtsSceneId] = useState("");
-  const [batchTtsProgress, setBatchTtsProgress] = useState("");
-  const [importingScripts, setImportingScripts] = useState(false);
-  const [episodeScriptEditorOpen, setEpisodeScriptEditorOpen] = useState(false);
-  const [episodeScriptChunkId, setEpisodeScriptChunkId] = useState("");
-  const [episodeScriptDraft, setEpisodeScriptDraft] = useState("");
-  const [episodeScriptDrafts, setEpisodeScriptDrafts] = useState<Record<string, string>>({});
-  const [episodeScriptLoading, setEpisodeScriptLoading] = useState(false);
-  const [logoUploading, setLogoUploading] = useState(false);
-  const [renderSettings, setRenderSettings] = useState<RenderSettings>(() => projectRenderSettings(project, project.render?.settings));
-  const [videoQueueRunning, setVideoQueueRunning] = useState(false);
-  const characterImageInputRef = useRef<HTMLInputElement>(null);
-  const locationImageInputRef = useRef<HTMLInputElement>(null);
-  const videoQueueStopRef = useRef(false);
-  const autoResumeVideoQueueAtRef = useRef<Record<string, number>>({});
-  const scenesLoadInFlightRef = useRef(false);
-  const episodeScriptLoadTokenRef = useRef(0);
-
-  useEffect(() => {
-    const search = new URLSearchParams(window.location.search);
-    if (search.get("setupCharacters") !== "1") return;
-    if (project.presetId === "ai-drama") setDramaTab("characters");
-    const timer = window.setTimeout(() => {
-      if (project.presetId === "ai-drama") {
-        const characterForm = document.getElementById("ai-drama-character-create");
-        characterForm?.scrollIntoView({ behavior: "smooth", block: "center" });
-        characterForm?.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true });
-      } else {
-        const characterPanel = document.getElementById("character-reference-panel");
-        if (characterPanel instanceof HTMLDetailsElement) characterPanel.open = true;
-        const locationPanel = document.getElementById("location-reference-panel");
-        if (locationPanel instanceof HTMLDetailsElement) locationPanel.open = true;
-        characterPanel?.scrollIntoView({ behavior: "smooth", block: "center" });
-        document.getElementById("character-name")?.focus({ preventScroll: true });
-      }
-      window.history.replaceState(window.history.state, "", window.location.pathname);
-    }, 120);
-    return () => window.clearTimeout(timer);
-  }, [project?.slug, project?.presetId]);
-
-  useEffect(() => {
-    if (project) {
-      setSourceUrl(project.sourceUrl);
-      setSourceText(project.sourceText);
-      setRenderSettings(projectRenderSettings(project, project.render?.settings));
-    }
-  }, [project?.slug, project?.presetId, project?.render?.updatedAt]);
-
-  useEffect(() => {
-    if (project) setBatchMediaSettings(resolveMediaGenerationSettings({ ...DEFAULT_MEDIA_GENERATION_SETTINGS, ...project.mediaGeneration, ...(project.presetId === "ai-drama" ? { videoDurationMode: "scene" } : {}) }));
-  }, [project?.slug, project?.mediaGeneration?.imageModel, project?.mediaGeneration?.imageQuality, project?.mediaGeneration?.imageDetailLevel, project?.mediaGeneration?.seedanceAccountId, project?.mediaGeneration?.videoModel, project?.mediaGeneration?.videoQuality, project?.mediaGeneration?.videoDurationMode, project?.mediaGeneration?.videoDurationSec, project?.mediaGeneration?.seedanceChatMode, project?.mediaGeneration?.videoMultiShot, project?.mediaGeneration?.videoAudio, project?.mediaGeneration?.videoOffPeak, project?.mediaGeneration?.imageUseCharacterReferences, project?.mediaGeneration?.videoUseCharacterReferences, project?.mediaGeneration?.videoUseLocationReferences, project?.mediaGeneration?.videoUseSceneImageReference, project?.mediaGeneration?.flowReferenceMode]);
-
-  useEffect(() => {
-    if (!project || publishingScope !== "series" || project.publishingPackage?.series) return;
-    const firstPackagedEpisode = project.chunks.find((chunk) => chunk.outputPath && project.publishingPackage?.episodes?.[chunk.id]);
-    if (firstPackagedEpisode) setPublishingScope(firstPackagedEpisode.id);
-  }, [project?.slug, project?.completedChunks, project?.publishingPackage, publishingScope]);
-
-  function updateRenderSetting<K extends keyof RenderSettings>(key: K, value: RenderSettings[K]) {
-    setRenderSettings((current) => ({ ...current, [key]: value }));
-  }
-
-  async function uploadRenderLogo(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file || !project?.slug) return;
-    setLogoUploading(true);
-    setSceneError("");
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/render/logo`, {
-        method: "POST",
-        body: formData,
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ táº£i logo lÃªn.");
-      updateRenderSetting("logo", "custom");
-      updateRenderSetting("logoPath", String(payload.path));
-      setRunMessage({ tone: "success", text: `ÄÃ£ táº£i logo ${payload.name || file.name}. Logo sáº½ Ä‘Æ°á»£c dÃ¹ng á»Ÿ láº§n render káº¿ tiáº¿p.` });
-    } catch (cause) {
-      setRunMessage({ tone: "error", text: cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ táº£i logo lÃªn." });
-    } finally {
-      setLogoUploading(false);
-    }
-  }
-
-  async function loadMaiVideoLibraryImages(force = false) {
-    if (maiVideoLibraryLoading || (maiVideoLibraryLoaded && !force)) return;
-    setMaiVideoLibraryLoading(true);
-    setMaiVideoLibraryError("");
-    try {
-      const response = await fetch("/api/maivideo/media-library", { cache: "no-store" });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng táº£i Ä‘Æ°á»£c thÆ° viá»‡n áº£nh MaiVideo.");
-      setMaiVideoLibraryImages(Array.isArray(payload.images) ? payload.images as MaiVideoImagePreview[] : []);
-      setMaiVideoLibraryLoaded(true);
-    } catch (cause) {
-      setMaiVideoLibraryError(cause instanceof Error ? cause.message : "KhÃ´ng táº£i Ä‘Æ°á»£c thÆ° viá»‡n áº£nh MaiVideo.");
-    } finally {
-      setMaiVideoLibraryLoading(false);
-    }
-  }
-
-  async function createCharacter(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const file = characterImageInputRef.current?.files?.[0];
-    const hasSelectedImage = characterImageSource === "upload" ? Boolean(file) : characterImageSource === "project" ? Boolean(selectedCharacterMediaSceneId) : Boolean(selectedMaiVideoImageId);
-    if (!project?.slug || !characterName.trim() || !hasSelectedImage) {
-      setCharacterError("Nháº­p tÃªn nhÃ¢n váº­t vÃ  chá»n áº£nh tham chiáº¿u.");
-      return;
-    }
-    setCharacterSaving(true);
-    setCharacterError("");
-    try {
-      const formData = new FormData();
-      formData.append("name", characterName.trim());
-      formData.append("description", characterDescription.trim());
-      if (characterImageSource === "upload" && file) formData.append("file", file);
-      if (characterImageSource === "project") formData.append("sourceSceneId", selectedCharacterMediaSceneId);
-      if (characterImageSource === "maivideo") formData.append("maivideoMediaId", selectedMaiVideoImageId);
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/characters`, { method: "POST", body: formData });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ lÆ°u há»“ sÆ¡ nhÃ¢n váº­t.");
-      setCharacterName("");
-      setCharacterDescription("");
-      setSelectedCharacterMediaSceneId("");
-      setSelectedMaiVideoImageId("");
-      setCharacterImageSource("upload");
-      if (characterImageInputRef.current) characterImageInputRef.current.value = "";
-      await refresh();
-      setRunMessage({ tone: "success", text: `ÄÃ£ lÆ°u áº£nh nháº­n diá»‡n cho ${String((payload.character as ProjectCharacter)?.name || "nhÃ¢n váº­t")}.` });
-    } catch (cause) {
-      setCharacterError(cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ lÆ°u há»“ sÆ¡ nhÃ¢n váº­t.");
-    } finally {
-      setCharacterSaving(false);
-    }
-  }
-
-  async function syncScriptCharacters() {
-    if (!project?.slug || characterSyncing || characterSaving) return;
-    setCharacterSyncing(true);
-    setCharacterError("");
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/characters/sync`, { method: "POST" });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ Ä‘á»“ng bá»™ Character Bible tá»« ká»‹ch báº£n.");
-      await refresh();
-      await loadScenes();
-      const created = Number(payload.created) || 0;
-      const createdLocations = Number(payload.createdLocations) || 0;
-      setRunMessage({ tone: "success", text: created || createdLocations ? `ÄÃ£ Ä‘á»“ng bá»™ ${created} nhÃ¢n váº­t vÃ  ${createdLocations} bá»‘i cáº£nh tá»« ká»‹ch báº£n. GÃ¡n voice, prompt vÃ  áº£nh tham chiáº¿u trong cÃ¡c tab há»“ sÆ¡.` : "Há»“ sÆ¡ nhÃ¢n váº­t vÃ  bá»‘i cáº£nh Ä‘Ã£ khá»›p vá»›i ká»‹ch báº£n." });
-    } catch (cause) {
-      setCharacterError(cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ Ä‘á»“ng bá»™ Character Bible tá»« ká»‹ch báº£n.");
-    } finally {
-      setCharacterSyncing(false);
-    }
-  }
-
-  async function saveCharacterVoice(character: ProjectCharacter, voiceId: string) {
-    if (!project?.slug || characterVoiceSavingId) return;
-    const voice = voiceCatalog?.voices.find((item) => item.id === voiceId);
-    if (voiceId && !voice) return;
-    setCharacterVoiceSavingId(character.id);
-    setCharacterError("");
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/characters`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          characterId: character.id,
-          voiceId,
-          voiceName: voice?.name || "",
-          voiceLanguage: voice?.language || "",
-        }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ lÆ°u voice cho nhÃ¢n váº­t.");
-      await refresh();
-      await loadScenes();
-      setRunMessage({ tone: "success", text: voice ? `ÄÃ£ gÃ¡n ${voice.name} cho ${character.name}.` : `ÄÃ£ gá»¡ voice riÃªng cá»§a ${character.name}.` });
-    } catch (cause) {
-      setCharacterError(cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ lÆ°u voice cho nhÃ¢n váº­t.");
-    } finally {
-      setCharacterVoiceSavingId("");
-    }
-  }
-
-  async function saveSceneReferences(characterIds: string[], locationId = sceneLocationId(selectedScene)) {
-    if (!project?.slug || !selectedScene || sceneCharacterSaving) return;
-    setSceneCharacterSaving(true);
-    setSceneError("");
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(selectedScene.id)}/characters`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ characterIds, locationId }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ lÆ°u áº£nh tham chiáº¿u cho cáº£nh.");
-      const updatedScene = payload.scene as ScenePreview;
-      setScenes((current) => current.map((item) => item.id === updatedScene.id ? { ...item, ...updatedScene } : item));
-      invalidateSceneVideoPromptPreview(updatedScene.id);
-      setRunMessage({ tone: "success", text: `ÄÃ£ lÆ°u áº£nh tham chiáº¿u cho ${sceneNumberLabel(selectedScene)}.` });
-      await refresh();
-    } catch (cause) {
-      setSceneError(cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ lÆ°u áº£nh tham chiáº¿u cho cáº£nh.");
-    } finally {
-      setSceneCharacterSaving(false);
-    }
-  }
-
-  async function saveSceneSpeaker(scene: ScenePreview, speakerCharacterId: string) {
-    if (!project?.slug || sceneCharacterSaving) return;
-    setSceneCharacterSaving(true);
-    setSceneError("");
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(scene.id)}/characters`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          characterIds: sceneCharacterIds(scene),
-          locationId: sceneLocationId(scene),
-          speakerCharacterId,
-        }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ lÆ°u nhÃ¢n váº­t thoáº¡i cho cáº£nh.");
-      const updatedScene = payload.scene as ScenePreview;
-      setScenes((current) => current.map((item) => item.id === updatedScene.id ? { ...item, ...updatedScene } : item));
-      invalidateSceneVideoPromptPreview(updatedScene.id);
-      await refresh();
-      const speaker = project.characters?.find((character) => character.id === speakerCharacterId);
-      setRunMessage({ tone: "success", text: speaker ? `${sceneNumberLabel(scene)} dÃ¹ng voice cá»§a ${speaker.name}.` : `ÄÃ£ gá»¡ nhÃ¢n váº­t thoáº¡i khá»i ${sceneNumberLabel(scene)}.` });
-    } catch (cause) {
-      setSceneError(cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ lÆ°u nhÃ¢n váº­t thoáº¡i cho cáº£nh.");
-    } finally {
-      setSceneCharacterSaving(false);
-    }
-  }
-
-  async function saveDramaSceneReferences(scene: ScenePreview, characterIds: string[], locationId: string, referenceKind: SceneReferenceKind) {
-    if (!project || sceneCharacterSaving) return;
-    setSceneCharacterSaving(true);
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(scene.id)}/characters`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ characterIds, locationId, referenceKind }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng lÆ°u Ä‘Æ°á»£c áº£nh tham chiáº¿u.");
-      const updatedScene = payload.scene as ScenePreview;
-      setScenes((current) => current.map((item) => item.id === updatedScene.id ? { ...item, ...updatedScene } : item));
-      invalidateSceneVideoPromptPreview(updatedScene.id);
-      await refresh();
-    } catch (cause) { setSceneError(cause instanceof Error ? cause.message : "KhÃ´ng lÆ°u Ä‘Æ°á»£c áº£nh tham chiáº¿u."); }
-    finally { setSceneCharacterSaving(false); }
-  }
-
-  function updateDialogueDraft(sceneId: string, update: (segments: DialogueSegment[]) => DialogueSegment[]) {
-    const target = scenes.find((scene) => scene.id === sceneId);
-    if (!target) return;
-    const current = sceneDialogueSegments(target, project?.characters || []);
-    const next = update(current);
-    setScenes((items) => items.map((scene) => scene.id === sceneId ? { ...scene, dialogueSegments: next } : scene));
-    dialogueDirtySceneIdsRef.current.add(sceneId);
-    invalidateSceneVideoPromptPreview(sceneId);
-  }
-
-  function addDialogueSegment(scene: ScenePreview) {
-    const current = sceneDialogueSegments(scene, characterProfiles);
-    const last = current[current.length - 1];
-    const suggestedStart = last
-      ? last.endMs ?? (last.startMs + Number(last.audio?.durationMs || estimateDialogueDurationMs(last.text)))
-      : 0;
-    const startMs = Math.min(14_000, Math.max(0, suggestedStart));
-    const next: DialogueSegment = {
-      id: `line-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      text: "",
-      startMs,
-      endMs: Math.min(15_000, startMs + 2_000),
-    };
-    updateDialogueDraft(scene.id, (segments) => [...segments, next]);
-  }
-
-  async function saveDialogueSegments(scene: ScenePreview, refreshProject = true) {
-    if (!project?.slug || dialogueSavingSceneId) return undefined;
-    const segments = sceneDialogueSegments(scene, characterProfiles);
-    setDialogueSavingSceneId(scene.id);
-    setSceneError("");
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(scene.id)}/dialogue`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ dialogueSegments: segments }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ lÆ°u timeline lá»i thoáº¡i.");
-      const updatedScene = payload.scene as ScenePreview;
-      setScenes((items) => items.map((item) => item.id === updatedScene.id ? { ...item, ...updatedScene } : item));
-      dialogueDirtySceneIdsRef.current.delete(scene.id);
-      if (refreshProject) await refresh();
-      return { scene: updatedScene, segments: sceneDialogueSegments(updatedScene, characterProfiles) };
-    } catch (cause) {
-      setSceneError(cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ lÆ°u timeline lá»i thoáº¡i.");
-      return undefined;
-    } finally {
-      setDialogueSavingSceneId("");
-    }
-  }
-
-  async function requestSceneDialogueTranslation(scene: ScenePreview, targetLanguage: string, missingOnly = false) {
-    const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(scene.id)}/translate-dialogue`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ targetLanguage, missingOnly }),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok || !payload.ok) throw new Error(payload.message || `KhÃ´ng dá»‹ch Ä‘Æ°á»£c ${sceneNumberLabel(scene)}.`);
-    const updatedScene = payload.scene as ScenePreview;
-    setScenes((current) => current.map((item) => item.id === updatedScene.id ? { ...item, ...updatedScene } : item));
-    return updatedScene;
-  }
-
-  async function translateSceneDialogue(scene: ScenePreview) {
-    if (!project?.slug || dialogueTranslationSceneId || dialogueTranslationBatchProgress || dialogueTtsBatchProgress || ttsRunning || renderRunning || dialogueSavingSceneId || isRunning || runningScriptChunkId || generatingSceneId || batchMediaBusy || videoQueueRunning) return;
-    setDialogueTranslationSceneId(scene.id);
-    setSceneError("");
-    setRunMessage(null);
-    try {
-      const saved = await saveDialogueSegments(scene, false);
-      if (!saved) throw new Error("KhÃ´ng thá»ƒ lÆ°u timeline lá»i thoáº¡i trÆ°á»›c khi dá»‹ch.");
-      await requestSceneDialogueTranslation(scene, dialogueTranslationLanguage);
-      setRunMessage({ tone: "success", text: `${sceneNumberLabel(scene)} Ä‘Ã£ dá»‹ch thoáº¡i sang ${voiceLanguageLabel(dialogueTranslationLanguage)}.` });
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : "KhÃ´ng dá»‹ch Ä‘Æ°á»£c lá»i thoáº¡i cáº£nh nÃ y.";
-      setSceneError(message);
-      setRunMessage({ tone: "error", text: message });
-    } finally {
-      setDialogueTranslationSceneId("");
-    }
-  }
-
-  async function translateAllMissingDialogue() {
-    if (!project?.slug || dialogueTranslationSceneId || dialogueTranslationBatchProgress || dialogueTtsBatchProgress || ttsRunning || renderRunning || dialogueSavingSceneId || isRunning || runningScriptChunkId || generatingSceneId || batchMediaBusy || videoQueueRunning) return;
-    const targets = filteredScenes.filter((scene) => {
-      const segments = sceneDialogueSegments(scene, project.characters || []);
-      return segments.length > 0 && segments.some((segment) => !segment.translations?.[dialogueTranslationLanguage]?.trim());
-    });
-    if (!targets.length) return;
-    setDialogueTranslationBatchProgress(`0/${targets.length}`);
-    setSceneError("");
-    setRunMessage(null);
-    let completed = 0;
-    const failures: string[] = [];
-    try {
-      for (const scene of targets) {
-        try {
-          const saved = await saveDialogueSegments(scene, false);
-          if (!saved) throw new Error("KhÃ´ng thá»ƒ lÆ°u timeline thoáº¡i.");
-          await requestSceneDialogueTranslation(scene, dialogueTranslationLanguage, true);
-          completed += 1;
-        } catch (cause) {
-          failures.push(`${sceneNumberLabel(scene)}: ${cause instanceof Error ? cause.message : "lá»—i dá»‹ch"}`);
-        }
-        setDialogueTranslationBatchProgress(`${completed}/${targets.length}`);
-      }
-      const message = failures.length
-        ? `ÄÃ£ dá»‹ch ${completed}/${targets.length} cáº£nh; ${failures.length} cáº£nh lá»—i. ${failures.slice(0, 2).join(" Â· ")}`
-        : `ÄÃ£ dá»‹ch lá»i thoáº¡i ${completed} cáº£nh sang ${voiceLanguageLabel(dialogueTranslationLanguage)}.`;
-      setRunMessage({ tone: failures.length ? "error" : "success", text: message });
-      if (failures.length) setSceneError(failures.slice(0, 3).join("\n"));
-    } finally {
-      setDialogueTranslationBatchProgress("");
-    }
-  }
-
-  function updateScenePromptDraft(scene: ScenePreview, field: "imagePrompt" | "videoPrompt", value: string) {
-    if (field === "videoPrompt") invalidateSceneVideoPromptPreview(scene.id);
-    setScenePromptDrafts((current) => {
-      const existing = current[scene.id] || {
-        imagePrompt: sceneFieldValue(scene, "image_prompt", "imagePrompt"),
-        videoPrompt: sceneFieldValue(scene, "video_prompt", "videoPrompt"),
-      };
-      return { ...current, [scene.id]: { ...existing, [field]: value } };
-    });
-  }
-
-  async function saveScenePrompts(scene: ScenePreview) {
-    if (!project?.slug || scenePromptSavingId || renderRunning || videoQueueRunning || generatingSceneId) return;
-    const prompts = scenePromptDrafts[scene.id] || {
-      imagePrompt: sceneFieldValue(scene, "image_prompt", "imagePrompt"),
-      videoPrompt: sceneFieldValue(scene, "video_prompt", "videoPrompt"),
-    };
-    if (!prompts.imagePrompt.trim() || !prompts.videoPrompt.trim()) {
-      setSceneError("HÃ£y giá»¯ cáº£ prompt táº¡o áº£nh vÃ  prompt táº¡o video cho cáº£nh.");
-      return;
-    }
-    setScenePromptSavingId(scene.id);
-    setSceneError("");
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(scene.id)}/prompts`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(prompts),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ lÆ°u prompt cho cáº£nh.");
-      const updatedScene = payload.scene as ScenePreview;
-      setScenes((items) => items.map((item) => item.id === updatedScene.id ? { ...item, ...updatedScene } : item));
-      invalidateSceneVideoPromptPreview(updatedScene.id);
-      setScenePromptDrafts((current) => ({ ...current, [scene.id]: { imagePrompt: prompts.imagePrompt.trim(), videoPrompt: prompts.videoPrompt.trim() } }));
-      await refresh();
-      setRunMessage({ tone: "success", text: `ÄÃ£ lÆ°u prompt áº£nh vÃ  video cho ${sceneNumberLabel(scene)}. Media cÅ© Ä‘Æ°á»£c Ä‘Ã¡nh dáº¥u cáº§n táº¡o láº¡i.` });
-    } catch (cause) {
-      setSceneError(cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ lÆ°u prompt cho cáº£nh.");
-    } finally {
-      setScenePromptSavingId("");
-    }
-  }
-
-  async function requestDialogueExtraction(scene: ScenePreview) {
-    if (!project?.slug) throw new Error("KhÃ´ng tÃ¬m tháº¥y project hiá»‡n táº¡i.");
-    const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(scene.id)}/dialogue`, { method: "POST" });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok || !payload.ok) throw new Error(payload.message || `KhÃ´ng thá»ƒ hoÃ n thiá»‡n thoáº¡i cho ${sceneNumberLabel(scene)}.`);
-    const updatedScene = payload.scene as ScenePreview;
-    setScenes((current) => current.map((item) => item.id === updatedScene.id ? { ...item, ...updatedScene } : item));
-    return { scene: updatedScene, model: String(payload.model || "Script LLM") };
-  }
-
-  async function extractSceneDialogue(scene: ScenePreview) {
-    if (dialogueExtractingSceneId || dialogueExtractBatchProgress || ttsRunning || renderRunning || isRunning || runningScriptChunkId) return;
-    setDialogueExtractingSceneId(scene.id);
-    setSceneError("");
-    try {
-      const result = await requestDialogueExtraction(scene);
-      await refresh();
-      setRunMessage({ tone: "success", text: `ÄÃ£ táº¡o timeline vÃ  bá»• sung chi tiáº¿t cho ${sceneNumberLabel(scene)} Â· ${sceneDialogueSegments(result.scene, characterProfiles).length} lÆ°á»£t thoáº¡i Â· ${result.model}.` });
-    } catch (cause) {
-      setSceneError(cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ hoÃ n thiá»‡n thoáº¡i cho cáº£nh.");
-    } finally {
-      setDialogueExtractingSceneId("");
-    }
-  }
-
-  async function extractFilteredSceneDialogues() {
-    const targets = filteredScenes.filter(sceneNeedsDialogueExtraction);
-    if (!targets.length || dialogueExtractingSceneId || dialogueExtractBatchProgress || ttsRunning || renderRunning || isRunning || runningScriptChunkId) return;
-    setSceneError("");
-    let completed = 0;
-    const failures: string[] = [];
-    for (const [index, scene] of targets.entries()) {
-      setDialogueExtractingSceneId(scene.id);
-      setDialogueExtractBatchProgress(`${index + 1}/${targets.length} Â· ${sceneNumberLabel(scene)}`);
-      try {
-        await requestDialogueExtraction(scene);
-        completed += 1;
-      } catch (cause) {
-        failures.push(`${sceneNumberLabel(scene)}: ${cause instanceof Error ? cause.message : "lá»—i khÃ´ng xÃ¡c Ä‘á»‹nh"}`);
-      }
-    }
-    setDialogueExtractingSceneId("");
-    setDialogueExtractBatchProgress("");
-    await refresh();
-    setRunMessage({
-      tone: failures.length ? "error" : "success",
-      text: failures.length
-        ? `ÄÃ£ hoÃ n thiá»‡n ${completed}/${targets.length} cáº£nh. ${failures.slice(0, 2).join(" Â· ")}${failures.length > 2 ? ` Â· vÃ  ${failures.length - 2} lá»—i khÃ¡c` : ""}`
-        : `ÄÃ£ táº¡o timeline thoáº¡i vÃ  bá»• sung chi tiáº¿t cho ${completed} cáº£nh. Kiá»ƒm tra láº¡i ngÆ°á»i nÃ³i vÃ  timecode trÆ°á»›c khi táº¡o TTS.`,
-    });
-    if (failures.length) setSceneError(failures[0]);
-  }
-
-  function importDialogueSrt(scene: ScenePreview) {
-    const draft = dialogueSrtDrafts[scene.id] || "";
-    const segments = parseDialogueSrt(draft, characterProfiles);
-    if (!segments.length) {
-      setSceneError("KhÃ´ng tÃ¬m tháº¥y cue SRT há»£p lá»‡ trong khoáº£ng 0â€“15 giÃ¢y. Má»—i cue cáº§n timecode vÃ  lá»i thoáº¡i; cÃ³ thá»ƒ ghi [TÃªn nhÃ¢n váº­t] trÆ°á»›c cÃ¢u.");
-      return;
-    }
-    updateDialogueDraft(scene.id, () => segments);
-    setDialogueSrtDrafts((current) => ({ ...current, [scene.id]: "" }));
-    setSceneError("");
-  }
-
-  async function createLocation(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const file = locationImageInputRef.current?.files?.[0];
-    const sourceId = locationImageSource === "upload" ? Boolean(file) : locationImageSource === "project" ? Boolean(selectedLocationMediaSceneId) : Boolean(selectedLocationMaiVideoImageId);
-    if (!project?.slug || !locationName.trim() || !sourceId) {
-      setLocationError("Nháº­p tÃªn bá»‘i cáº£nh vÃ  chá»n áº£nh tham chiáº¿u 4 gÃ³c.");
-      return;
-    }
-    setLocationSaving(true);
-    setLocationError("");
-    try {
-      const formData = new FormData();
-      formData.append("name", locationName.trim());
-      formData.append("aliases", locationAliases);
-      formData.append("description", locationDescription.trim());
-      if (locationImageSource === "upload" && file) formData.append("file", file);
-      if (locationImageSource === "project") formData.append("sourceSceneId", selectedLocationMediaSceneId);
-      if (locationImageSource === "maivideo") formData.append("maivideoMediaId", selectedLocationMaiVideoImageId);
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/locations`, { method: "POST", body: formData });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ lÆ°u há»“ sÆ¡ bá»‘i cáº£nh.");
-      setLocationName("");
-      setLocationAliases("");
-      setLocationDescription("");
-      setSelectedLocationMediaSceneId("");
-      setSelectedLocationMaiVideoImageId("");
-      setLocationImageSource("upload");
-      if (locationImageInputRef.current) locationImageInputRef.current.value = "";
-      await refresh();
-      setRunMessage({ tone: "success", text: `ÄÃ£ lÆ°u áº£nh tham chiáº¿u bá»‘i cáº£nh ${String((payload.location as ProjectLocation)?.name || "")}.` });
-    } catch (cause) {
-      setLocationError(cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ lÆ°u há»“ sÆ¡ bá»‘i cáº£nh.");
-    } finally {
-      setLocationSaving(false);
-    }
-  }
-
-  async function autoAssignSceneReferences() {
-    if (!project?.slug || !filteredScenes.length || autoAssignCharactersBusy || batchMediaBusy || videoQueueRunning || sceneCharacterSaving) return;
-    setAutoAssignCharactersBusy(true);
-    setSceneError("");
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes/auto-assign-characters`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sceneIds: filteredScenes.map((scene) => scene.id), forceImageReferences: true }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ tá»± gÃ¡n há»“ sÆ¡ cho cáº£nh.");
-      await loadScenes();
-      const changedScenes = Number(payload.changedScenes) || 0;
-      const changedReferenceScenes = Number(payload.changedReferenceScenes) || changedScenes;
-      const addedAssignments = Number(payload.addedAssignments) || 0;
-      const addedLocationAssignments = Number(payload.addedLocationAssignments) || 0;
-      const unmatchedScenes = Number(payload.unmatchedScenes) || 0;
-      const unmatchedLocationScenes = Number(payload.unmatchedLocationScenes) || 0;
-      const unmatchedLocationNote = unmatchedLocationScenes ? ` Â· ${unmatchedLocationScenes} cáº£nh chÆ°a khá»›p há»“ sÆ¡ bá»‘i cáº£nh` : "";
-      setRunMessage({
-        tone: "success",
-        text: changedReferenceScenes
-          ? `ÄÃ£ tá»± gÃ¡n ${addedAssignments} nhÃ¢n váº­t vÃ  ${addedLocationAssignments} bá»‘i cáº£nh vÃ o ${changedReferenceScenes} cáº£nh${unmatchedScenes ? ` Â· ${unmatchedScenes} cáº£nh chÆ°a khá»›p há»“ sÆ¡` : ""}${unmatchedLocationNote}.`
-          : `KhÃ´ng cÃ³ há»“ sÆ¡ má»›i Ä‘á»ƒ gÃ¡n${unmatchedScenes ? ` Â· ${unmatchedScenes} cáº£nh chÆ°a khá»›p há»“ sÆ¡` : ""}${unmatchedLocationNote}.`,
-      });
-    } catch (cause) {
-      setSceneError(cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ tá»± gÃ¡n há»“ sÆ¡ cho cáº£nh.");
-    } finally {
-      setAutoAssignCharactersBusy(false);
-    }
-  }
-
-  async function autoAssignGeneratedSceneReferences(output: unknown, forceImageReferences = false) {
-    if (!project?.slug || !output || typeof output !== "object" || Array.isArray(output)) return undefined;
-    const outputRecord = output as Record<string, unknown>;
-    const sceneIds = [...new Set((Array.isArray(outputRecord.scenes) ? outputRecord.scenes : [])
-      .flatMap((value) => {
-        if (!value || typeof value !== "object" || Array.isArray(value)) return [];
-        const record = value as Record<string, unknown>;
-        const id = String(record.id || record.scene_id || "").trim();
-        return id ? [id] : [];
-      }))];
-    if (!sceneIds.length) return undefined;
-    const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes/auto-assign-characters`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sceneIds, forceImageReferences }),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ tá»± gÃ¡n há»“ sÆ¡ cho cáº£nh vá»«a táº¡o.");
-    return payload as { changedReferenceScenes?: number; addedAssignments?: number; addedLocationAssignments?: number; unmatchedScenes?: number; unmatchedLocationScenes?: number };
-  }
-
-  const loadScenes = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
-    if (!project?.slug) return;
-    if (scenesLoadInFlightRef.current) return;
-    scenesLoadInFlightRef.current = true;
-    if (!silent) {
-      setScenesLoading(true);
-      setSceneError("");
-    }
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes`, { cache: "no-store" });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ táº£i danh sÃ¡ch cáº£nh.");
-      const nextScenes = Array.isArray(payload.scenes) ? payload.scenes as ScenePreview[] : [];
-      setScenes((current) => silent ? mergePolledSceneMedia(current, nextScenes) : nextScenes);
-      setSelectedSceneId((current) => current && nextScenes.some((scene) => scene.id === current) ? current : nextScenes[0]?.id || "");
-    } catch (cause) {
-      if (!silent) setSceneError(cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ táº£i danh sÃ¡ch cáº£nh.");
-    } finally {
-      scenesLoadInFlightRef.current = false;
-      if (!silent) setScenesLoading(false);
-    }
-  }, [project?.slug]);
-
-  useEffect(() => {
-    void loadScenes();
-  }, [loadScenes, project?.completedChunks]);
-
-  const hasActiveLocationReferences = Boolean(project.locations?.some(location => location.imageGeneration?.status === "running" || location.imageGeneration?.status === "queued"));
-  useEffect(() => {
-    if (!hasActiveLocationReferences) return;
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") void refresh();
-    }, 3_000);
-    return () => window.clearInterval(timer);
-  }, [hasActiveLocationReferences, refresh]);
-
-  const hasActiveSceneMediaJobs = scenes.some(sceneHasActiveMediaJob) || Boolean(project.sceneMediaJobs?.some((job) => job.status === "queued" || job.status === "running"));
-
-  useEffect(() => {
-    const poll = () => {
-      if (document.visibilityState === "visible") void loadScenes({ silent: true });
-    };
-    const timer = window.setInterval(poll, hasActiveSceneMediaJobs ? 3_000 : 15_000);
-    document.addEventListener("visibilitychange", poll);
-    return () => {
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", poll);
-    };
-  }, [loadScenes, hasActiveSceneMediaJobs]);
-
-  useEffect(() => {
-    let active = true;
-    fetch("/api/media-models", { cache: "no-store" })
-      .then(async (response) => {
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.message || "KhÃ´ng táº£i Ä‘Æ°á»£c danh sÃ¡ch model media.");
-        return payload as MediaModelCatalog;
-      })
-      .then((catalog) => {
-        if (!active) return;
-        setMediaCatalog(catalog);
-        setMediaCatalogError("");
-      })
-      .catch((cause) => {
-        if (!active) return;
-        setMediaCatalogError(cause instanceof Error ? cause.message : "KhÃ´ng táº£i Ä‘Æ°á»£c danh sÃ¡ch model media.");
-      });
-    return () => { active = false; };
-  }, [project?.slug]);
-
-  useEffect(() => {
-    let active = true;
-    setVoiceCatalogLoading(true);
-    fetch("/api/omnivoice/voices", { cache: "no-store" })
-      .then(async (response) => {
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.message || "KhÃ´ng táº£i Ä‘Æ°á»£c danh sÃ¡ch voice.");
-        if (active) setVoiceCatalog(payload as OmniVoiceCatalog);
-      })
-      .catch(() => { if (active) setVoiceCatalog(null); })
-      .finally(() => { if (active) setVoiceCatalogLoading(false); });
-    return () => { active = false; };
-  }, [project?.slug]);
-
-  const sceneChunks = useMemo(() => Array.from(new Set(scenes.map((scene) => scene.chunkId))).sort(), [scenes]);
-  const sceneStats = useMemo(() => scenes.reduce((summary, scene) => {
-    const review = sceneReviewStatus(scene);
-    const aiReview = sceneAiReview(scene);
-    summary[review] += 1;
-    summary[`ai_${aiReview.status}`] += 1;
-    if (sceneMediaReady(scene.media, project?.presetId === "ai-drama")) summary.ready += 1;
-    else summary.missing += 1;
-    if (sceneMediaReady(scene.media) && scene.media?.kind === "video" && scene.media.provider?.startsWith("maivideo")) summary.ai += 1;
-    return summary;
-  }, { unreviewed: 0, approved: 0, needs_changes: 0, ai_pending: 0, ai_passed: 0, ai_needs_changes: 0, ai_error: 0, ready: 0, missing: 0, ai: 0 }), [project?.presetId, scenes]);
-
-  const filteredScenes = useMemo(() => {
-    const search = sceneSearch.trim().toLowerCase();
-    return scenes.filter((scene) => {
-      if (sceneChunkFilter !== "all" && scene.chunkId !== sceneChunkFilter) return false;
-      if (sceneReviewFilter !== "all" && sceneReviewStatus(scene) !== sceneReviewFilter) return false;
-      if (!sceneMatchesAiReviewFilter(scene, sceneAiReviewFilter)) return false;
-      if (!sceneMatchesMediaFilter(scene, sceneMediaFilter, project?.presetId === "ai-drama")) return false;
-      if (!search) return true;
-      const searchable = [
-        scene.id,
-        scene.chunkId,
-        sceneText(scene, "purpose", "beat_summary"),
-        sceneText(scene, "dialogue_or_voiceover", "voiceText", "voiceover"),
-        sceneText(scene, "video_prompt", "videoPrompt", "image_prompt", "imagePrompt"),
-        scene.media?.provider || "",
-      ].join(" ").toLowerCase();
-      return searchable.includes(search);
-    });
-  }, [project?.presetId, sceneAiReviewFilter, sceneChunkFilter, sceneMediaFilter, sceneReviewFilter, sceneSearch, scenes]);
-
-  useEffect(() => {
-    setSelectedSceneId((current) => current && filteredScenes.some((scene) => scene.id === current) ? current : filteredScenes[0]?.id || "");
-  }, [filteredScenes]);
-
-  useEffect(() => {
-    const currentScene = scenes.find((scene) => scene.id === selectedSceneId);
-    setSceneReviewNote(currentScene ? sceneText(currentScene, "reviewNote", "review_note") : "");
-  }, [scenes, selectedSceneId]);
-
-  const preset = project ? STORY_PRESETS[project.presetId] : STORY_PRESETS["ai-story"];
-  const progress = project ? projectProgress(project) : 0;
-
-  const chunks = useMemo(() => {
-    if (!project) return [];
-    return project.chunks.map((storedChunk, index) => {
-      const isDone = storedChunk.status === "completed";
-      const isRunningChunk = storedChunk.status === "processing";
-      const isFailed = storedChunk.status === "failed" || storedChunk.status === "needs_review";
-      const completedInChunk = storedChunk.generatedScenes;
-      return {
-        id: storedChunk.id,
-        episodeNumber: index + 1,
-        range: `S${String(storedChunk.sceneStart).padStart(3, "0")}â€“S${String(storedChunk.sceneEnd).padStart(3, "0")}`,
-        scenes: `${completedInChunk}/${storedChunk.sceneEnd - storedChunk.sceneStart + 1}`,
-        status: isDone ? "done" : isRunningChunk ? "running" : isFailed ? "review" : "queued",
-        label: isDone ? "HoÃ n táº¥t" : isRunningChunk ? "Äang táº¡o" : isFailed ? "Cáº§n xá»­ lÃ½" : "Äang chá»",
-        tone: isDone ? "green" : isRunningChunk ? "orange" : isFailed ? "red" : "gray",
-        time: isDone ? "ÄÃ£ lÆ°u" : isRunningChunk ? "Äang cháº¡y" : isFailed ? (storedChunk.error || "CÃ³ lá»—i") : "Xáº¿p hÃ ng",
-        render: storedChunk.render,
-        tts: storedChunk.tts,
-        hasScript: Boolean(storedChunk.outputPath),
-      };
-    });
-  }, [project]);
-
-  const visibleChunks = chunks.filter((chunk) => activeFilter === "Táº¥t cáº£" || (activeFilter === "Äang xá»­ lÃ½" && chunk.status === "running") || (activeFilter === "Cáº§n review" && chunk.status === "review"));
-  const pendingEpisodeRenders = project?.chunks.filter((chunk) => Boolean(chunk.outputPath) && chunk.render?.status !== "running" && (chunk.render?.stale === true || chunk.render?.status !== "completed")) || [];
-  const pendingEpisodeTts = project?.chunks.filter((chunk) => Boolean(chunk.outputPath) && chunk.tts?.status !== "completed" && chunk.tts?.status !== "not_needed") || [];
-  const scriptGenerationBusy = isRunning || Boolean(runningScriptChunkId);
-  const scriptBlocksIndependentTasks = project?.presetId !== "ai-drama" && scriptGenerationBusy;
-  const episodeExtensionBusy = isRunning || Boolean(runningScriptChunkId) || renderRunning || ttsRunning || videoQueueRunning || Boolean(generatingSceneId) || project?.render?.status === "running" || project?.videoQueue?.status === "running" || Boolean(project?.chunks.some((chunk) => chunk.status === "processing" || chunk.render?.status === "running" || chunk.tts?.status === "running"));
-  const scriptActionBusy = () => {
-    const sharedTaskBusy = isRunning || Boolean(runningScriptChunkId) || renderRunning || ttsRunning;
-    if (project?.presetId === "ai-drama") return sharedTaskBusy;
-    return sharedTaskBusy || batchMediaBusy || videoQueueRunning || Boolean(generatingSceneId) || Boolean(profileBusyId) || profileBatchKinds.size > 0;
-  };
-
-  async function saveSource() {
-    if (!project) return;
-    setRunMessage(null);
-    try {
-      const saved = await updateProject(project.slug, { sourceUrl, sourceText });
-      if (sourceUrl.trim() && !saved?.sourceText?.trim()) {
-        const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/ingest-source`, { method: "POST" });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.message || "KhÃ´ng láº¥y Ä‘Æ°á»£c transcript tá»« URL.");
-        await refresh();
-        setRunMessage({ tone: "success", text: "ÄÃ£ lÆ°u link vÃ  tá»± láº¥y transcript tá»« MaiVideo." });
-      } else {
-        setRunMessage({ tone: "success", text: "ÄÃ£ lÆ°u URL vÃ  transcript/brief vÃ o dá»± Ã¡n." });
-      }
-    } catch (error) {
-      setRunMessage({ tone: "error", text: error instanceof Error ? error.message : "KhÃ´ng thá»ƒ lÆ°u nguá»“n." });
-    }
-  }
-
-  async function generateAudioStoryChunkTts(chunkId: string): Promise<{ note: string; failed: boolean }> {
-    if (!project?.slug || project.presetId === "ai-drama") return { note: "", failed: false };
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/chunks/${encodeURIComponent(chunkId)}/tts`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ force: false }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng táº¡o Ä‘Æ°á»£c audio TTS.");
-      if (payload.status === "not_needed") return { note: " Â· khÃ´ng cÃ³ lá»i Ä‘á»c cáº§n TTS", failed: false };
-      const failureCount = Number(payload.failed) || 0;
-      return {
-        note: ` Â· TTS ${Number(payload.completed) || 0}/${Number(payload.total) || 0}${failureCount ? ` Â· ${failureCount} lá»—i` : ""}`,
-        failed: payload.status !== "completed",
-      };
-    } catch (cause) {
-      return {
-        note: ` Â· TTS chÆ°a hoÃ n táº¥t: ${cause instanceof Error ? cause.message : "lá»—i khÃ´ng xÃ¡c Ä‘á»‹nh"}`,
-        failed: true,
-      };
-    }
-  }
-
-  async function runNextChunk() {
-    if (!project || scriptActionBusy()) return;
-    setIsRunning(true);
-    setRunMessage(null);
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/run-chunk`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      const result = await response.json();
-      if (!response.ok || !result.ok) throw new Error(result.message || "KhÃ´ng thá»ƒ cháº¡y chunk.");
-      const audioTts = result.chunk?.id ? await generateAudioStoryChunkTts(result.chunk.id) : { note: "", failed: false };
-      let referenceAssignment: Awaited<ReturnType<typeof autoAssignGeneratedSceneReferences>> = undefined;
-      let referenceAssignmentFailed = false;
-      if (project.presetId === "ai-drama") {
-        try {
-          referenceAssignment = await autoAssignGeneratedSceneReferences(result.output, true);
-        } catch {
-          referenceAssignmentFailed = true;
-        }
-      }
-      await refresh();
-      await loadScenes();
-      const mediaSummary = result.output?.media_summary && typeof result.output.media_summary === "object" ? result.output.media_summary : {};
-      const mediaStatus = project.presetId === "ai-drama"
-        ? "Ká»‹ch báº£n vÃ  prompt Ä‘Ã£ sáºµn sÃ ng Ä‘á»ƒ duyá»‡t; áº£nh cáº£nh, video vÃ  TTS dÃ¹ng nÃºt riÃªng."
-        : `Media ${Number(mediaSummary.ready) || 0}/${Number(mediaSummary.requested) || 0} cáº£nh${audioTts.note}.`;
-      const referenceStatus = referenceAssignment?.changedReferenceScenes
-        ? ` ÄÃ£ tá»± gÃ¡n ${Number(referenceAssignment.addedAssignments) || 0} nhÃ¢n váº­t vÃ  ${Number(referenceAssignment.addedLocationAssignments) || 0} bá»‘i cáº£nh vÃ o ${referenceAssignment.changedReferenceScenes} cáº£nh.`
-        : referenceAssignmentFailed ? " ChÆ°a tá»± gÃ¡n Ä‘Æ°á»£c há»“ sÆ¡ cho cÃ¡c cáº£nh vá»«a táº¡o." : "";
-      const createCharacterImages = project.presetId === "ai-drama" && characterProfilesMissingImage.length > 0;
-      setRunMessage({ tone: audioTts.failed || Number(mediaSummary.failed) > 0 || referenceAssignmentFailed ? "error" : "success", text: `ÄÃ£ lÆ°u ${result.chunk?.generatedScenes || 0} cáº£nh vÃ o ${result.chunk?.outputPath || "data/outputs"}. ${mediaStatus}${referenceStatus}${createCharacterImages ? " Äang tá»± táº¡o áº£nh tham chiáº¿u cho há»“ sÆ¡ nhÃ¢n váº­t cÃ²n thiáº¿u." : ""}` });
-      if (createCharacterImages) void generateDramaProfileImages("characters");
-    } catch (error) {
-      setRunMessage({ tone: "error", text: error instanceof Error ? error.message : "TÃ¡c vá»¥ tháº¥t báº¡i." });
-    } finally {
-      setIsRunning(false);
-    }
-  }
-
-  async function appendEpisodes() {
-    if (!project?.slug || extendingEpisodes || project.scriptMode === "manual") return;
-    setExtendingEpisodes(true);
-    setRunMessage(null);
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/episodes`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ episodeCount: extendEpisodeCount }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ thÃªm táº­p má»›i.");
-      const firstEpisode = project.chunks.length + 1;
-      const lastEpisode = firstEpisode + extendEpisodeCount - 1;
-      await refresh();
-      await loadScenes();
-      setShowExtendEpisodes(false);
-      setRunMessage({ tone: "success", text: `ÄÃ£ thÃªm khung trá»‘ng cho Táº­p ${String(firstEpisode).padStart(2, "0")}â€“${String(lastEpisode).padStart(2, "0")}. Nháº­p JSON riÃªng cho tá»«ng táº­p.` });
-    } catch (error) {
-      setRunMessage({ tone: "error", text: error instanceof Error ? error.message : "KhÃ´ng thá»ƒ thÃªm táº­p má»›i." });
-    } finally {
-      setExtendingEpisodes(false);
-    }
-  }
-
-  function episodeScriptTemplate(chunkId: string) {
-    const target = project.chunks.find((chunk) => chunk.id === chunkId);
-    if (!target) return "";
-    const savedScenes = new Map(scenes.map((scene) => [scene.id, scene]));
-    let timelineStartSec = 0;
-    for (let sceneNumber = 1; sceneNumber < target.sceneStart; sceneNumber += 1) {
-      const saved = savedScenes.get(`S${String(sceneNumber).padStart(3, "0")}`);
-      const declaredDuration = Number(saved?.duration_sec ?? saved?.durationSec);
-      const start = Number(saved?.start_sec ?? saved?.startSec);
-      const end = Number(saved?.end_sec ?? saved?.endSec);
-      const duration = Number.isFinite(declaredDuration) && declaredDuration > 0
-        ? declaredDuration
-        : Number.isFinite(end - start) && end > start ? end - start : Number(project.sceneDurationSec || 15);
-      timelineStartSec += duration;
-    }
-    return createEpisodeScriptTemplate(target.id, target.sceneStart, target.sceneEnd, timelineStartSec, {
-      contentGenre: project.contentGenre,
-      secondaryGenres: project.secondaryGenres,
-      visualStyle: project.visualStyle,
-      imageStyle: project.imageStyle,
-      language: project.language,
-      existing_locations: (project.locations || []).map(location => ({ name: location.name, description: location.description })),
-    });
-  }
-
-  function episodeScriptDraftFor(target: { id: string; sceneStart: number; sceneEnd: number }): string | undefined {
-    const savedDraft = episodeScriptDrafts[target.id];
-    return savedDraft !== undefined && !isUneditedLegacyEpisodeTemplateDraft(savedDraft, target)
-      ? savedDraft
-      : undefined;
-  }
-
-  async function importEpisodeBundle(bundle: unknown, preserveProjectStructure = false) {
-    if (!project?.slug || importingScripts) return false;
-    setImportingScripts(true);
-    setRunMessage(null);
-    try {
-      const submitImport = async (replace: boolean) => {
-        const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/import-scripts`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ bundle, replace, preserveProjectStructure }),
-        });
-        const payload = await response.json().catch(() => ({}));
-        return { response, payload };
-      };
-
-      let { response, payload } = await submitImport(false);
-      if (response.status === 409 && payload.code === "CHUNK_OUTPUT_EXISTS") {
-        const conflictingChunks = Array.isArray(payload.conflictingChunks) ? payload.conflictingChunks.join(", ") : "cÃ¡c táº­p Ä‘Ã£ cÃ³ ká»‹ch báº£n";
-        const confirmed = window.confirm(`CÃ¡c táº­p ${conflictingChunks} Ä‘Ã£ cÃ³ ká»‹ch báº£n. Báº¡n muá»‘n ghi Ä‘Ã¨ ná»™i dung cÃ¡c táº­p Ä‘Ã³?`);
-        if (!confirmed) {
-          setRunMessage({ tone: "error", text: "ÄÃ£ há»§y nháº­p JSON; cÃ¡c táº­p hiá»‡n táº¡i Ä‘Æ°á»£c giá»¯ nguyÃªn." });
-          return false;
-        }
-        ({ response, payload } = await submitImport(true));
-      }
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ nháº­p ká»‹ch báº£n JSON.");
-
-      await refresh();
-      await loadScenes();
-      const imported = Array.isArray(payload.imported) ? payload.imported : [];
-      if (imported[0]?.chunkId) setViewingScriptChunkId(String(imported[0].chunkId));
-      const sceneCount = imported.reduce((total: number, episode: { sceneCount?: number }) => total + (Number(episode.sceneCount) || 0), 0);
-      const replaced = Array.isArray(payload.replaced) && payload.replaced.length ? ` Â· ghi Ä‘Ã¨ ${payload.replaced.join(", ")}` : "";
-      const publishingImported = payload.publishingImported && typeof payload.publishingImported === "object" ? payload.publishingImported as { series?: boolean; episodes?: unknown[] } : undefined;
-      const publishingEpisodeCount = Array.isArray(publishingImported?.episodes) ? publishingImported.episodes.length : 0;
-      const publishingSummary = publishingImported
-        ? publishingImported.series || publishingEpisodeCount
-          ? ` Â· title/thumbnail: ${[
-            publishingImported.series ? "toÃ n series" : "",
-            publishingEpisodeCount ? `${publishingEpisodeCount} táº­p` : "",
-          ].filter(Boolean).join(" + ")}`
-          : " Â· JSON khÃ´ng cÃ³ gÃ³i title/thumbnail"
-        : "";
-      const pacingWarnings = Array.isArray(payload.warnings) ? payload.warnings : [];
-      setRunMessage({ tone: "success", text: `ÄÃ£ nháº­p ${imported.length} táº­p Â· ${sceneCount} cáº£nh tá»« JSON${publishingSummary}${replaced}.${payload.locationReferences?.pending ? ` Äang tá»± táº¡o ${payload.locationReferences.pending} áº£nh bá»‘i cáº£nh cÃ²n thiáº¿u.` : ""}${pacingWarnings.length ? ` Cáº£nh bÃ¡o: ${pacingWarnings.join("; ")}` : ""}` });
-      return true;
-    } catch (cause) {
-      setRunMessage({ tone: "error", text: cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ nháº­p ká»‹ch báº£n JSON." });
-      return false;
-    } finally {
-      setImportingScripts(false);
-    }
-  }
-
-  async function loadEpisodeScriptChunk(chunkId: string) {
-    const target = project?.chunks.find((chunk) => chunk.id === chunkId);
-    if (!target) return;
-    const loadToken = ++episodeScriptLoadTokenRef.current;
-    const draft = episodeScriptDraftFor(target);
-    setEpisodeScriptChunkId(chunkId);
-    setEpisodeScriptDraft(draft ?? "");
-    setEpisodeScriptLoading(false);
-    if (draft !== undefined || !target.outputPath || !project?.slug) return;
-
-    setEpisodeScriptLoading(true);
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/chunks/${encodeURIComponent(chunkId)}/script`, { cache: "no-store" });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.script) throw new Error(payload.message || "KhÃ´ng Ä‘á»c Ä‘Æ°á»£c JSON Ä‘Ã£ lÆ°u cá»§a táº­p nÃ y.");
-      if (loadToken !== episodeScriptLoadTokenRef.current) return;
-      const savedJson = JSON.stringify(payload.script, null, 2);
-      setEpisodeScriptDraft(savedJson);
-      setEpisodeScriptDrafts((current) => ({ ...current, [chunkId]: savedJson }));
-    } catch (cause) {
-      if (loadToken === episodeScriptLoadTokenRef.current) {
-        setRunMessage({ tone: "error", text: cause instanceof Error ? cause.message : "KhÃ´ng Ä‘á»c Ä‘Æ°á»£c JSON Ä‘Ã£ lÆ°u cá»§a táº­p nÃ y." });
-      }
-    } finally {
-      if (loadToken === episodeScriptLoadTokenRef.current) setEpisodeScriptLoading(false);
-    }
-  }
-
-  function openEpisodeScriptEditor(chunkId?: string) {
-    if (!project?.chunks.length) return;
-    const target = (chunkId ? project.chunks.find((chunk) => chunk.id === chunkId) : undefined)
-      || project.chunks.find((chunk) => !chunk.outputPath)
-      || project.chunks[0];
-    setRunMessage(null);
-    setEpisodeScriptEditorOpen(true);
-    void loadEpisodeScriptChunk(target.id);
-  }
-
-  function selectEpisodeScriptChunk(chunkId: string) {
-    setRunMessage(null);
-    void loadEpisodeScriptChunk(chunkId);
-  }
-
-  function updateEpisodeScriptDraft(value: string) {
-    setEpisodeScriptDraft(value);
-    if (episodeScriptChunkId) setEpisodeScriptDrafts((current) => ({ ...current, [episodeScriptChunkId]: value }));
-  }
-
-  async function importEpisodeScriptDraft() {
-    try {
-      const bundle = JSON.parse(episodeScriptDraft) as Record<string, unknown>;
-      if (bundle.schema !== "scene-script.v1") throw new Error("Máº«u nháº­p tá»«ng táº­p cáº§n schema scene-script.v1; hÃ£y nháº­p Ä‘Ãºng má»™t táº­p má»—i láº§n.");
-      const chunkId = String(bundle.chunk_id || "").trim().toUpperCase();
-      if (chunkId !== episodeScriptChunkId) throw new Error(`Báº¡n Ä‘ang chá»n ${episodeScriptChunkId}, nhÆ°ng JSON cÃ³ chunk_id ${chunkId || "trá»‘ng"}. HÃ£y chá»n Ä‘Ãºng táº­p hoáº·c sá»­a chunk_id trong JSON.`);
-      if (/\[[^\]]+\]/.test(episodeScriptDraft) && !window.confirm("JSON váº«n cÃ²n ná»™i dung máº«u trong dáº¥u [ ]. Báº¡n muá»‘n nháº­p tiáº¿p khÃ´ng?")) return;
-      await importEpisodeBundle(bundle, true);
-    } catch (cause) {
-      setRunMessage({ tone: "error", text: cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ Ä‘á»c JSON ká»‹ch báº£n." });
-    }
-  }
-
-  async function copyEpisodeScriptDraft() {
-    const draft = episodeScriptDraft.trim();
-    const target = project.chunks.find((chunk) => chunk.id === episodeScriptChunkId);
-    const contentToCopy = draft || (target ? episodeScriptTemplate(target.id) : "");
-    if (!contentToCopy) return;
-    try {
-      if (!navigator.clipboard?.writeText) throw new Error("TrÃ¬nh duyá»‡t khÃ´ng há»— trá»£ clipboard.");
-      await navigator.clipboard.writeText(contentToCopy);
-      setRunMessage({ tone: "success", text: draft ? `ÄÃ£ sao chÃ©p JSON ká»‹ch báº£n ${episodeScriptChunkId}.` : `ÄÃ£ sao chÃ©p JSON máº«u cho táº­p ${episodeScriptChunkId}.` });
-    } catch {
-      setRunMessage({ tone: "error", text: "KhÃ´ng thá»ƒ sao chÃ©p. HÃ£y kiá»ƒm tra quyá»n clipboard cá»§a trÃ¬nh duyá»‡t." });
-    }
-  }
-
-  async function runScriptChunk(chunkId: string, episodeNumber: number) {
-    if (!project?.slug || scriptActionBusy()) return;
-    setRunningScriptChunkId(chunkId);
-    setRunMessage(null);
-    setSceneError("");
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/run-chunk`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chunkId }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || `KhÃ´ng cháº¡y Ä‘Æ°á»£c ká»‹ch báº£n Táº­p ${episodeNumber}.`);
-      const audioTts = payload.chunk?.id ? await generateAudioStoryChunkTts(payload.chunk.id) : { note: "", failed: false };
-      let referenceAssignment: Awaited<ReturnType<typeof autoAssignGeneratedSceneReferences>> = undefined;
-      let referenceAssignmentFailed = false;
-      if (project.presetId === "ai-drama") {
-        try {
-          referenceAssignment = await autoAssignGeneratedSceneReferences(payload.output, true);
-        } catch {
-          referenceAssignmentFailed = true;
-        }
-      }
-      await refresh();
-      await loadScenes();
-      setViewingScriptChunkId(chunkId);
-      const mediaSummary = payload.output?.media_summary && typeof payload.output.media_summary === "object" ? payload.output.media_summary : {};
-      const mediaStatus = project.presetId === "ai-drama"
-        ? "Duyá»‡t prompt rá»“i dÃ¹ng nÃºt riÃªng Ä‘á»ƒ táº¡o áº£nh cáº£nh, video vÃ  TTS."
-        : `Media ${Number(mediaSummary.ready) || 0}/${Number(mediaSummary.requested) || 0} cáº£nh${audioTts.note}.`;
-      const referenceStatus = referenceAssignment?.changedReferenceScenes
-        ? ` ÄÃ£ tá»± gÃ¡n ${Number(referenceAssignment.addedAssignments) || 0} nhÃ¢n váº­t vÃ  ${Number(referenceAssignment.addedLocationAssignments) || 0} bá»‘i cáº£nh vÃ o ${referenceAssignment.changedReferenceScenes} cáº£nh.`
-        : referenceAssignmentFailed ? " ChÆ°a tá»± gÃ¡n Ä‘Æ°á»£c há»“ sÆ¡ cho cÃ¡c cáº£nh vá»«a táº¡o." : "";
-      const createCharacterImages = project.presetId === "ai-drama" && characterProfilesMissingImage.length > 0;
-      setRunMessage({ tone: audioTts.failed || Number(mediaSummary.failed) > 0 || referenceAssignmentFailed ? "error" : "success", text: `ÄÃ£ cháº¡y vÃ  lÆ°u ká»‹ch báº£n Táº­p ${String(episodeNumber).padStart(2, "0")} Â· ${payload.chunk?.generatedScenes || 0} cáº£nh. ${mediaStatus}${referenceStatus}${createCharacterImages ? " Äang tá»± táº¡o áº£nh tham chiáº¿u cho há»“ sÆ¡ nhÃ¢n váº­t cÃ²n thiáº¿u." : ""}` });
-      if (createCharacterImages) void generateDramaProfileImages("characters");
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : "KhÃ´ng cháº¡y Ä‘Æ°á»£c ká»‹ch báº£n táº­p.";
-      await refresh().catch(() => undefined);
-      setSceneError(message);
-      setRunMessage({ tone: "error", text: message });
-    } finally {
-      setRunningScriptChunkId("");
-    }
-  }
-
-  async function runAiPrecheck() {
-    if (!project?.slug || aiReviewRunning) return;
-    const chunksNeedingAi = new Set(scenes.filter((scene) => {
-      const status = sceneAiReview(scene).status;
-      return status === "pending" || status === "error";
-    }).map((scene) => scene.chunkId));
-    const targets = project.chunks.filter((chunk) => chunk.outputPath && chunksNeedingAi.has(chunk.id));
-    if (!targets.length) {
-      setRunMessage({ tone: "success", text: "Táº¥t cáº£ cáº£nh Ä‘Ã£ cÃ³ káº¿t quáº£ AI pre-check. CÃ³ thá»ƒ chuyá»ƒn sang ngÆ°á»i dÃ¹ng xÃ¡c nháº­n." });
-      return;
-    }
-    setAiReviewRunning(true);
-    setSceneError("");
-    setRunMessage(null);
-    let latestScenes = scenes;
-    try {
-      for (let index = 0; index < targets.length; index += 1) {
-        const chunk = targets[index];
-        setAiReviewProgress(`Äang cháº¥m ${chunk.id} Â· ${index + 1}/${targets.length}`);
-        const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes/ai-review`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chunkId: chunk.id }),
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok || !payload.ok) throw new Error(payload.message || `AI pre-check ${chunk.id} tháº¥t báº¡i.`);
-        const evaluated = Array.isArray(payload.scenes) ? payload.scenes as ScenePreview[] : [];
-        const evaluatedById = new Map(evaluated.map((scene) => [scene.id, scene]));
-        latestScenes = latestScenes.map((scene) => {
-          const evaluatedScene = evaluatedById.get(scene.id);
-          return evaluatedScene ? { ...scene, ...evaluatedScene } : scene;
-        });
-        setScenes(latestScenes);
-      }
-      await refresh();
-      await loadScenes();
-      setRunMessage({ tone: "success", text: `AI Ä‘Ã£ pre-check ${targets.length} chunk. NgÆ°á»i dÃ¹ng cÃ³ thá»ƒ báº¯t Ä‘áº§u duyá»‡t cÃ¡c cáº£nh.` });
-    } catch (cause) {
-      setSceneError(cause instanceof Error ? cause.message : "AI pre-check tháº¥t báº¡i.");
-    } finally {
-      setAiReviewProgress("");
-      setAiReviewRunning(false);
-    }
-  }
-
-  async function runContinuityQa() {
-    if (!project?.slug || continuityRunning) return;
-    setContinuityRunning(true);
-    setSceneError("");
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/continuity-qa`, { method: "POST" });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "Continuity QA tháº¥t báº¡i.");
-      await refresh();
-      setRunMessage({ tone: payload.report?.status === "passed" ? "success" : "error", text: `Continuity QA ${payload.report?.score || 0}/100 Â· ${payload.report?.issueCount || 0} Ä‘iá»ƒm cáº§n kiá»ƒm tra.` });
-    } catch (cause) {
-      setSceneError(cause instanceof Error ? cause.message : "Continuity QA tháº¥t báº¡i.");
-    } finally {
-      setContinuityRunning(false);
-    }
-  }
-
-  async function queueVideoJobs(
-    onlyMissing: boolean,
-    targetScenes: ScenePreview[] = scenes,
-    settings?: MediaGenerationSettings,
-    runAfterQueue = false,
-    regenerate = false,
-  ) {
-    if (!project?.slug || !targetScenes.length || scriptBlocksIndependentTasks || ttsRunning || generatingSceneId || videoQueueRunning) return;
-    if ((settings || batchMediaSettings).videoProvider === "seedance") {
-      setRunMessage({ tone: "error", text: "Seedance trá»±c tiáº¿p tá»« seedance.maivideo.top Ä‘ang táº¡m áº©n. Chá»n MaiVideo, Muse.ai hoáº·c Flow trÆ°á»›c khi xáº¿p job má»›i." });
-      return;
-    }
-    setSceneError("");
-    try {
-      if (settings) await applyBatchSceneMediaSettings(targetScenes, settings);
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/video-queue`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ onlyMissing: regenerate ? false : onlyMissing, regenerate, sceneIds: targetScenes.map((scene) => scene.id), concurrency: VIDEO_QUEUE_CONCURRENCY }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ xáº¿p hÃ ng video AI.");
-      await refresh();
-      setRunMessage({ tone: "success", text: `ÄÃ£ xáº¿p ${payload.added || 0} job video AI${payload.retried ? ` Â· retry ${payload.retried}` : ""}.${runAfterQueue ? " Báº¯t Ä‘áº§u cháº¡y queueâ€¦" : " ChÆ°a gá»i API trong bÆ°á»›c nÃ y."}` });
-      if (runAfterQueue) await runVideoQueue();
-    } catch (cause) {
-      setSceneError(cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ xáº¿p hÃ ng video AI.");
-    }
-  }
-
-  async function controlVideoQueue(action: "pause" | "resume" | "retry_failed") {
-    if (!project?.slug) return;
-    if (action !== "pause" && (scriptBlocksIndependentTasks || ttsRunning || batchMediaBusy || generatingSceneId)) return;
-    if (action === "pause") videoQueueStopRef.current = true;
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/video-queue/control`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ cáº­p nháº­t queue.");
-      await refresh();
-      setRunMessage({ tone: "success", text: action === "pause" ? "ÄÃ£ yÃªu cáº§u dá»«ng queue sau khi cÃ¡c job Ä‘ang cháº¡y hoÃ n táº¥t." : action === "resume" ? "ÄÃ£ tiáº¿p tá»¥c queue video AI." : "ÄÃ£ Ä‘Æ°a cÃ¡c job lá»—i vá» queue Ä‘á»ƒ retry." });
-    } catch (cause) {
-      setSceneError(cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ cáº­p nháº­t queue.");
-    }
-  }
-
-  async function runVideoQueue() {
-    if (!project?.slug || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning || generatingSceneId) return;
-    videoQueueStopRef.current = false;
-    setVideoQueueRunning(true);
-    setSceneError("");
-    let processed = 0;
-    const failures: string[] = [];
-    try {
-      const worker = async () => {
-        try {
-          while (!videoQueueStopRef.current) {
-            const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/video-queue/run`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ limit: VIDEO_QUEUE_CONCURRENCY }) });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(payload.message || "Video queue tháº¥t báº¡i.");
-            if (!payload.processed) break;
-            if (!payload.ok && !payload.retryQueued) failures.push(payload.message || "Má»™t job video AI tháº¥t báº¡i.");
-            processed += 1;
-            setBatchMediaProgress(`Video queue Â· ${processed} job Ä‘Ã£ xá»­ lÃ½ Â· tá»‘i Ä‘a ${VIDEO_QUEUE_CONCURRENCY} luá»“ng`);
-            if (payload.retryQueued) {
-              const retriedJob = payload.queue?.jobs?.find((job: { id: string }) => job.id === payload.jobId);
-              const attempt = Math.max(1, Number(retriedJob?.attempt) || 1);
-              await new Promise((resolve) => window.setTimeout(resolve, Math.min(1_000 * (2 ** (attempt - 1)), 8_000)));
-            }
-            if (!payload.summary?.queued) break;
-          }
-        } catch (cause) {
-          failures.push(cause instanceof Error ? cause.message : "Video queue tháº¥t báº¡i.");
-          videoQueueStopRef.current = true;
-        }
-      };
-      await Promise.all(Array.from({ length: VIDEO_QUEUE_CONCURRENCY }, () => worker()));
-      if (processed) {
-        await refresh();
-        await loadScenes();
-      }
-      if (failures.length) setRunMessage({ tone: "error", text: `Queue Ä‘Ã£ xá»­ lÃ½ ${processed} job; lá»—i: ${failures.slice(0, 3).join("; ")}${failures.length > 3 ? `; vÃ  ${failures.length - 3} lá»—i khÃ¡c` : ""}` });
-      else if (processed) setRunMessage({ tone: "success", text: `Queue Ä‘Ã£ xá»­ lÃ½ ${processed} job video AI. CÃ³ thá»ƒ tiáº¿p tá»¥c báº¥t cá»© lÃºc nÃ o náº¿u cÃ²n job.` });
-    } catch (cause) {
-      setSceneError(cause instanceof Error ? cause.message : "Video queue tháº¥t báº¡i.");
-    } finally {
-      setBatchMediaProgress("");
-      setVideoQueueRunning(false);
-    }
-  }
-
-  async function renderProjectVideo() {
-    if (!project?.slug || renderRunning || ttsRunning || isRunning || runningScriptChunkId) return;
-    setRenderRunning(true);
-    setSceneError("");
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/render`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "video", settings: renderSettings }) });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "Render MP4 tháº¥t báº¡i.");
-      await refresh();
-      const fallbackCount = Number(payload.render?.missingMedia) || 0;
-      const audioReady = Boolean(payload.render?.audioReady);
-      const stale = Boolean(payload.render?.stale);
-      const usedBlender = renderSettings.renderer === "blender";
-      setRunMessage({
-        tone: !stale && (usedBlender || (audioReady && fallbackCount === 0)) ? "success" : "error",
-        text: `ÄÃ£ render MP4 báº±ng ${usedBlender ? "Blender local" : "FFmpeg"}${usedBlender ? " Â· lÆ°u kÃ¨m file .blend" : audioReady ? " Â· Ä‘Ã£ cÃ³ tiáº¿ng TTS hoáº·c tiáº¿ng gá»‘c" : " Â· khÃ´ng cÃ³ tiáº¿ng TTS hoáº·c tiáº¿ng gá»‘c, Ä‘Ã£ táº¡o kÃ¨m SRT"}${fallbackCount ? ` Â· ${fallbackCount} cáº£nh dÃ¹ng media dá»± phÃ²ng` : ""}${stale ? " Â· dá»¯ liá»‡u Ä‘á»•i trong lÃºc render, cáº§n render láº¡i" : ""}.`,
-      });
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : "Render MP4 tháº¥t báº¡i.";
-      setSceneError(message);
-      setRunMessage({ tone: "error", text: message });
-    } finally {
-      setRenderRunning(false);
-    }
-  }
-
-  async function renderChunkVideo(chunkId: string, episodeNumber: number, language = "") {
-    if (!project?.slug || renderRunning || ttsRunning || isRunning || runningScriptChunkId) return;
-    setRenderRunning(true);
-    setRenderingChunkId(chunkId);
-    setRenderingLanguage(language);
-    setSceneError("");
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/chunks/${encodeURIComponent(chunkId)}/render`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ settings: renderSettings, ...(language ? { language } : {}) }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || `KhÃ´ng ghÃ©p Ä‘Æ°á»£c Táº­p ${episodeNumber}.`);
-      await refresh();
-      const render = payload.render as { audioReady?: boolean; missingMedia?: number; sceneCount?: number; stale?: boolean } | undefined;
-      const warnings = [
-        render?.audioReady ? "Ä‘Ã£ cÃ³ tiáº¿ng TTS hoáº·c tiáº¿ng gá»‘c" : "chÆ°a cÃ³ tiáº¿ng, Ä‘Ã£ táº¡o SRT riÃªng",
-        render?.missingMedia ? `${render.missingMedia} cáº£nh dÃ¹ng media dá»± phÃ²ng` : "",
-        render?.stale ? "dá»¯ liá»‡u Ä‘á»•i trong lÃºc ghÃ©p, cáº§n ghÃ©p láº¡i" : "",
-      ].filter(Boolean).join(" Â· ");
-      setRunMessage({ tone: render?.audioReady && !render.missingMedia && !render.stale ? "success" : "error", text: `ÄÃ£ ghÃ©p Táº­p ${String(episodeNumber).padStart(2, "0")}${language ? ` Â· voice ${voiceLanguageLabel(language)}` : ""} Â· ${render?.sceneCount || 0} cáº£nh Â· ${warnings}.` });
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : "GhÃ©p video táº­p tháº¥t báº¡i.";
-      await refresh().catch(() => undefined);
-      setSceneError(message);
-      setRunMessage({ tone: "error", text: message });
-    } finally {
-      setRenderingChunkId("");
-      setRenderingLanguage("");
-      setRenderRunning(false);
-    }
-  }
-
-  async function generatePublishingPackage() {
-    if (!project?.slug || publishingBusy) return;
-    setPublishingBusy(true);
-    setPublishingError("");
-    setPublishingNotice("");
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/publishing-package`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scope: publishingScope }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng táº¡o Ä‘Æ°á»£c gá»£i Ã½ title vÃ  thumbnail.");
-      await refresh();
-      setPublishingNotice(`ÄÃ£ lÆ°u gá»£i Ã½ báº±ng ${payload.model || "AI"}.`);
-    } catch (cause) {
-      setPublishingError(cause instanceof Error ? cause.message : "KhÃ´ng táº¡o Ä‘Æ°á»£c gá»£i Ã½ title vÃ  thumbnail.");
-    } finally {
-      setPublishingBusy(false);
-    }
-  }
-
-  async function copyPublishingText(value: string, label: string) {
-    try {
-      await navigator.clipboard.writeText(value);
-      setPublishingNotice(`ÄÃ£ sao chÃ©p ${label}.`);
-      setPublishingError("");
-    } catch {
-      setPublishingError("TrÃ¬nh duyá»‡t khÃ´ng cáº¥p quyá»n sao chÃ©p. HÃ£y chá»n vÃ  sao chÃ©p ná»™i dung trá»±c tiáº¿p.");
-    }
-  }
-
-  async function renderAllEpisodes() {
-    if (!project?.slug || renderRunning || ttsRunning || isRunning || runningScriptChunkId) return;
-    const targets = project.chunks.filter((chunk) => Boolean(chunk.outputPath) && chunk.render?.status !== "running" && (chunk.render?.stale === true || chunk.render?.status !== "completed"));
-    if (!targets.length) {
-      setRunMessage({ tone: "success", text: "Táº¥t cáº£ táº­p Ä‘Ã£ cÃ³ video. DÃ¹ng nÃºt MP4 á»Ÿ tá»«ng táº­p Ä‘á»ƒ táº£i láº¡i." });
-      return;
-    }
-
-    setRenderRunning(true);
-    setBatchRenderProgress(`0/${targets.length}`);
-    setSceneError("");
-    const rendered: string[] = [];
-    const failed: string[] = [];
-    for (let index = 0; index < targets.length; index += 1) {
-      const chunk = targets[index];
-      const episodeNumber = project.chunks.findIndex((item) => item.id === chunk.id) + 1;
-      const episodeLabel = `Táº­p ${String(episodeNumber).padStart(2, "0")}`;
-      setRenderingChunkId(chunk.id);
-      setBatchRenderProgress(`${index + 1}/${targets.length}`);
-      try {
-        const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/chunks/${encodeURIComponent(chunk.id)}/render`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ settings: renderSettings }),
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok || !payload.ok) throw new Error(payload.message || `${episodeLabel} ghÃ©p tháº¥t báº¡i.`);
-        if (payload.render?.stale) throw new Error("Dá»¯ liá»‡u Ä‘á»•i trong lÃºc ghÃ©p; táº­p nÃ y cáº§n Ä‘Æ°á»£c ghÃ©p láº¡i.");
-        rendered.push(episodeLabel);
-        await refresh();
-      } catch (cause) {
-        failed.push(`${episodeLabel}: ${cause instanceof Error ? cause.message : "lá»—i khÃ´ng xÃ¡c Ä‘á»‹nh"}`);
-        await refresh().catch(() => undefined);
-      }
-    }
-    setRenderingChunkId("");
-    setBatchRenderProgress("");
-    setRenderRunning(false);
-    setRunMessage({
-      tone: failed.length ? "error" : "success",
-      text: failed.length
-        ? `ÄÃ£ ghÃ©p ${rendered.length}/${targets.length} táº­p. Lá»—i: ${failed.slice(0, 3).join("; ")}${failed.length > 3 ? `; vÃ  ${failed.length - 3} lá»—i khÃ¡c` : ""}`
-        : `ÄÃ£ ghÃ©p xong ${rendered.length} táº­p. MP4 vÃ  SRT Ä‘Ã£ sáºµn sÃ ng á»Ÿ tá»«ng dÃ²ng táº­p.`,
-    });
-  }
-
-  async function generateChunkTts(chunkId: string, episodeNumber: number, force = false) {
-    if (!project?.slug || ttsRunning || renderRunning || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || generatingSceneId) return;
-    setTtsRunning(true);
-    setTtsChunkId(chunkId);
-    setRunMessage(null);
-    setSceneError("");
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/chunks/${encodeURIComponent(chunkId)}/tts`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ force }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || `KhÃ´ng táº¡o Ä‘Æ°á»£c TTS cho Táº­p ${episodeNumber}.`);
-      await refresh();
-      await loadScenes();
-      const episodeLabel = `Táº­p ${String(episodeNumber).padStart(2, "0")}`;
-      const status = String(payload.status || "completed");
-      setRunMessage({
-        tone: status === "completed" || status === "not_needed" ? "success" : "error",
-        text: status === "not_needed"
-          ? `${episodeLabel} khÃ´ng cÃ³ lá»i thoáº¡i/lá»i Ä‘á»c Ä‘á»ƒ táº¡o TTS.`
-          : status === "completed"
-            ? `ÄÃ£ táº¡o TTS cho ${episodeLabel} Â· ${payload.completed}/${payload.total} ${project.presetId === "ai-drama" ? "cÃ¢u thoáº¡i" : "cáº£nh cÃ³ lá»i Ä‘á»c"}. CÃ³ thá»ƒ ghÃ©p táº­p Ä‘á»ƒ xuáº¥t MP4 cÃ³ tiáº¿ng.`
-            : `TTS ${episodeLabel}: ${payload.completed}/${payload.total} ${project.presetId === "ai-drama" ? "cÃ¢u thoáº¡i" : "cáº£nh"} thÃ nh cÃ´ng, ${payload.failed} lá»—i.${payload.message ? ` ${payload.message}` : ""}`,
-      });
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : "KhÃ´ng táº¡o Ä‘Æ°á»£c TTS cho táº­p.";
-      await refresh().catch(() => undefined);
-      setSceneError(message);
-      setRunMessage({ tone: "error", text: message });
-    } finally {
-      setTtsChunkId("");
-      setTtsRunning(false);
-    }
-  }
-
-  async function deleteChunkTts(chunkId: string, episodeNumber: number, sceneId?: string) {
-    if (!project?.slug || deletingTtsChunkId || ttsRunning || renderRunning || isRunning || runningScriptChunkId || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || generatingSceneId || dialogueTranslationSceneId || dialogueTranslationBatchProgress || dialogueTtsBatchProgress || dialogueSavingSceneId) return;
-    const episodeLabel = `Táº­p ${String(episodeNumber).padStart(2, "0")}`;
-    const scopeLabel = sceneId ? `cáº£nh ${sceneId}` : `toÃ n bá»™ ${episodeLabel}`;
-    if (!window.confirm(`XoÃ¡ TTS Ä‘Ã£ táº¡o cho ${scopeLabel}, gá»“m voice gá»‘c vÃ  voice báº£n dá»‹ch? CÃ³ thá»ƒ táº¡o láº¡i sau. Tiáº¿ng gá»‘c trong video sáº½ Ä‘Æ°á»£c dÃ¹ng khi ghÃ©p náº¿u cáº£nh khÃ´ng cÃ²n TTS.`)) return;
-    setDeletingTtsChunkId(chunkId);
-    setSceneError("");
-    setRunMessage(null);
-    try {
-      const query = sceneId ? `?sceneId=${encodeURIComponent(sceneId)}` : "";
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/chunks/${encodeURIComponent(chunkId)}/tts${query}`, { method: "DELETE" });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || `KhÃ´ng xoÃ¡ Ä‘Æ°á»£c TTS cá»§a ${scopeLabel}.`);
-      await refresh();
-      await loadScenes();
-      setRunMessage({ tone: "success", text: `ÄÃ£ xoÃ¡ TTS cá»§a ${scopeLabel}. GhÃ©p láº¡i Ä‘á»ƒ dÃ¹ng tiáº¿ng gá»‘c á»Ÿ cÃ¡c cáº£nh cÃ³ audio.` });
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : `KhÃ´ng xoÃ¡ Ä‘Æ°á»£c TTS cá»§a ${scopeLabel}.`;
-      setSceneError(message);
-      setRunMessage({ tone: "error", text: message });
-      await refresh().catch(() => undefined);
-    } finally {
-      setDeletingTtsChunkId("");
-    }
-  }
-
-  async function generateAllEpisodeTts() {
-    if (!project?.slug || ttsRunning || renderRunning || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || generatingSceneId) return;
-    const targets = project.chunks.filter((chunk) => Boolean(chunk.outputPath) && chunk.tts?.status !== "completed" && chunk.tts?.status !== "not_needed");
-    if (!targets.length) {
-      setRunMessage({ tone: "success", text: "CÃ¡c táº­p Ä‘Ã£ cÃ³ TTS hoáº·c khÃ´ng cÃ³ lá»i Ä‘á»c cáº§n tá»•ng há»£p." });
-      return;
-    }
-
-    setTtsRunning(true);
-    setTtsChunkId("");
-    setBatchTtsProgress(`0/${targets.length} Â· tá»‘i Ä‘a ${Math.min(targets.length, BATCH_TTS_EPISODE_CONCURRENCY)} luá»“ng`);
-    setSceneError("");
-    const generated: string[] = [];
-    const failed: string[] = [];
-    let finishedCount = 0;
-    await forEachConcurrent(targets, BATCH_TTS_EPISODE_CONCURRENCY, async (chunk) => {
-      const episodeNumber = project.chunks.findIndex((item) => item.id === chunk.id) + 1;
-      const episodeLabel = `Táº­p ${String(episodeNumber).padStart(2, "0")}`;
-      try {
-        const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/chunks/${encodeURIComponent(chunk.id)}/tts`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ force: false }),
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok || !payload.ok) throw new Error(payload.message || `${episodeLabel} táº¡o TTS tháº¥t báº¡i.`);
-        if (payload.status === "failed" || payload.status === "partial") failed.push(`${episodeLabel}: ${payload.message || `${payload.failed} cáº£nh lá»—i`}`);
-        else generated.push(episodeLabel);
-      } catch (cause) {
-        failed.push(`${episodeLabel}: ${cause instanceof Error ? cause.message : "lá»—i khÃ´ng xÃ¡c Ä‘á»‹nh"}`);
-      } finally {
-        finishedCount += 1;
-        setBatchTtsProgress(`${finishedCount}/${targets.length} Â· tá»‘i Ä‘a ${Math.min(targets.length, BATCH_TTS_EPISODE_CONCURRENCY)} luá»“ng`);
-      }
-    });
-    await refresh().catch(() => undefined);
-    await loadScenes().catch(() => undefined);
-    setTtsChunkId("");
-    setBatchTtsProgress("");
-    setTtsRunning(false);
-    setRunMessage({
-      tone: failed.length ? "error" : "success",
-      text: failed.length
-        ? `ÄÃ£ xá»­ lÃ½ TTS ${generated.length}/${targets.length} táº­p. Lá»—i: ${failed.slice(0, 3).join("; ")}${failed.length > 3 ? `; vÃ  ${failed.length - 3} lá»—i khÃ¡c` : ""}`
-        : `ÄÃ£ táº¡o TTS xong ${generated.length} táº­p. CÃ³ thá»ƒ ghÃ©p hÃ ng loáº¡t Ä‘á»ƒ xuáº¥t MP4 cÃ³ tiáº¿ng.`,
-    });
-  }
-
-  async function saveSceneMediaSettings(scene: ScenePreview, settings: MediaGenerationSettings): Promise<boolean> {
-    if (!project?.slug || sceneMediaSettingsSaving || sceneHasActiveMediaJob(scene)) return false;
-    setSceneMediaSettingsSaving(true);
-    setSceneError("");
-    setScenes((current) => current.map((item) => item.id === scene.id ? { ...item, mediaGeneration: settings } : item));
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(scene.id)}/media-settings`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mediaGeneration: settings }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ lÆ°u cáº¥u hÃ¬nh media cho cáº£nh.");
-      const updatedScene = payload.scene as ScenePreview;
-      setScenes((current) => current.map((item) => item.id === updatedScene.id ? { ...item, ...updatedScene } : item));
-      invalidateSceneVideoPromptPreview(updatedScene.id);
-      return true;
-    } catch (cause) {
-      setSceneError(cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ lÆ°u cáº¥u hÃ¬nh media cho cáº£nh.");
-      await loadScenes().catch(() => undefined);
-      return false;
-    } finally {
-      setSceneMediaSettingsSaving(false);
-    }
-  }
-
-  async function updateFlowFrameEndScene(scene: ScenePreview, endSceneId: string) {
-    if (!project?.slug || sceneMediaSettingsSaving || generatingSceneId || batchMediaBusy || videoQueueRunning || sceneHasActiveMediaJob(scene)) return;
-    setSceneMediaSettingsSaving(true);
-    setSceneError("");
-    setScenes((current) => current.map((item) => item.id === scene.id ? { ...item, flowFrameEndSceneId: endSceneId } : item));
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(scene.id)}/flow-frames`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ endSceneId }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ lÆ°u khung cuá»‘i Flow.");
-      setScenes((current) => current.map((item) => item.id === scene.id ? { ...item, flowFrameEndSceneId: String(payload.flowFrameEndSceneId || "") } : item));
-      invalidateSceneVideoPromptPreview(scene.id);
-    } catch (cause) {
-      setSceneError(cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ lÆ°u khung cuá»‘i Flow.");
-      await loadScenes().catch(() => undefined);
-    } finally {
-      setSceneMediaSettingsSaving(false);
-    }
-  }
-
-  function updateDramaSceneImageReference(scene: ScenePreview, enabled: boolean) {
-    if (!project || sceneMediaSettingsSaving || generatingSceneId || batchMediaBusy || videoQueueRunning || sceneHasActiveMediaJob(scene)) return;
-    void saveSceneMediaSettings(scene, {
-      ...mediaSettingsForScene(scene, project),
-      videoUseSceneImageReference: enabled,
-    });
-  }
-
-  async function applyBatchSceneMediaSettings(targetScenes: ScenePreview[], settings: MediaGenerationSettings) {
-    if (!project?.slug || !targetScenes.length) return;
-    const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes/media-settings-batch`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sceneIds: targetScenes.map((scene) => scene.id), mediaGeneration: settings }),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ Ã¡p dá»¥ng cáº¥u hÃ¬nh media cho cÃ¡c cáº£nh.");
-    const targetIds = new Set(targetScenes.map((scene) => scene.id));
-    setScenes((current) => current.map((scene) => targetIds.has(scene.id) ? { ...scene, mediaGeneration: settings } : scene));
-  }
-
-  function updateBatchMediaSettings(patch: Partial<MediaGenerationSettings>) {
-    const next = { ...batchMediaSettings, ...patch };
-    if (project?.presetId === "ai-drama") next.videoDurationMode = "scene";
-    if (project && isFlowStoryOnlyPreset(project.presetId)) next.flowReferenceMode = "ingredients";
-    if (next.videoProvider === "flow" && next.flowReferenceMode === "frames") next.videoUseSceneImageReference = true;
-    if (patch.videoProvider && patch.videoProvider !== batchMediaSettings.videoProvider) {
-      const providerModels = visibleVideoModels(mediaCatalog?.videoModels || [], patch.videoProvider);
-      const defaultModelId = patch.videoProvider === "seedance" ? DEFAULT_SEEDANCE_VIDEO_MODEL_ID : patch.videoProvider === "higgsfield" ? HIGGSFIELD_SEEDANCE_MODEL_ID : patch.videoProvider === "muse" ? DEFAULT_MUSE_VIDEO_MODEL_ID : patch.videoProvider === "flow" ? DEFAULT_FLOW_VIDEO_MODEL_ID : DEFAULT_MEDIA_GENERATION_SETTINGS.videoModel;
-      const selected = providerModels.find((item) => item.id === patch.videoModel)
-        || providerModels.find((item) => item.id === batchMediaSettings.videoModel)
-        || providerModels.find((item) => item.id === defaultModelId)
-        || providerModels[0];
-      next.videoModel = selected?.id || defaultModelId;
-      if (selected?.qualities.length && !selected.qualities.includes(next.videoQuality)) next.videoQuality = selected.qualities[0];
-    }
-    const imageModel = mediaCatalog?.imageModels.find((item) => item.id === next.imageModel);
-    if (imageModel?.qualities.length && !imageModel.qualities.includes(next.imageQuality)) next.imageQuality = imageModel.qualities[0];
-    const imageDetailLevels = imageDetailLevelsForModel(imageModel);
-    if (next.imageModel !== batchMediaSettings.imageModel && imageDetailLevels.length && !imageDetailLevels.includes(next.imageDetailLevel)) {
-      next.imageDetailLevel = imageDetailLevels[0];
-    }
-    const videoModel = mediaCatalog?.videoModels.find((item) => item.id === next.videoModel && (item.provider || "maivideo") === next.videoProvider);
-    const availableVideoQualities = videoQualitiesForModel(videoModel, next.videoQuality);
-    const videoModelChanged = next.videoProvider !== batchMediaSettings.videoProvider || next.videoModel !== batchMediaSettings.videoModel;
-    if (videoModelChanged) next.videoQuality = preferredVideoQuality(next.videoModel, next.videoQuality, availableVideoQualities, videoModel?.label);
-    else if (availableVideoQualities.length && !availableVideoQualities.includes(next.videoQuality)) next.videoQuality = availableVideoQualities[0];
-    next.videoDurationSec = normalizeVideoDuration(next.videoDurationSec, videoModel, next.videoQuality);
-    if (videoModelChanged && videoModel?.supportsAudio === true) next.videoAudio = true;
-    const pixverse = isPixverseVideoSettings(next);
-    if (pixverse) {
-      next.videoMultiShot = true;
-      next.videoAudio = true;
-    } else {
-      if (videoModel?.supportsMultiShot === false) next.videoMultiShot = false;
-      if (videoModel?.supportsAudio === false) next.videoAudio = false;
-    }
-    if (isVideoOffPeakRequired(next.videoModel, videoModel?.label)) next.videoOffPeak = true;
-    else if (videoModel?.supportsOffPeak === false) next.videoOffPeak = false;
-    setBatchMediaSettings(next);
-  }
-
-  function updateQuickImageModel(imageModel: string) {
-    const selected = mediaCatalog?.imageModels.find((item) => item.id === imageModel);
-    updateBatchMediaSettings({
-      imageModel,
-      ...(selected?.qualities.length && !selected.qualities.includes(batchMediaSettings.imageQuality)
-        ? { imageQuality: selected.qualities[0] }
-        : {}),
-    });
-  }
-
-  function updateQuickVideoModel(videoModel: string) {
-    const selected = batchVideoModelOptions.find((item) => item.id === videoModel);
-    const qualities = videoQualitiesForModel(selected, batchMediaSettings.videoQuality);
-    const videoQuality = qualities.length && !qualities.includes(batchMediaSettings.videoQuality)
-      ? preferredVideoQuality(videoModel, batchMediaSettings.videoQuality, qualities, selected?.label)
-      : batchMediaSettings.videoQuality;
-    updateBatchMediaSettings({
-      videoProvider: selected?.provider || batchMediaSettings.videoProvider,
-      videoModel,
-      videoQuality,
-      videoDurationSec: normalizeVideoDuration(batchMediaSettings.videoDurationSec, selected, videoQuality),
-      ...(selected?.supportsMultiShot === false ? { videoMultiShot: false } : {}),
-      ...(selected?.supportsAudio === false ? { videoAudio: false } : {}),
-      ...(selected?.supportsOffPeak === false ? { videoOffPeak: false } : {}),
-    });
-  }
-
-  async function generateFilteredSceneImages() {
-    if (!project?.slug || batchMediaBusy || videoQueueRunning || generatingSceneId || ttsRunning || dialogueTtsBatchProgress || scriptBlocksIndependentTasks || !filteredScenes.length) return;
-    const targets = filteredImageTargets;
-    if (!targets.length) {
-      setRunMessage({ tone: "success", text: "KhÃ´ng cÃ³ cáº£nh trong pháº¡m vi hiá»‡n táº¡i Ä‘á»ƒ táº¡o áº£nh." });
-      return;
-    }
-    setBatchMediaBusy(true);
-    setGeneratingSceneMediaKind("image");
-    setSceneError("");
-    setRunMessage(null);
-    try {
-      setBatchMediaProgress(`Äang Ã¡p dá»¥ng cáº¥u hÃ¬nh cho ${targets.length} cáº£nhâ€¦`);
-      await applyBatchSceneMediaSettings(targets, batchMediaSettings);
-      setBatchMediaProgress(`Äang xáº¿p ${targets.length} job áº£nh vÃ o hÃ ng Ä‘á»£i ná»nâ€¦`);
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scene-media-jobs`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sceneIds: targets.map((scene) => scene.id), kind: "image", mediaGeneration: batchMediaSettings }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ xáº¿p áº£nh vÃ o hÃ ng Ä‘á»£i ná»n.");
-      const jobs = Array.isArray(payload.jobs) ? payload.jobs as SceneMediaJobPreview[] : [];
-      const jobsByScene = new Map(jobs.map((job) => [job.sceneId, job]));
-      setScenes((current) => current.map((scene) => jobsByScene.has(scene.id) ? { ...scene, mediaJob: jobsByScene.get(scene.id) } : scene));
-      setRunMessage({
-        tone: "success",
-        text: `ÄÃ£ xáº¿p ${jobs.length} job táº¡o áº£nh vÃ o hÃ ng Ä‘á»£i cháº¡y ná»n${batchRegenerateImages ? " (ghi Ä‘Ã¨ áº£nh cÅ© khi hoÃ n táº¥t)" : ""}. CÃ³ thá»ƒ tiáº¿p tá»¥c dÃ¹ng mÃ n hÃ¬nh; tráº¡ng thÃ¡i sáº½ tá»± cáº­p nháº­t.`,
-      });
-    } catch (cause) {
-      setSceneError(cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ táº¡o áº£nh hÃ ng loáº¡t.");
-    } finally {
-      setBatchMediaProgress("");
-      setBatchMediaBusy(false);
-      setGeneratingSceneMediaKind("");
-    }
-  }
-
-  async function generateFilteredSceneVideos(targets = filteredVideoTargets, regenerate = false) {
-    if (!targets.length || batchMediaBusy || videoQueueRunning || generatingSceneId || ttsRunning || dialogueTtsBatchProgress || scriptBlocksIndependentTasks) return;
-    if (batchMediaSettings.videoProvider === "seedance") {
-      setRunMessage({ tone: "error", text: "Dá»± Ã¡n Ä‘ang dÃ¹ng Seedance trá»±c tiáº¿p tá»« seedance.maivideo.top, hiá»‡n táº¡m áº©n. Chá»n MaiVideo, Muse.ai hoáº·c Flow Ä‘á»ƒ táº¡o video má»›i." });
-      return;
-    }
-    setBatchMediaBusy(true);
-    setGeneratingSceneMediaKind("video");
-    setBatchMediaProgress(`Äang xáº¿p ${targets.length} job ${regenerate ? "táº¡o láº¡i video" : "video"} vÃ o hÃ ng Ä‘á»£i ná»nâ€¦`);
-    setSceneError("");
-    try {
-      await applyBatchSceneMediaSettings(targets, batchMediaSettings);
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scene-media-jobs`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sceneIds: targets.map((scene) => scene.id), kind: "video", mediaGeneration: batchMediaSettings }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ xáº¿p video vÃ o hÃ ng Ä‘á»£i ná»n.");
-      const jobs = Array.isArray(payload.jobs) ? payload.jobs as SceneMediaJobPreview[] : [];
-      const jobsByScene = new Map(jobs.map((job) => [job.sceneId, job]));
-      setScenes((current) => current.map((scene) => jobsByScene.has(scene.id) ? { ...scene, mediaJob: jobsByScene.get(scene.id) } : scene));
-      const replacedLegacyJobs = Number(payload.replacedLegacyVideoJobs) || 0;
-      setRunMessage({ tone: "success", text: `ÄÃ£ xáº¿p ${jobs.length} job ${regenerate ? "táº¡o láº¡i video" : "video"} vÃ o hÃ ng Ä‘á»£i cháº¡y ná»n.${replacedLegacyJobs ? ` ÄÃ£ thay ${replacedLegacyJobs} job chá» á»Ÿ queue cÅ©.` : ""} CÃ³ thá»ƒ tiáº¿p tá»¥c thao tÃ¡c; tráº¡ng thÃ¡i tá»«ng cáº£nh tá»± cáº­p nháº­t.` });
-    } catch (cause) {
-      setSceneError(cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ xáº¿p video vÃ o hÃ ng Ä‘á»£i ná»n.");
-    } finally {
-      setBatchMediaProgress("");
-      setBatchMediaBusy(false);
-      setGeneratingSceneMediaKind("");
-    }
-  }
-
-  function updateSelectedSceneMediaSettings(patch: Partial<MediaGenerationSettings>) {
-    if (!selectedScene || !project || sceneMediaSettingsSaving || sceneHasActiveMediaJob(selectedScene)) return;
-    const currentSettings = mediaSettingsForScene(selectedScene, project);
-    const next = { ...currentSettings, ...patch };
-    if (project.presetId === "ai-drama") next.videoDurationMode = "scene";
-    if (isFlowStoryOnlyPreset(project.presetId)) next.flowReferenceMode = "ingredients";
-    if (next.videoProvider === "flow" && next.flowReferenceMode === "frames") next.videoUseSceneImageReference = true;
-    if (patch.videoModel) {
-      const maiVideoProviders = currentSettings.videoProvider === "maivideo" || currentSettings.videoProvider === "higgsfield";
-      const selectedModel = allVideoModels.find((item) => item.id === patch.videoModel && (
-        currentSettings.videoProvider === "seedance"
-          ? true
-          : maiVideoProviders
-          ? (item.provider || "maivideo") === "maivideo" || item.provider === "higgsfield"
-          : (item.provider || "maivideo") === currentSettings.videoProvider
-      ));
-      if (selectedModel) next.videoProvider = selectedModel.provider || "maivideo";
-    }
-    if (patch.videoProvider && patch.videoProvider !== currentSettings.videoProvider) {
-      const providerModels = visibleVideoModels(mediaCatalog?.videoModels || [], patch.videoProvider);
-      const defaultModelId = patch.videoProvider === "seedance" ? DEFAULT_SEEDANCE_VIDEO_MODEL_ID : patch.videoProvider === "higgsfield" ? HIGGSFIELD_SEEDANCE_MODEL_ID : patch.videoProvider === "muse" ? DEFAULT_MUSE_VIDEO_MODEL_ID : patch.videoProvider === "flow" ? DEFAULT_FLOW_VIDEO_MODEL_ID : DEFAULT_MEDIA_GENERATION_SETTINGS.videoModel;
-      const selected = providerModels.find((item) => item.id === currentSettings.videoModel)
-        || providerModels.find((item) => item.id === defaultModelId)
-        || providerModels[0];
-      next.videoModel = selected?.id || defaultModelId;
-      if (selected?.qualities.length && !selected.qualities.includes(next.videoQuality)) next.videoQuality = selected.qualities[0];
-    }
-    const imageModel = mediaCatalog?.imageModels.find((item) => item.id === next.imageModel);
-    if (imageModel?.qualities.length && !imageModel.qualities.includes(next.imageQuality)) {
-      next.imageQuality = imageModel.qualities[0];
-    }
-    const imageDetailLevels = imageDetailLevelsForModel(imageModel);
-    if (next.imageModel !== currentSettings.imageModel && imageDetailLevels.length && !imageDetailLevels.includes(next.imageDetailLevel)) {
-      next.imageDetailLevel = imageDetailLevels[0];
-    }
-    const videoModel = allVideoModels.find((item) => item.id === next.videoModel && (item.provider || "maivideo") === next.videoProvider);
-    const availableVideoQualities = videoQualitiesForModel(videoModel, next.videoQuality);
-    const videoModelChanged = next.videoProvider !== currentSettings.videoProvider || next.videoModel !== currentSettings.videoModel;
-    if (videoModelChanged) next.videoQuality = preferredVideoQuality(next.videoModel, next.videoQuality, availableVideoQualities, videoModel?.label);
-    else if (availableVideoQualities.length && !availableVideoQualities.includes(next.videoQuality)) next.videoQuality = availableVideoQualities[0];
-    next.videoDurationSec = normalizeVideoDuration(next.videoDurationSec, videoModel, next.videoQuality);
-    if (videoModelChanged && videoModel?.supportsAudio === true) next.videoAudio = true;
-    const pixverse = isPixverseVideoSettings(next);
-    if (pixverse) {
-      next.videoMultiShot = true;
-      next.videoAudio = true;
-    } else {
-      if (videoModel?.supportsMultiShot === false) next.videoMultiShot = false;
-      if (videoModel?.supportsAudio === false) next.videoAudio = false;
-    }
-    if (isVideoOffPeakRequired(next.videoModel, videoModel?.label)) next.videoOffPeak = true;
-    else if (videoModel?.supportsOffPeak === false) next.videoOffPeak = false;
-    void saveSceneMediaSettings(selectedScene, next);
-  }
-
-  async function generateSceneMedia(scene: ScenePreview, kind: "image" | "video") {
-    if (!project?.slug || sceneMediaSettingsSaving || generatingSceneId || batchMediaBusy || videoQueueRunning || ttsRunning || scriptBlocksIndependentTasks || scene.mediaJob?.status === "queued" || scene.mediaJob?.status === "running") return;
-    if (kind === "video" && batchMediaSettings.videoProvider === "seedance") {
-      setRunMessage({ tone: "error", text: "Dá»± Ã¡n Ä‘ang dÃ¹ng Seedance trá»±c tiáº¿p tá»« seedance.maivideo.top, hiá»‡n táº¡m áº©n. Chá»n MaiVideo, Muse.ai hoáº·c Flow Ä‘á»ƒ táº¡o video má»›i." });
-      return;
-    }
-    setGeneratingSceneId(scene.id);
-    setGeneratingSceneMediaKind(kind);
-    setSceneError("");
-    try {
-      const currentSettings = mediaSettingsForScene(scene, project);
-      const selectedImageModel = availableImageModels.find((item) => item.id === batchMediaSettings.imageModel);
-      const nextSettings: MediaGenerationSettings = kind === "image"
-        ? {
-            ...currentSettings,
-            imageModel: batchMediaSettings.imageModel,
-            imageQuality: selectedImageModel?.qualities.length && !selectedImageModel.qualities.includes(batchMediaSettings.imageQuality)
-              ? selectedImageModel.qualities[0]
-              : batchMediaSettings.imageQuality,
-            imageDetailLevel: batchMediaSettings.imageDetailLevel,
-            seedanceAccountId: batchMediaSettings.seedanceAccountId || "",
-            imageUseCharacterReferences: batchMediaSettings.imageUseCharacterReferences,
-          }
-        : videoGenerationSettingsForScene(scene);
-      const settingsChanged = kind === "image"
-        ? currentSettings.imageModel !== nextSettings.imageModel
-          || currentSettings.imageQuality !== nextSettings.imageQuality
-          || currentSettings.imageDetailLevel !== nextSettings.imageDetailLevel
-          || currentSettings.seedanceAccountId !== nextSettings.seedanceAccountId
-          || currentSettings.imageUseCharacterReferences !== nextSettings.imageUseCharacterReferences
-        : currentSettings.videoProvider !== nextSettings.videoProvider
-          || currentSettings.videoModel !== nextSettings.videoModel
-          || currentSettings.seedanceChatMode !== nextSettings.seedanceChatMode
-          || currentSettings.videoQuality !== nextSettings.videoQuality
-          || currentSettings.seedanceAccountId !== nextSettings.seedanceAccountId
-          || currentSettings.videoDurationMode !== nextSettings.videoDurationMode
-          || currentSettings.videoDurationSec !== nextSettings.videoDurationSec
-          || currentSettings.videoMultiShot !== nextSettings.videoMultiShot
-          || currentSettings.videoAudio !== nextSettings.videoAudio
-          || currentSettings.videoOffPeak !== nextSettings.videoOffPeak
-          || currentSettings.videoUseCharacterReferences !== nextSettings.videoUseCharacterReferences
-          || currentSettings.videoUseLocationReferences !== nextSettings.videoUseLocationReferences
-          || currentSettings.videoUseSceneImageReference !== nextSettings.videoUseSceneImageReference
-          || currentSettings.flowReferenceMode !== nextSettings.flowReferenceMode;
-      if (settingsChanged && !(await saveSceneMediaSettings(scene, nextSettings))) return;
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scene-media-jobs`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sceneIds: [scene.id], kind, mediaGeneration: nextSettings }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || `KhÃ´ng thá»ƒ xáº¿p ${kind === "image" ? "áº£nh" : "video"} vÃ o hÃ ng Ä‘á»£i.`);
-      const job = (Array.isArray(payload.jobs) ? payload.jobs[0] : undefined) as SceneMediaJob | undefined;
-      if (job) setScenes((current) => current.map((item) => item.id === scene.id ? { ...item, mediaJob: job } : item));
-      const replacedLegacyJobs = Number(payload.replacedLegacyVideoJobs) || 0;
-      setRunMessage({ tone: "success", text: `${sceneNumberLabel(scene)} Ä‘Ã£ Ä‘Æ°á»£c xáº¿p vÃ o hÃ ng Ä‘á»£i cháº¡y ná»n Ä‘á»ƒ táº¡o ${kind === "image" ? "áº£nh" : "video"}.${replacedLegacyJobs ? ` ÄÃ£ thay ${replacedLegacyJobs} job video chá» á»Ÿ queue cÅ©.` : ""} Tráº¡ng thÃ¡i sáº½ tá»± cáº­p nháº­t.` });
-    } catch (cause) {
-      setSceneError(cause instanceof Error ? cause.message : `KhÃ´ng táº¡o Ä‘Æ°á»£c ${kind === "image" ? "áº£nh" : "video"} AI cho cáº£nh.`);
-    } finally {
-      setGeneratingSceneId("");
-      setGeneratingSceneMediaKind("");
-    }
-  }
-
-  async function generateSceneVideo(scene: ScenePreview) {
-    await generateSceneMedia(scene, "video");
-  }
-
-  function invalidateSceneVideoPromptPreview(sceneId: string) {
-    sceneVideoPromptPreviewRequestIds.current[sceneId] = (sceneVideoPromptPreviewRequestIds.current[sceneId] || 0) + 1;
-    setSceneVideoPromptPreviews((current) => {
-      if (!(sceneId in current)) return current;
-      const next = { ...current };
-      delete next[sceneId];
-      return next;
-    });
-  }
-
-  async function loadSceneVideoPromptPreview(scene: ScenePreview, mediaGeneration: MediaGenerationSettings): Promise<SceneVideoPromptPreview | null> {
-    const currentPreview = sceneVideoPromptPreviews[scene.id];
-    if (!project?.slug || currentPreview?.loading) return currentPreview?.result || null;
-    if (currentPreview?.result) return currentPreview.result;
-    const requestId = (sceneVideoPromptPreviewRequestIds.current[scene.id] || 0) + 1;
-    sceneVideoPromptPreviewRequestIds.current[scene.id] = requestId;
-    setSceneVideoPromptPreviews((current) => ({ ...current, [scene.id]: { loading: true } }));
-    try {
-      if (dialogueDirtySceneIdsRef.current.has(scene.id)) {
-        const savedDialogue = await saveDialogueSegments(scene, false);
-        if (!savedDialogue) throw new Error("Timeline thoáº¡i Ä‘ang lÆ°u hoáº·c chÆ°a lÆ°u Ä‘Æ°á»£c. HÃ£y chá» lÆ°u xong rá»“i má»Ÿ láº¡i pháº§n xem trÆ°á»›c.");
-      }
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(scene.id)}/video-prompt`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        cache: "no-store",
-        body: JSON.stringify({ mediaGeneration }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng táº¡o Ä‘Æ°á»£c báº£n xem trÆ°á»›c prompt video.");
-      const prompt = String(payload.prompt || "");
-      if (!prompt) throw new Error("Prompt API hiá»‡n Ä‘ang trá»‘ng.");
-      const result: SceneVideoPromptPreview = {
-        prompt,
-        promptLength: Number(payload.promptLength) || prompt.length,
-        provider: String(payload.provider || ""),
-        model: String(payload.model || ""),
-        dialogueCueCount: Number(payload.dialogueCueCount) || 0,
-        dialogueIncluded: Boolean(payload.dialogueIncluded),
-        compaction: payload.compaction,
-      };
-      if (sceneVideoPromptPreviewRequestIds.current[scene.id] !== requestId) return null;
-      setSceneVideoPromptPreviews((current) => ({ ...current, [scene.id]: { result } }));
-      return result;
-    } catch (cause) {
-      if (sceneVideoPromptPreviewRequestIds.current[scene.id] !== requestId) return null;
-      setSceneVideoPromptPreviews((current) => ({ ...current, [scene.id]: { error: cause instanceof Error ? cause.message : "KhÃ´ng táº¡o Ä‘Æ°á»£c báº£n xem trÆ°á»›c prompt video." } }));
-      return null;
-    }
-  }
-
-  async function copySceneVideoPrompt(scene: ScenePreview, mediaGeneration: MediaGenerationSettings) {
-    if (copyingSceneVideoPromptId === scene.id) return;
-    setCopyingSceneVideoPromptId(scene.id);
-    setCopiedSceneVideoPromptId("");
-    try {
-      const preview = sceneVideoPromptPreviews[scene.id]?.result
-        ? sceneVideoPromptPreviews[scene.id].result
-        : await loadSceneVideoPromptPreview(scene, mediaGeneration);
-      if (!preview?.prompt) throw new Error(sceneVideoPromptPreviews[scene.id]?.error || "KhÃ´ng táº¡o Ä‘Æ°á»£c prompt Ä‘á»ƒ sao chÃ©p.");
-      await navigator.clipboard.writeText(preview.prompt);
-      setCopiedSceneVideoPromptId(scene.id);
-      setSceneError("");
-      window.setTimeout(() => setCopiedSceneVideoPromptId((current) => current === scene.id ? "" : current), 1800);
-    } catch (cause) {
-      setSceneError(cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ sao chÃ©p prompt. HÃ£y chá»n vÃ  sao chÃ©p ná»™i dung trá»±c tiáº¿p.");
-    } finally {
-      setCopyingSceneVideoPromptId("");
-    }
-  }
-
-  async function prepareSceneVideoReferenceImages(scene: ScenePreview, mediaGeneration: MediaGenerationSettings) {
-    const cacheKey = `${scene.id}:${JSON.stringify(mediaGeneration)}`;
-    const cachedImages = sceneVideoReferenceClipboardCache.current[cacheKey];
-    if (cachedImages) return cachedImages;
-    const pendingImages = sceneVideoReferenceClipboardPending.current[cacheKey];
-    if (pendingImages) return pendingImages;
-
-    const preparation = (async () => {
-      const referenceResponse = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(scene.id)}/video-prompt`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        cache: "no-store",
-        body: JSON.stringify({ mediaGeneration, referenceImagesOnly: true }),
-      });
-      const payload = await referenceResponse.json().catch(() => ({}));
-      if (!referenceResponse.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng láº¥y Ä‘Æ°á»£c danh sÃ¡ch áº£nh tham chiáº¿u.");
-      const references: Array<{ name: string; url: string }> = Array.isArray(payload.referenceImages)
-        ? payload.referenceImages.flatMap((value: unknown): Array<{ name: string; url: string }> => {
-          if (!value || typeof value !== "object" || Array.isArray(value)) return [];
-          const reference = value as Record<string, unknown>;
-          const name = String(reference.name || "").trim();
-          const url = String(reference.url || "").trim();
-          return name && url ? [{ name, url }] : [];
-        })
-        : [];
-      if (!references.length) throw new Error("Cáº£nh nÃ y chÆ°a cÃ³ áº£nh tham chiáº¿u video Ä‘Ã£ táº¡o Ä‘á»ƒ copy.");
-      const images = await Promise.all(references.map(async (reference) => {
-        const response = await fetch(reference.url, { cache: "no-store", credentials: "same-origin" });
-        if (!response.ok) throw new Error(`${reference.name}: khÃ´ng táº£i Ä‘Æ°á»£c áº£nh tham chiáº¿u.`);
-        const blob = await response.blob();
-        if (!blob.type.startsWith("image/")) throw new Error(`${reference.name}: dá»¯ liá»‡u táº£i vá» khÃ´ng pháº£i áº£nh.`);
-        return clipboardPngBlob(blob);
-      }));
-      sceneVideoReferenceClipboardCache.current[cacheKey] = images;
-      return images;
-    })();
-    sceneVideoReferenceClipboardPending.current[cacheKey] = preparation;
-    try {
-      return await preparation;
-    } finally {
-      if (sceneVideoReferenceClipboardPending.current[cacheKey] === preparation) delete sceneVideoReferenceClipboardPending.current[cacheKey];
-    }
-  }
-
-  function warmSceneVideoReferenceImages(scene: ScenePreview, mediaGeneration: MediaGenerationSettings) {
-    const cacheKey = `${scene.id}:${JSON.stringify(mediaGeneration)}`;
-    if (sceneVideoReferenceClipboardCache.current[cacheKey]) return;
-    void prepareSceneVideoReferenceImages(scene, mediaGeneration).catch(() => undefined);
-  }
-
-  async function copySceneVideoReferenceImages(scene: ScenePreview, mediaGeneration: MediaGenerationSettings) {
-    if (copyingSceneVideoReferencesId === scene.id) return;
-    setCopyingSceneVideoReferencesId(scene.id);
-    setCopiedSceneVideoReferencesId("");
-    try {
-      if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
-        throw new Error("TrÃ¬nh duyá»‡t khÃ´ng há»— trá»£ copy áº£nh vÃ o clipboard.");
-      }
-      if (typeof ClipboardItem.supports === "function" && !ClipboardItem.supports("image/png")) {
-        throw new Error("TrÃ¬nh duyá»‡t khÃ´ng há»— trá»£ ghi áº£nh PNG vÃ o clipboard. HÃ£y dÃ¹ng Chrome, Edge hoáº·c Safari má»›i nháº¥t.");
-      }
-
-      const cacheKey = `${scene.id}:${JSON.stringify(mediaGeneration)}`;
-      const imagesBeforeClick = sceneVideoReferenceClipboardCache.current[cacheKey];
-      const preparedBeforeClick = Boolean(imagesBeforeClick);
-      const images = imagesBeforeClick || await prepareSceneVideoReferenceImages(scene, mediaGeneration);
-      if (!preparedBeforeClick) {
-        // Fetching references takes time and loses the browser's transient user gesture.
-        // Prepare on the first click, then write to the clipboard directly on the next click.
-        setPreparedSceneVideoReferencesId(scene.id);
-        setSceneVideoReferenceCopyProgress((current) => ({
-          ...current,
-          [scene.id]: { cacheKey, nextIndex: 0, lastCopiedIndex: 0, total: images.length, complete: false },
-        }));
-        setSceneVideoReferenceCopyNotice({ sceneId: scene.id, text: `ÄÃ£ chuáº©n bá»‹ ${images.length} áº£nh. Báº¥m â€œCopy áº£nh 1/${images.length}â€, dÃ¡n á»Ÿ Seedance báº±ng âŒ˜V/Ctrl+V, rá»“i quay láº¡i copy áº£nh tiáº¿p theo.` });
-        return;
-      }
-      const priorProgress = sceneVideoReferenceCopyProgress[scene.id];
-      const matchingProgress = priorProgress?.cacheKey === cacheKey && priorProgress.total === images.length ? priorProgress : null;
-      const imageIndex = matchingProgress && !matchingProgress.complete ? matchingProgress.nextIndex : 0;
-      try {
-        // Chromium in this app does not implement multiple ClipboardItems in one write.
-        // Copy one image per click so the target site's normal Cmd/Ctrl+V paste still works.
-        let clipboardWriteTimer: number | undefined;
-        try {
-          await Promise.race([
-            navigator.clipboard.write([new ClipboardItem({ "image/png": images[imageIndex] })]),
-            new Promise<never>((_, reject) => {
-              clipboardWriteTimer = window.setTimeout(() => reject(new Error("CLIPBOARD_WRITE_TIMEOUT")), 7000);
-            }),
-          ]);
-        } finally {
-          if (clipboardWriteTimer !== undefined) window.clearTimeout(clipboardWriteTimer);
-        }
-      } catch (cause) {
-        const errorName = cause instanceof DOMException ? cause.name : "";
-        if (errorName === "NotAllowedError" || errorName === "SecurityError") {
-          setPreparedSceneVideoReferencesId(scene.id);
-          if (!matchingProgress) {
-            setSceneVideoReferenceCopyProgress((current) => ({
-              ...current,
-              [scene.id]: { cacheKey, nextIndex: imageIndex, lastCopiedIndex: 0, total: images.length, complete: false },
-            }));
-          }
-          setSceneVideoReferenceCopyNotice({ sceneId: scene.id, text: `TrÃ¬nh duyá»‡t chÆ°a cho ghi clipboard. Báº¥m â€œCopy áº£nh ${imageIndex + 1}/${images.length}â€ láº§n ná»¯a rá»“i dÃ¡n á»Ÿ Seedance báº±ng âŒ˜V/Ctrl+V.` });
-          return;
-        }
-        if (cause instanceof Error && cause.message === "CLIPBOARD_WRITE_TIMEOUT") {
-          setSceneVideoReferenceCopyNotice({ sceneId: scene.id, text: "Clipboard cá»§a trÃ¬nh duyá»‡t khÃ´ng pháº£n há»“i; áº£nh chÆ°a Ä‘Æ°á»£c copy nÃªn âŒ˜V sáº½ khÃ´ng dÃ¡n Ä‘Æ°á»£c. HÃ£y má»Ÿ StoryAI báº±ng Chrome/Edge chÃ­nh vÃ  cho phÃ©p Clipboard, hoáº·c dÃ¹ng Upload nhiá»u file trÃªn Seedance." });
-          return;
-        }
-        throw cause;
-      }
-      const nextIndex = imageIndex + 1;
-      const complete = nextIndex >= images.length;
-      setSceneVideoReferenceCopyProgress((current) => ({
-        ...current,
-        [scene.id]: { cacheKey, nextIndex: complete ? images.length : nextIndex, lastCopiedIndex: imageIndex + 1, total: images.length, complete },
-      }));
-      setPreparedSceneVideoReferencesId("");
-      setCopiedSceneVideoReferencesId(scene.id);
-      setSceneVideoReferenceCopyNotice({
-        sceneId: scene.id,
-        text: complete
-          ? `ÄÃ£ copy Ä‘á»§ ${images.length} áº£nh, láº§n lÆ°á»£t. DÃ¡n áº£nh ${imageIndex + 1}/${images.length} vÃ o Seedance; náº¿u Seedance chÆ°a nháº­n áº£nh nÃ o, hÃ£y dÃ¡n ngay rá»“i má»›i copy áº£nh tiáº¿p.`
-          : `ÄÃ£ copy áº£nh ${imageIndex + 1}/${images.length}. Chuyá»ƒn sang Seedance nháº¥n âŒ˜V/Ctrl+V, rá»“i quay láº¡i báº¥m Copy áº£nh tiáº¿p theo (${nextIndex + 1}/${images.length}).`,
-      });
-      setSceneError("");
-      window.setTimeout(() => setCopiedSceneVideoReferencesId((current) => current === scene.id ? "" : current), 2200);
-    } catch (cause) {
-      setSceneError(cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ copy áº£nh tham chiáº¿u.");
-    } finally {
-      setCopyingSceneVideoReferencesId("");
-    }
-  }
-
-  async function generateSceneImage(scene: ScenePreview) {
-    await generateSceneMedia(scene, "image");
-  }
-
-  async function updateDramaProfile(kind: "characters" | "locations", id: string, method: "PATCH" | "DELETE", values: Record<string, string> = {}) {
-    if (!project || profileBusyId || profileBatchKinds.size > 0) return;
-    setProfileBusyId(id);
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/${kind}`, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ [kind === "characters" ? "characterId" : "locationId"]: id, ...values }) });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng lÆ°u Ä‘Æ°á»£c há»“ sÆ¡.");
-      await refresh();
-      if (method === "DELETE") await loadScenes();
-      setRunMessage({ tone: "success", text: method === "DELETE" ? "ÄÃ£ xÃ³a há»“ sÆ¡." : "ÄÃ£ lÆ°u prompt áº£nh." });
-    } catch (cause) { setRunMessage({ tone: "error", text: cause instanceof Error ? cause.message : "KhÃ´ng lÆ°u Ä‘Æ°á»£c há»“ sÆ¡." }); }
-    finally { setProfileBusyId(""); }
-  }
-
-  async function createDramaProfile(kind: "characters" | "locations") {
-    if (!project || !newDramaProfile.name.trim() || profileBusyId || profileBatchKinds.size > 0) return;
-    setProfileBusyId("new");
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/${kind}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(newDramaProfile) });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng táº¡o Ä‘Æ°á»£c há»“ sÆ¡.");
-      setNewDramaProfile({ name: "", description: "", imagePrompt: "" });
-      await refresh(); setRunMessage({ tone: "success", text: "ÄÃ£ táº¡o há»“ sÆ¡ má»›i." });
-    } catch (cause) { setRunMessage({ tone: "error", text: cause instanceof Error ? cause.message : "KhÃ´ng táº¡o Ä‘Æ°á»£c há»“ sÆ¡." }); }
-    finally { setProfileBusyId(""); }
-  }
-
-  async function generateDramaProfileImage(kind: "characters" | "locations", id: string) {
-    const busyKey = `${kind}:${id}`;
-    if (!project || profileBusyId || profileBatchKinds.has(kind) || profileImageBusyIds.has(busyKey)) return;
-    setProfileImageBusyIds((current) => new Set(current).add(busyKey));
-    try {
-      const entity = kind === "characters" ? "characters" : "locations";
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/${entity}/${encodeURIComponent(id)}/image`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mediaGeneration: batchMediaSettings }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng táº¡o Ä‘Æ°á»£c áº£nh.");
-      await refresh();
-      const profileName = kind === "characters"
-        ? project.characters?.find((profile) => profile.id === id)?.name
-        : project.locations?.find((profile) => profile.id === id)?.name;
-      setRunMessage({ tone: "success", text: `ÄÃ£ táº¡o áº£nh tham chiáº¿u${profileName ? ` cho ${profileName}` : ""} vÃ  lÆ°u trong project.` });
-    } catch (cause) { setRunMessage({ tone: "error", text: cause instanceof Error ? cause.message : "KhÃ´ng táº¡o Ä‘Æ°á»£c áº£nh." }); }
-    finally { setProfileImageBusyIds((current) => { const next = new Set(current); next.delete(busyKey); return next; }); }
-  }
-
-  async function generateDramaProfileImages(kind: "characters" | "locations", onlyProfileIds?: string[]) {
-    if (!project || profileBusyId || profileBatchKinds.has(kind)) return;
-    const profiles = kind === "characters" ? project.characters || [] : project.locations || [];
-    if (profiles.some((profile) => profileImageBusyIds.has(`${kind}:${profile.id}`))) return;
-    const allowedIds = onlyProfileIds ? new Set(onlyProfileIds) : undefined;
-    const targets = profiles.filter((profile) => !profile.referenceImagePath && (!allowedIds || allowedIds.has(profile.id)));
-    if (!targets.length) return;
-
-    setProfileBatchKinds((current) => new Set(current).add(kind));
-    let createdCount = 0;
-    const failures: string[] = [];
-    try {
-      let finishedCount = 0;
-      setProfileBatchProgress((current) => ({ ...current, [kind]: `0/${targets.length} Â· tá»‘i Ä‘a ${Math.min(targets.length, BATCH_PROFILE_IMAGE_CONCURRENCY)} luá»“ng` }));
-      await forEachConcurrent(targets, BATCH_PROFILE_IMAGE_CONCURRENCY, async (profile) => {
-        try {
-          const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/${kind}/${encodeURIComponent(profile.id)}/image`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ mediaGeneration: batchMediaSettings }),
-          });
-          const payload = await response.json().catch(() => ({}));
-          if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng táº¡o Ä‘Æ°á»£c áº£nh.");
-          createdCount += 1;
-        } catch (cause) {
-          const reason = cause instanceof Error ? cause.message : "KhÃ´ng táº¡o Ä‘Æ°á»£c áº£nh.";
-          failures.push(`${profile.name}: ${reason}`);
-        } finally {
-          finishedCount += 1;
-          setProfileBatchProgress((current) => ({ ...current, [kind]: `${finishedCount}/${targets.length} Â· tá»‘i Ä‘a ${Math.min(targets.length, BATCH_PROFILE_IMAGE_CONCURRENCY)} luá»“ng` }));
-        }
-      });
-      await refresh();
-      const label = kind === "characters" ? "nhÃ¢n váº­t" : "bá»‘i cáº£nh";
-      setRunMessage(failures.length
-        ? { tone: "error", text: `ÄÃ£ táº¡o ${createdCount}/${targets.length} áº£nh ${label}. ${failures.join(" Â· ")}` }
-        : { tone: "success", text: `ÄÃ£ táº¡o ${createdCount} áº£nh ${label} cÃ²n thiáº¿u.` });
-    } catch (cause) {
-      setRunMessage({ tone: "error", text: cause instanceof Error ? cause.message : "KhÃ´ng hoÃ n táº¥t Ä‘Æ°á»£c lÆ°á»£t táº¡o áº£nh hÃ ng loáº¡t." });
-    } finally {
-      setProfileBatchKinds((current) => {
-        const next = new Set(current);
-        next.delete(kind);
-        return next;
-      });
-      setProfileBatchProgress((current) => ({ ...current, [kind]: "" }));
-    }
-  }
-
-  function chooseDramaUpload(kind: "characters" | "locations", name: string, imagePrompt: string, description: string) {
-    if (!project || profileBusyId || profileBatchKinds.size > 0) return;
-    const input = document.createElement("input"); input.type = "file"; input.accept = "image/png,image/jpeg,image/webp";
-    input.onchange = async () => {
-      const file = input.files?.[0]; if (!file) return;
-      setProfileBusyId(name);
-      try {
-        const form = new FormData(); form.set("name", name); form.set("description", description); form.set("imagePrompt", imagePrompt); form.set("file", file);
-        const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/${kind}`, { method: "POST", body: form });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng táº£i Ä‘Æ°á»£c áº£nh lÃªn.");
-        await refresh(); setRunMessage({ tone: "success", text: "ÄÃ£ lÆ°u áº£nh tham chiáº¿u vÃ o project." });
-      } catch (cause) { setRunMessage({ tone: "error", text: cause instanceof Error ? cause.message : "KhÃ´ng táº£i Ä‘Æ°á»£c áº£nh lÃªn." }); }
-      finally { setProfileBusyId(""); }
-    };
-    input.click();
-  }
-
-  function chooseDramaSceneUpload(scene: ScenePreview, videoOnly = false) {
-    if (!project) return;
-    const input = document.createElement("input"); input.type = "file"; input.accept = videoOnly ? "video/mp4,.mp4" : "image/png,image/jpeg,image/webp,video/mp4";
-    input.onchange = async () => {
-      const file = input.files?.[0]; if (!file) return;
-      if (videoOnly && !/\.mp4$/i.test(file.name) && file.type !== "video/mp4") {
-        setRunMessage({ tone: "error", text: "Chá»n tá»‡p video MP4 Ä‘á»ƒ táº£i lÃªn cáº£nh." });
-        return;
-      }
-      if (file.size > MAX_SCENE_MEDIA_UPLOAD_BYTES) {
-        setRunMessage({ tone: "error", text: videoOnly ? "Video táº£i lÃªn khÃ´ng Ä‘Æ°á»£c vÆ°á»£t quÃ¡ 250 MB." : "áº¢nh hoáº·c video táº£i lÃªn khÃ´ng Ä‘Æ°á»£c vÆ°á»£t quÃ¡ 250 MB." });
-        return;
-      }
-      setGeneratingSceneId(scene.id);
-      try {
-        const endpoint = `/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(scene.id)}/media`;
-        if (shouldChunkSceneMediaFile(file)) {
-          setSceneUploadProgress({ sceneId: scene.id, text: "Äang chuáº©n bá»‹ uploadâ€¦" });
-          await uploadSceneMediaInChunks({
-            endpoint: `${endpoint}/upload`,
-            file,
-            onProgress: ({ stage, uploadedBytes, totalBytes, chunkIndex, chunkCount }) => {
-              setSceneUploadProgress({
-                sceneId: scene.id,
-                text: stage === "assembling"
-                  ? "Äang ghÃ©p fileâ€¦"
-                  : `Upload ${chunkIndex}/${chunkCount} Â· ${Math.round((uploadedBytes / Math.max(1, totalBytes)) * 100)}%`,
-              });
-            },
-          });
-        } else {
-          const form = new FormData(); form.set("file", file);
-          const response = await fetch(endpoint, { method: "POST", body: form });
-          const payload = await response.json().catch(() => ({}));
-          if (!response.ok || !payload.ok) throw new Error(payload.message || (videoOnly ? "KhÃ´ng táº£i Ä‘Æ°á»£c video lÃªn." : "KhÃ´ng táº£i Ä‘Æ°á»£c media lÃªn."));
-        }
-        await loadScenes(); setRunMessage({ tone: "success", text: videoOnly ? `ÄÃ£ táº£i video cho ${sceneNumberLabel(scene)}.` : `ÄÃ£ táº£i media cho ${sceneNumberLabel(scene)}.` });
-      } catch (cause) { setRunMessage({ tone: "error", text: cause instanceof Error ? cause.message : videoOnly ? "KhÃ´ng táº£i Ä‘Æ°á»£c video lÃªn." : "KhÃ´ng táº£i Ä‘Æ°á»£c media lÃªn." }); }
-      finally { setGeneratingSceneId(""); setSceneUploadProgress(null); }
-    };
-    input.click();
-  }
-
-  async function saveSceneReview(status: SceneReviewStatus = selectedScene ? sceneReviewStatus(selectedScene) : "unreviewed") {
-    if (!project?.slug || !selectedScene) return;
-    if (selectedAiReview.status === "pending") {
-      setRunMessage({ tone: "error", text: "Cáº£nh nÃ y chÆ°a Ä‘Æ°á»£c AI pre-check. HÃ£y cháº¡y AI pre-check trÆ°á»›c khi duyá»‡t." });
-      return;
-    }
-    setReviewSaving(true);
-    setSceneError("");
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(selectedScene.id)}/review`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status, note: sceneReviewNote }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ lÆ°u Ä‘Ã¡nh giÃ¡ cáº£nh.");
-      const updatedScene = payload.scene as ScenePreview;
-      setScenes((current) => current.map((item) => item.id === updatedScene.id ? { ...item, ...updatedScene } : item));
-      await refresh();
-      setRunMessage({ tone: "success", text: `${sceneNumberLabel(selectedScene)} Â· ${sceneReviewLabel(status)} Ä‘Ã£ Ä‘Æ°á»£c lÆ°u.` });
-    } catch (cause) {
-      setSceneError(cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ lÆ°u Ä‘Ã¡nh giÃ¡ cáº£nh.");
-    } finally {
-      setReviewSaving(false);
-    }
-  }
-
-  async function saveSceneTtsVoice(voiceId: string) {
-    if (!project?.slug || !selectedScene || ttsRunning) return;
-    const voice = voiceCatalog?.voices.find((item) => item.id === voiceId);
-    if (!voice) return;
-    setSceneTtsSaving(true);
-    setSceneError("");
-    try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(selectedScene.id)}/tts`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ voiceId: voice.id, voiceName: voice.name, voiceLanguage: voice.language }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || "KhÃ´ng thá»ƒ lÆ°u voice cho cáº£nh.");
-      const updatedScene = payload.scene as ScenePreview;
-      setScenes((current) => current.map((item) => item.id === updatedScene.id ? { ...item, ...updatedScene } : item));
-      await refresh();
-      setRunMessage({ tone: "success", text: `${sceneNumberLabel(selectedScene)} Â· Ä‘Ã£ chá»n voice ${voice.name}.` });
-    } catch (cause) {
-      setSceneError(cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ lÆ°u voice cho cáº£nh.");
-    } finally {
-      setSceneTtsSaving(false);
-    }
-  }
-
-  async function generateSceneTts(scene: ScenePreview, force = false, targetLanguage = "", batchMode = false): Promise<{ ok: boolean; failed: number; message: string }> {
-    if (!project?.slug || ttsRunning || renderRunning || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || generatingSceneId || dialogueTranslationSceneId || dialogueTranslationBatchProgress || (dialogueTtsBatchProgress && !batchMode)) return { ok: false, failed: 0, message: "Äang cÃ³ tÃ¡c vá»¥ voice khÃ¡c cháº¡y." };
-    const usesDialogueTimeline = project.presetId === "ai-drama";
-    const dialogueSegments = usesDialogueTimeline ? sceneDialogueSegments(scene, project.characters || []) : [];
-    const speaker = !usesDialogueTimeline
-      ? undefined
-      : project.characters?.find((character) => character.id === sceneSpeakerCharacterId(scene, project.characters || []));
-    const voiceId = String(speaker?.voiceId || scene.ttsVoiceId || scene.tts_voice_id || project.voiceId || "");
-    const voice = voiceCatalog?.voices.find((item) => item.id === voiceId) || (voiceId ? {
-      id: voiceId,
-      name: String(speaker?.voiceName || scene.ttsVoiceName || scene.tts_voice_name || project.voiceName || voiceId),
-      language: String(speaker?.voiceLanguage || scene.ttsVoiceLanguage || scene.tts_voice_language || project.voiceLanguage || project.language),
-    } : undefined);
-    if (!usesDialogueTimeline && !voice) {
-      setSceneError("Chá»n má»™t voice kháº£ dá»¥ng cho cáº£nh nÃ y trÆ°á»›c khi táº¡o TTS.");
-      return { ok: false, failed: 0, message: "Chá»n má»™t voice kháº£ dá»¥ng cho cáº£nh nÃ y trÆ°á»›c khi táº¡o TTS." };
-    }
-    if (usesDialogueTimeline) {
-      if (!dialogueSegments.length) {
-        setSceneError("Cáº£nh nÃ y chÆ°a cÃ³ cÃ¢u thoáº¡i. ThÃªm cÃ¢u hoáº·c náº¡p SRT vÃ o timeline trÆ°á»›c.");
-        return { ok: false, failed: 0, message: "Cáº£nh nÃ y chÆ°a cÃ³ cÃ¢u thoáº¡i." };
-      }
-      if (targetLanguage && dialogueSegments.some((segment) => !segment.translations?.[targetLanguage]?.trim())) {
-        const message = `Dá»‹ch lá»i thoáº¡i cá»§a ${sceneNumberLabel(scene)} sang ${voiceLanguageLabel(targetLanguage)} trÆ°á»›c khi táº¡o voice.`;
-        setSceneError(message);
-        return { ok: false, failed: 0, message };
-      }
-      const missingVoice = dialogueSegments.find((segment) => {
-        const lineSpeaker = project.characters?.find((character) => character.id === segment.speakerCharacterId);
-        return !(lineSpeaker?.voiceId || scene.ttsVoiceId || scene.tts_voice_id || project.voiceId);
-      });
-      if (missingVoice) {
-        const message = "Chá»n voice cho tá»«ng nhÃ¢n váº­t hoáº·c Ä‘áº·t voice máº·c Ä‘á»‹nh cá»§a project trÆ°á»›c khi táº¡o TTS.";
-        setSceneError(message);
-        return { ok: false, failed: 0, message };
-      }
-    } else if (!sceneText(scene, "dialogue_or_voiceover", "voiceText", "voiceover")) {
-      setSceneError("Cáº£nh nÃ y chÆ°a cÃ³ lá»i thoáº¡i/lá»i Ä‘á»c Ä‘á»ƒ táº¡o TTS.");
-      return { ok: false, failed: 0, message: "Cáº£nh nÃ y chÆ°a cÃ³ lá»i thoáº¡i/lá»i Ä‘á»c Ä‘á»ƒ táº¡o TTS." };
-    }
-    setTtsRunning(true);
-    setTtsChunkId(scene.chunkId);
-    setTtsSceneId(scene.id);
-    setSceneError("");
-    setRunMessage(null);
-    try {
-      if (usesDialogueTimeline) {
-        const saved = await saveDialogueSegments(scene, !batchMode);
-        if (!saved) throw new Error("KhÃ´ng thá»ƒ lÆ°u timeline lá»i thoáº¡i.");
-      }
-      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(scene.id)}/tts`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(usesDialogueTimeline
-          ? { generate: true, force, ...(targetLanguage ? { targetLanguage } : {}) }
-          : { voiceId: voice?.id, voiceName: voice?.name, voiceLanguage: voice?.language, generate: true, force }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) throw new Error(payload.message || `KhÃ´ng táº¡o Ä‘Æ°á»£c TTS cho ${sceneNumberLabel(scene)}.`);
-      if (batchMode) {
-        const updatedScene = payload.scene as ScenePreview;
-        setScenes((current) => current.map((item) => item.id === updatedScene.id ? { ...item, ...updatedScene } : item));
-      } else {
-        await refresh();
-        await loadScenes();
-      }
-      const failedSegments = Number(payload.failed) || 0;
-      const message = failedSegments
-        ? `TTS ${sceneNumberLabel(scene)}: ${payload.completed || 0}/${payload.total || dialogueSegments.length} cÃ¢u sáºµn sÃ ng, ${failedSegments} cÃ¢u lá»—i.${payload.message ? ` ${payload.message}` : ""}`
-        : payload.unchanged
-          ? `${sceneNumberLabel(scene)} Ä‘Ã£ cÃ³ Ä‘á»§ voice${targetLanguage ? ` ${voiceLanguageLabel(targetLanguage)}` : ""} cho cÃ¡c cÃ¢u thoáº¡i.`
-          : usesDialogueTimeline
-            ? `ÄÃ£ táº¡o ${payload.completed || 0}/${payload.total || dialogueSegments.length} voice${targetLanguage ? ` ${voiceLanguageLabel(targetLanguage)}` : ""} cho ${sceneNumberLabel(scene)}.`
-            : `ÄÃ£ táº¡o voice cho ${sceneNumberLabel(scene)} báº±ng ${voice?.name || "OmniVoice"}.`;
-      setRunMessage({ tone: failedSegments ? "error" : "success", text: message });
-      return { ok: failedSegments === 0, failed: failedSegments, message };
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : "KhÃ´ng táº¡o Ä‘Æ°á»£c TTS cho cáº£nh.";
-      setSceneError(message);
-      setRunMessage({ tone: "error", text: message });
-      if (!batchMode) await refresh().catch(() => undefined);
-      return { ok: false, failed: 1, message };
-    } finally {
-      setTtsChunkId("");
-      setTtsSceneId("");
-      setTtsRunning(false);
-    }
-  }
-
-  function dialogueTtsVoiceTargetsForScenes(candidateScenes: ScenePreview[], targetLanguage: string) {
-    if (!project || project.presetId !== "ai-drama") return [] as ScenePreview[];
-    return candidateScenes.filter((scene) => {
-      const segments = sceneDialogueSegments(scene, characterProfiles);
-      if (!segments.length || segments.some((segment) => !segment.translations?.[targetLanguage]?.trim())) return false;
-      let hasMissingVoice = false;
-      let hasMissingAudio = false;
-      for (const segment of segments) {
-        const speaker = characterProfiles.find((character) => character.id === segment.speakerCharacterId);
-        const voiceId = String(speaker?.voiceId || scene.ttsVoiceId || scene.tts_voice_id || project.voiceId || "");
-        if (!voiceId) {
-          hasMissingVoice = true;
-          continue;
-        }
-        const audio = segment.translatedAudio?.[targetLanguage];
-        if (!audio?.localPath || audio.voiceId !== voiceId || audio.language !== targetLanguage) hasMissingAudio = true;
-      }
-      return !hasMissingVoice && hasMissingAudio;
-    });
-  }
-
-  async function generateFilteredDialogueTts(chunkId?: string, episodeNumber?: number) {
-    if (!project?.slug || project.presetId !== "ai-drama" || dialogueTtsBatchProgress || ttsRunning || renderRunning || dialogueTranslationSceneId || dialogueTranslationBatchProgress || dialogueSavingSceneId || isRunning || runningScriptChunkId || generatingSceneId || batchMediaBusy || videoQueueRunning) return;
-    const candidateScenes = chunkId ? scenes.filter((scene) => scene.chunkId === chunkId) : filteredScenes;
-    const targets = chunkId ? dialogueTtsVoiceTargetsForScenes(candidateScenes, dialogueTranslationLanguage) : filteredDialogueTtsVoiceTargets;
-    if (!targets.length) {
-      const needsTranslation = candidateScenes.some((scene) => {
-        const segments = sceneDialogueSegments(scene, characterProfiles);
-        return segments.length > 0 && segments.some((segment) => !segment.translations?.[dialogueTranslationLanguage]?.trim());
-      });
-      const missingVoice = candidateScenes.some((scene) => {
-        const segments = sceneDialogueSegments(scene, characterProfiles);
-        if (!segments.length || segments.some((segment) => !segment.translations?.[dialogueTranslationLanguage]?.trim())) return false;
-        return segments.some((segment) => {
-          const speaker = characterProfiles.find((character) => character.id === segment.speakerCharacterId);
-          return !(speaker?.voiceId || scene.ttsVoiceId || scene.tts_voice_id || project.voiceId);
-        });
-      });
-      const message = needsTranslation
-        ? `Dá»‹ch thoáº¡i sang ${voiceLanguageLabel(dialogueTranslationLanguage)} trÆ°á»›c khi táº¡o voice.`
-        : missingVoice
-          ? "GÃ¡n voice cho nhÃ¢n váº­t Ä‘ang thoáº¡i trÆ°á»›c khi táº¡o voice hÃ ng loáº¡t."
-          : `CÃ¡c cáº£nh${episodeNumber ? ` trong Táº­p ${String(episodeNumber).padStart(2, "0")}` : " trong pháº¡m vi hiá»‡n táº¡i"} Ä‘Ã£ cÃ³ voice ${voiceLanguageLabel(dialogueTranslationLanguage)} hoáº·c chÆ°a cÃ³ lá»i thoáº¡i.`;
-      setRunMessage({ tone: "error", text: message });
-      return;
-    }
-
-    setDialogueTtsBatchProgress(`0/${targets.length}`);
-    setSceneError("");
-    setRunMessage(null);
-    const completed: string[] = [];
-    const failed: string[] = [];
-    try {
-      for (let index = 0; index < targets.length; index += 1) {
-        const scene = targets[index];
-        setDialogueTtsBatchProgress(`${index + 1}/${targets.length}${episodeNumber ? ` Â· Táº­p ${String(episodeNumber).padStart(2, "0")}` : ""} Â· ${sceneNumberLabel(scene)}`);
-        const result = await generateSceneTts(scene, false, dialogueTranslationLanguage, true);
-        if (result.ok) completed.push(sceneNumberLabel(scene));
-        else failed.push(`${sceneNumberLabel(scene)}: ${result.message || "khÃ´ng táº¡o Ä‘Æ°á»£c voice"}`);
-      }
-      await refresh().catch(() => undefined);
-      await loadScenes().catch(() => undefined);
-      setRunMessage({
-        tone: failed.length ? "error" : "success",
-        text: failed.length
-          ? `ÄÃ£ táº¡o voice ${voiceLanguageLabel(dialogueTranslationLanguage)} cho ${completed.length}/${targets.length} cáº£nh${episodeNumber ? ` cá»§a Táº­p ${String(episodeNumber).padStart(2, "0")}` : ""}. Lá»—i: ${failed.slice(0, 3).join("; ")}${failed.length > 3 ? `; vÃ  ${failed.length - 3} lá»—i khÃ¡c` : ""}`
-          : `ÄÃ£ táº¡o voice ${voiceLanguageLabel(dialogueTranslationLanguage)} cho ${completed.length} cáº£nh${episodeNumber ? ` cá»§a Táº­p ${String(episodeNumber).padStart(2, "0")}` : ""}.`,
-      });
-    } catch (cause) {
-      setRunMessage({ tone: "error", text: cause instanceof Error ? cause.message : "KhÃ´ng thá»ƒ táº¡o voice hÃ ng loáº¡t." });
-    } finally {
-      setDialogueTtsBatchProgress("");
-      setTtsChunkId("");
-      setTtsSceneId("");
-      setTtsRunning(false);
-    }
-  }
-
-  async function generateSelectedSceneTts(force = false) {
-    if (!selectedScene) return;
-    await generateSceneTts(selectedScene, force);
-  }
-
-  const projectActivities = activities.filter((activity) => activity.projectSlug === project.slug).slice(0, 4);
-  const selectedScene = filteredScenes.find((scene) => scene.id === selectedSceneId) || filteredScenes[0];
-  const sceneImagePreviewUrl = sceneImagePreview?.referenceImagePreviewUrl
-    || (sceneImagePreview?.media?.kind === "image" ? sceneImagePreview.previewUrl : "");
-  const selectedMedia = selectedScene?.media;
-  const selectedReferenceImage = sceneReferenceMedia(selectedScene);
-  const selectedSceneLocationId = sceneLocationId(selectedScene);
-  const selectedSceneLocation = project.locations?.find((location) => location.id === selectedSceneLocationId);
-  const selectedReferenceImageUrl = selectedScene?.referenceImagePreviewUrl
-    || (selectedScene?.media?.kind === "image" ? selectedScene.previewUrl : "");
-  const selectedSceneMediaSettings = mediaSettingsForScene(selectedScene, project);
-  const hasSceneMediaOverride = Boolean(selectedScene?.mediaGeneration || selectedScene?.media_generation);
-  const availableImageModels = filterAvailableImageModels(mediaCatalog?.imageModels || []);
-  const imageModelOptions: ImageGenerationModelOption[] = availableImageModels.some((item) => item.id === selectedSceneMediaSettings.imageModel)
-    ? availableImageModels
-    : [{ id: selectedSceneMediaSettings.imageModel, label: `${selectedSceneMediaSettings.imageModel} Â· Ä‘ang dÃ¹ng`, qualities: [selectedSceneMediaSettings.imageQuality] }, ...availableImageModels];
-  const selectedImageModel = imageModelOptions.find((item) => item.id === selectedSceneMediaSettings.imageModel);
-  const sceneMuseImageSelected = isMuseImageModel(selectedSceneMediaSettings.imageModel);
-  const sceneFlowImageSelected = isFlowImageModel(selectedSceneMediaSettings.imageModel);
-  const imageQualities = selectedImageModel?.qualities.length ? selectedImageModel.qualities : [selectedSceneMediaSettings.imageQuality];
-  const selectedImageDetailLevels = imageDetailLevelsForModel(selectedImageModel);
-  const allVideoModels = visibleVideoModels(mediaCatalog?.videoModels || []);
-  function videoGenerationSettingsForScene(scene: ScenePreview): MediaGenerationSettings {
-    const currentSettings = mediaSettingsForScene(scene, project);
-    const selectedVideoModel = allVideoModels.find((item) => item.id === batchMediaSettings.videoModel && (item.provider || "maivideo") === batchMediaSettings.videoProvider);
-    const videoQuality = selectedVideoModel?.qualities.length && !selectedVideoModel.qualities.includes(batchMediaSettings.videoQuality)
-      ? selectedVideoModel.qualities[0]
-      : batchMediaSettings.videoQuality;
-    return {
-      ...currentSettings,
-      videoProvider: batchMediaSettings.videoProvider,
-      seedanceAccountId: batchMediaSettings.seedanceAccountId || "",
-      seedanceChatMode: batchMediaSettings.seedanceChatMode,
-      videoModel: batchMediaSettings.videoModel,
-      videoQuality,
-      videoDurationMode: batchMediaSettings.videoDurationMode,
-      videoDurationSec: normalizeVideoDuration(
-        batchMediaSettings.videoDurationMode === "scene" ? Math.ceil(sceneDurationSeconds(scene, project.sceneDurationSec)) : batchMediaSettings.videoDurationSec,
-        selectedVideoModel,
-        videoQuality,
-      ),
-      videoMultiShot: isPixverseVideoSettings(batchMediaSettings) ? true : selectedVideoModel?.supportsMultiShot === false ? false : batchMediaSettings.videoMultiShot,
-      videoAudio: isPixverseVideoSettings(batchMediaSettings) ? true : selectedVideoModel?.supportsAudio === false ? false : batchMediaSettings.videoAudio,
-      videoOffPeak: isVideoOffPeakRequired(batchMediaSettings.videoModel, selectedVideoModel?.label) ? true : selectedVideoModel?.supportsOffPeak === false ? false : batchMediaSettings.videoOffPeak,
-      videoUseCharacterReferences: batchMediaSettings.videoUseCharacterReferences,
-      videoUseLocationReferences: batchMediaSettings.videoUseLocationReferences,
-      videoUseSceneImageReference: batchMediaSettings.videoUseSceneImageReference,
-      flowReferenceMode: isFlowStoryOnlyPreset(project.presetId) ? "ingredients" : currentSettings.flowReferenceMode,
-    };
-  }
-  const sceneSeedanceHiddenSelected = selectedSceneMediaSettings.videoProvider === "seedance";
-  const batchSeedanceHiddenSelected = batchMediaSettings.videoProvider === "seedance";
-  const availableVideoModels = allVideoModels.filter((item) => {
-    if (sceneSeedanceHiddenSelected) return true;
-    const provider = item.provider || "maivideo";
-    const currentProvider = selectedSceneMediaSettings.videoProvider;
-    return provider === currentProvider || (currentProvider === "maivideo" || currentProvider === "higgsfield") && (provider === "maivideo" || provider === "higgsfield");
-  });
-  const videoModelOptions: VideoGenerationModelOption[] = sceneSeedanceHiddenSelected
-    ? availableVideoModels
-    : availableVideoModels.some((item) => item.id === selectedSceneMediaSettings.videoModel)
-      ? availableVideoModels
-      : [{ id: selectedSceneMediaSettings.videoModel, label: isTemporarilyHiddenMaiVideoSeedance25({ id: selectedSceneMediaSettings.videoModel, provider: selectedSceneMediaSettings.videoProvider }) ? "Model táº¡m áº©n" : `${selectedSceneMediaSettings.videoModel} Â· Ä‘ang dÃ¹ng`, provider: selectedSceneMediaSettings.videoProvider, qualities: [selectedSceneMediaSettings.videoQuality], minDurationSec: 1, maxDurationSec: 15 }, ...availableVideoModels];
-  const selectedVideoModel = videoModelOptions.find((item) => item.id === selectedSceneMediaSettings.videoModel);
-  const videoQualities = videoQualitiesForModel(selectedVideoModel, selectedSceneMediaSettings.videoQuality);
-  const sceneVideoMaxDuration = sceneVideoDurationLimit(selectedVideoModel, selectedSceneMediaSettings.videoQuality);
-  const batchImageModelOptions: ImageGenerationModelOption[] = availableImageModels.some((item) => item.id === batchMediaSettings.imageModel)
-    ? availableImageModels
-    : [{ id: batchMediaSettings.imageModel, label: `${batchMediaSettings.imageModel} Â· Ä‘ang dÃ¹ng`, qualities: [batchMediaSettings.imageQuality] }, ...availableImageModels];
-  const selectedBatchImageModel = batchImageModelOptions.find((item) => item.id === batchMediaSettings.imageModel);
-  const batchMuseImageSelected = isMuseImageModel(batchMediaSettings.imageModel);
-  const batchFlowImageSelected = isFlowImageModel(batchMediaSettings.imageModel);
-  const batchImageQualities = selectedBatchImageModel?.qualities.length ? selectedBatchImageModel.qualities : [batchMediaSettings.imageQuality];
-  const batchImageDetailLevels = imageDetailLevelsForModel(selectedBatchImageModel);
-  const batchAvailableVideoModels = allVideoModels.filter((item) => {
-    if (batchSeedanceHiddenSelected) return true;
-    const provider = item.provider || "maivideo";
-    const currentProvider = batchMediaSettings.videoProvider;
-    return provider === currentProvider || (currentProvider === "maivideo" || currentProvider === "higgsfield") && (provider === "maivideo" || provider === "higgsfield");
-  });
-  const batchVideoModelOptions: VideoGenerationModelOption[] = batchSeedanceHiddenSelected
-    ? batchAvailableVideoModels
-    : batchAvailableVideoModels.some((item) => item.id === batchMediaSettings.videoModel)
-      ? batchAvailableVideoModels
-      : [{ id: batchMediaSettings.videoModel, label: isTemporarilyHiddenMaiVideoSeedance25({ id: batchMediaSettings.videoModel, provider: batchMediaSettings.videoProvider }) ? "Model táº¡m áº©n" : `${batchMediaSettings.videoModel} Â· Ä‘ang dÃ¹ng`, provider: batchMediaSettings.videoProvider, qualities: [batchMediaSettings.videoQuality], minDurationSec: 1, maxDurationSec: 15 }, ...batchAvailableVideoModels];
-  const selectedBatchVideoModel = batchVideoModelOptions.find((item) => item.id === batchMediaSettings.videoModel);
-  const batchVideoQualities = videoQualitiesForModel(selectedBatchVideoModel, batchMediaSettings.videoQuality);
-  const batchVideoMaxDuration = sceneVideoDurationLimit(selectedBatchVideoModel, batchMediaSettings.videoQuality);
-  const sceneVideoDurationChoices = videoDurationOptions(selectedVideoModel, selectedSceneMediaSettings.videoQuality);
-  const batchVideoDurationChoices = videoDurationOptions(selectedBatchVideoModel, batchMediaSettings.videoQuality);
-  const sceneSeedanceSelected = selectedSceneMediaSettings.videoProvider === "seedance" && !sceneSeedanceHiddenSelected;
-  const batchSeedanceSelected = batchMediaSettings.videoProvider === "seedance" && !batchSeedanceHiddenSelected;
-  const sceneMuseSelected = selectedSceneMediaSettings.videoProvider === "muse";
-  const batchMuseSelected = batchMediaSettings.videoProvider === "muse";
-  const sceneFlowSelected = selectedSceneMediaSettings.videoProvider === "flow";
-  const batchFlowSelected = batchMediaSettings.videoProvider === "flow";
-  const sceneFlowFramesSelected = sceneFlowSelected && selectedSceneMediaSettings.flowReferenceMode === "frames";
-  const batchFlowFramesSelected = batchFlowSelected && batchMediaSettings.flowReferenceMode === "frames";
-  const sceneProviderAccountSelected = sceneSeedanceSelected || sceneMuseSelected || sceneFlowSelected;
-  const batchProviderAccountSelected = batchSeedanceSelected || batchMuseSelected || batchFlowSelected;
-  // Gateway-backed Flow/Muse always use the default API key paired with the
-  // signed-in MaiVideo session; only direct Seedance can select a separate key.
-  const sceneMediaAccountSelected = sceneSeedanceSelected;
-  const batchMediaAccountSelected = batchSeedanceSelected;
-  const sceneVideoOffPeakRequired = selectedSceneMediaSettings.videoProvider === "maivideo" && isVideoOffPeakRequired(selectedVideoModel?.id, selectedVideoModel?.label);
-  const batchVideoOffPeakRequired = batchMediaSettings.videoProvider === "maivideo" && isVideoOffPeakRequired(selectedBatchVideoModel?.id, selectedBatchVideoModel?.label);
-  const scenePixverseSelected = isPixverseVideoSettings(selectedSceneMediaSettings);
-  const batchPixverseSelected = isPixverseVideoSettings(batchMediaSettings);
-  const filteredImageTargets = (batchRegenerateImages ? filteredScenes : filteredScenes.filter((scene) => sceneNeedsImage(scene, project))).filter((scene) => !sceneHasActiveMediaJob(scene));
-  const filteredVideoTargets = (batchRegenerateVideos ? filteredScenes : filteredScenes.filter(sceneNeedsAiVideo)).filter((scene) => !sceneHasActiveMediaJob(scene));
-  const filteredVideoRegenerationTargets = filteredScenes.filter(sceneHasExistingAiVideo).filter((scene) => !sceneHasActiveMediaJob(scene));
-  const activeSceneMediaJobCount = scenes.filter(sceneHasActiveMediaJob).length;
-  const batchOverLimitCount = batchMediaSettings.videoDurationMode === "scene"
-    ? filteredScenes.filter((scene) => Math.ceil(sceneDurationSeconds(scene, project.sceneDurationSec)) > batchVideoMaxDuration).length
-    : 0;
-  const selectedSceneDuration = selectedScene ? sceneDurationSeconds(selectedScene, project.sceneDurationSec) : 0;
-  const selectedSceneMediaJobActive = Boolean(selectedScene && sceneHasActiveMediaJob(selectedScene));
-  const selectedSceneRequestedVideoDuration = selectedSceneMediaSettings.videoDurationMode === "scene"
-    ? normalizeVideoDuration(Math.ceil(selectedSceneDuration), selectedVideoModel, selectedSceneMediaSettings.videoQuality)
-    : normalizeVideoDuration(selectedSceneMediaSettings.videoDurationSec, selectedVideoModel, selectedSceneMediaSettings.videoQuality);
-  const selectedVoice = selectedScene ? sceneText(selectedScene, "dialogue_or_voiceover", "voiceText", "voiceover") : "";
-  const selectedPrompt = selectedScene ? sceneText(selectedScene, "video_prompt", "videoPrompt", "image_prompt", "imagePrompt") : "";
-  const selectedReviewStatus = selectedScene ? sceneReviewStatus(selectedScene) : "unreviewed";
-  const selectedAiReview = selectedScene ? sceneAiReview(selectedScene) : {
-    status: "pending" as SceneAiReviewStatus,
-    score: 0,
-    summary: "AI chÆ°a Ä‘Ã¡nh giÃ¡ cáº£nh nÃ y.",
-    issues: [],
-    checks: {},
-  };
-  const selectedFilteredIndex = selectedScene ? filteredScenes.findIndex((scene) => scene.id === selectedScene.id) : -1;
-  const selectedCharacterIds = selectedScene ? sceneCharacterIds(selectedScene) : [];
-  const characterProfiles = project.characters || [];
-  const characterProfilesMissingImage = characterProfiles.filter((character) => !character.referenceImagePath);
-  const characterProfileImageBusy = characterProfiles.some((character) => profileImageBusyIds.has(`characters:${character.id}`));
-  const locationNamesInScript = [...new Set(scenes.map(sceneLocationName).filter(Boolean))];
-  const registeredLocationNames = new Set((project.locations || []).flatMap((location) => [location.name, ...(location.aliases || [])]).map(normalizeEntityName));
-  const missingScriptLocationCount = locationNamesInScript.filter((name) => !registeredLocationNames.has(normalizeEntityName(name))).length;
-  const scriptCharacterNames = [...new Set(scenes.flatMap(sceneScriptCharacterNames))];
-  const registeredCharacterNames = new Set(characterProfiles.map((character) => normalizeEntityName(character.name)));
-  const missingScriptCharacterCount = scriptCharacterNames.filter((name) => !registeredCharacterNames.has(normalizeEntityName(name))).length;
-  const filteredScenesNeedingDialogueTimeline = project.presetId === "ai-drama" ? filteredScenes.filter(sceneNeedsDialogueExtraction) : [];
-  const dialogueScenesWithoutTimeline = project.presetId === "ai-drama" ? filteredScenes.filter(sceneNeedsDialogueExtraction) : [];
-  const dialogueScenesNeedingTranslation = project.presetId === "ai-drama" ? filteredScenes.filter((scene) => {
-    const segments = sceneDialogueSegments(scene, characterProfiles);
-    return segments.length > 0 && segments.some((segment) => !segment.translations?.[dialogueTranslationLanguage]?.trim());
-  }) : [];
-  const filteredDialogueScenesNeedingTranslation = project.presetId === "ai-drama" ? filteredScenes.filter((scene) => {
-    const segments = sceneDialogueSegments(scene, characterProfiles);
-    return segments.length > 0 && segments.some((segment) => !segment.translations?.[dialogueTranslationLanguage]?.trim());
-  }) : [];
-  const filteredDialogueScenesMissingVoice = project.presetId === "ai-drama" ? filteredScenes.filter((scene) => {
-    const segments = sceneDialogueSegments(scene, characterProfiles);
-    if (!segments.length || segments.some((segment) => !segment.translations?.[dialogueTranslationLanguage]?.trim())) return false;
-    return segments.some((segment) => {
-      const speaker = characterProfiles.find((character) => character.id === segment.speakerCharacterId);
-      return !(speaker?.voiceId || scene.ttsVoiceId || scene.tts_voice_id || project.voiceId);
-    });
-  }) : [];
-  const filteredDialogueTtsVoiceTargets = dialogueTtsVoiceTargetsForScenes(filteredScenes, dialogueTranslationLanguage);
-  const selectedSceneDialogueSegments = selectedScene && project.presetId === "ai-drama" ? sceneDialogueSegments(selectedScene, characterProfiles) : [];
-  const selectedSceneDialogueReadyCount = selectedSceneDialogueSegments.filter((segment) => Boolean(segment.audio?.localPath)).length;
-  const selectedSceneDialogueMissingVoice = selectedSceneDialogueSegments.some((segment) => {
-    const speaker = characterProfiles.find((character) => character.id === segment.speakerCharacterId);
-    return !(speaker?.voiceId || selectedScene?.ttsVoiceId || selectedScene?.tts_voice_id || project.voiceId);
-  });
-  const selectedSceneSpeakerId = sceneSpeakerCharacterId(selectedScene, characterProfiles);
-  const selectedSceneSpeaker = characterProfiles.find((character) => character.id === selectedSceneSpeakerId);
-  const selectedSceneAudio = sceneAudioRecord(selectedScene);
-  const selectedSceneVoiceId = String((project.presetId === "ai-drama" ? selectedSceneSpeaker?.voiceId : "") || selectedScene?.ttsVoiceId || selectedScene?.tts_voice_id || project.voiceId || "");
-  const allProjectVoices = voiceCatalog?.voices || [];
-  const selectedSceneVoice: OmniVoiceOption | undefined = voiceCatalog?.voices.find((voice) => voice.id === selectedSceneVoiceId) || (selectedSceneVoiceId ? {
-    id: selectedSceneVoiceId,
-    name: String((project.presetId === "ai-drama" ? selectedSceneSpeaker?.voiceName : "") || selectedScene?.ttsVoiceName || selectedScene?.tts_voice_name || project.voiceName || selectedSceneVoiceId),
-    language: String((project.presetId === "ai-drama" ? selectedSceneSpeaker?.voiceLanguage : "") || selectedScene?.ttsVoiceLanguage || selectedScene?.tts_voice_language || project.voiceLanguage || project.language),
-  } : undefined);
-  const visibleSceneVoices = selectedSceneVoice && !allProjectVoices.some((voice) => voice.id === selectedSceneVoice.id)
-    ? [selectedSceneVoice, ...allProjectVoices]
-    : allProjectVoices;
-  const selectedSceneAudioUrl = selectedSceneAudio.localPath && selectedScene
-    ? `/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(selectedScene.id)}/tts`
-    : "";
-  const locationProfiles = project.locations || [];
-  const hasTemplateDramaProfileNames = [...characterProfiles, ...locationProfiles]
-    .some((profile) => isTemplateEntityName(profile.name));
-  const locationProfilesMissingImage = locationProfiles.filter((location) => !location.referenceImagePath);
-  const locationProfileImageBusy = locationProfiles.some((location) => profileImageBusyIds.has(`locations:${location.id}`));
-  useEffect(() => {
-    if (!project?.slug || project.presetId !== "ai-drama" || !scenes.length) return;
-    if (dramaSceneAssignmentAttempted.current === project.slug) return;
-    dramaSceneAssignmentAttempted.current = project.slug;
-    void autoAssignGeneratedSceneReferences({ scenes })
-      .then(async (result) => {
-        if (result?.changedReferenceScenes) await loadScenes();
-      })
-      .catch(() => undefined);
-  }, [project?.slug, project?.presetId, scenes.length, loadScenes]);
-  useEffect(() => {
-    if (!project?.slug || project.presetId !== "ai-drama" || !project.chunks.some((chunk) => chunk.outputPath)) return;
-    const outputSignature = project.chunks
-      .filter((chunk) => chunk.outputPath)
-      .map((chunk) => `${chunk.id}:${chunk.updatedAt}:${chunk.outputPath}`)
-      .join("|");
-    const attemptKey = `${project.slug}:${outputSignature}`;
-    if (dramaReferenceSyncAttempted.current === attemptKey) return;
-    if (!hasTemplateDramaProfileNames && locationProfiles.length > 0 && missingScriptCharacterCount === 0 && missingScriptLocationCount === 0 && characterProfiles.every((character) => character.imagePrompt)) return;
-    dramaReferenceSyncAttempted.current = attemptKey;
-    void fetch(`/api/projects/${encodeURIComponent(project.slug)}/characters/sync`, { method: "POST" })
-      .then(async (response) => {
-        if (!response.ok) return;
-        await refresh();
-        await loadScenes();
-      })
-      .catch(() => undefined);
-  }, [project?.slug, project?.presetId, project?.chunks, locationProfiles.length, missingScriptCharacterCount, missingScriptLocationCount, hasTemplateDramaProfileNames, characterProfiles, refresh, loadScenes]);
-  const characterMediaImages = scenes.filter((scene) => scene.media?.kind === "image" && scene.media.status === "ready" && scene.previewUrl);
-  const flowFrameImageScenes = scenes.filter((scene) => {
-    const image = sceneReferenceMedia(scene);
-    return image?.kind === "image" && image.status === "ready" && !image.stale && Boolean(image.localPath);
-  });
-  const selectedCharacterMediaScene = characterMediaImages.find((scene) => scene.id === selectedCharacterMediaSceneId);
-  const selectedMaiVideoImage = maiVideoLibraryImages.find((image) => image.id === selectedMaiVideoImageId);
-  const selectedLocationMaiVideoImage = maiVideoLibraryImages.find((image) => image.id === selectedLocationMaiVideoImageId);
-  const videoQueue = project.videoQueue;
-  const videoQueueSummary = videoQueue?.jobs.reduce((summary, job) => {
-    summary[job.status] += 1;
-    return summary;
-  }, { queued: 0, running: 0, completed: 0, failed: 0, paused: 0 }) || { queued: 0, running: 0, completed: 0, failed: 0, paused: 0 };
-  const failedVideoJobs = videoQueue?.jobs.filter((job) => job.status === "failed") || [];
-  const videoQueueCanRun = videoQueueSummary.queued > 0 || (videoQueue?.status === "running" && !videoQueueRunning);
-
-  useEffect(() => {
-    const resumeInterruptedQueue = () => {
-      if (!project?.slug || videoQueue?.status !== "running" || !videoQueueSummary.queued || videoQueueRunning
-        || scriptBlocksIndependentTasks || ttsRunning || batchMediaBusy || generatingSceneId) return;
-      const lastAttempt = autoResumeVideoQueueAtRef.current[project.slug] || 0;
-      if (Date.now() - lastAttempt < 15_000) return;
-      autoResumeVideoQueueAtRef.current[project.slug] = Date.now();
-      void runVideoQueue();
-    };
-    resumeInterruptedQueue();
-    const timer = window.setInterval(resumeInterruptedQueue, 15_000);
-    return () => window.clearInterval(timer);
-  }, [project?.slug, videoQueue?.status, videoQueueSummary.queued, videoQueueRunning, scriptBlocksIndependentTasks, ttsRunning, batchMediaBusy, generatingSceneId]);
-
-  const continuityQa = project.continuityQa;
-  const mediaGeneration = resolveMediaGenerationSettings({ ...DEFAULT_MEDIA_GENERATION_SETTINGS, ...project.mediaGeneration });
-  const projectMuseImageSelected = isMuseImageModel(mediaGeneration.imageModel);
-  const projectFlowImageSelected = isFlowImageModel(mediaGeneration.imageModel);
-  const projectImageDetailLevels = imageDetailLevelsForModel(mediaCatalog?.imageModels.find((item) => item.id === mediaGeneration.imageModel));
-  const hasEpisodeScripts = project.chunks.some((chunk) => Boolean(chunk.outputPath));
-  const allEpisodeScriptsReady = project.chunks.length > 0 && project.chunks.every((chunk) => Boolean(chunk.outputPath));
-  const selectedPublishingPackage: VideoPublishingSet | undefined = publishingScope === "series"
-    ? project.publishingPackage?.series
-    : project.publishingPackage?.episodes?.[publishingScope];
-  const publishingTargetReady = publishingScope === "series"
-    ? allEpisodeScriptsReady
-    : Boolean(project.chunks.find((chunk) => chunk.id === publishingScope)?.outputPath);
-
-  function moveSelectedScene(direction: -1 | 1) {
-    const nextScene = filteredScenes[selectedFilteredIndex + direction];
-    if (nextScene) setSelectedSceneId(nextScene.id);
-  }
-
-  function usesAiDramaWorkflow() {
-    return project.presetId === "ai-drama";
-  }
-
-  function openProjectSection(sectionId: string) {
-    window.setTimeout(() => {
-      const target = document.getElementById(sectionId);
-      if (target instanceof HTMLDetailsElement) target.open = true;
-      target?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }, 80);
-  }
-
-  function renderDramaSceneReferencePicker(scene: ScenePreview, mediaLabel: "áº£nh" | "video") {
-    const referenceKind: SceneReferenceKind = mediaLabel === "áº£nh" ? "image" : "video";
-    const selectedIds = sceneReferenceCharacterIds(scene, referenceKind);
-    const selectedLocationId = sceneReferenceLocationId(scene, referenceKind);
-    const sceneMediaSettings = mediaSettingsForScene(scene, project);
-    const flowFramesMode = mediaLabel === "video" && sceneMediaSettings.videoProvider === "flow" && sceneMediaSettings.flowReferenceMode === "frames";
-    const sceneImage = sceneReferenceMedia(scene);
-    const flowFrameEndScene = scenes.find((candidate) => candidate.id === scene.flowFrameEndSceneId);
-    const flowFrameEndImage = flowFrameEndScene ? sceneReferenceMedia(flowFrameEndScene) : undefined;
-    const sceneImageSelected = mediaLabel === "video" && sceneMediaSettings.videoUseSceneImageReference;
-    const expectedImageCharacterIds = sceneMediaSettings.imageUseCharacterReferences ? sceneReferenceCharacterIds(scene, "image") : [];
-    const savedImageCharacterIds = sceneImage?.referenceCharacterIds || [];
-    const sceneImageIsCurrent = sceneImage?.status === "ready"
-      && !sceneImage.stale
-      && (sceneImage.provider === "upload" || (
-        (String(sceneImage.provider || "").startsWith("maivideo-image") || String(sceneImage.provider || "").startsWith("muse-image"))
-        && (!sceneImage.model || sceneImage.model === sceneMediaSettings.imageModel)
-        && [...savedImageCharacterIds].sort().join("|") === [...expectedImageCharacterIds].sort().join("|")
-        && String(sceneImage.referenceLocationId || "") === sceneReferenceLocationId(scene, "image")
-      ));
-    const selectedNames = flowFramesMode ? [
-      sceneImage?.status === "ready" && !sceneImage.stale ? "Khung Ä‘áº§u Â· sáºµn sÃ ng" : "Khung Ä‘áº§u Â· cáº§n áº£nh má»›i",
-      flowFrameEndScene && flowFrameEndImage?.status === "ready" && !flowFrameEndImage.stale
-        ? `Khung cuá»‘i Â· ${sceneNumberLabel(flowFrameEndScene)}`
-        : "Khung cuá»‘i Â· chÆ°a chá»n áº£nh sáºµn sÃ ng",
-    ] : [
-      ...(sceneImageSelected
-        ? [sceneImageIsCurrent ? "áº¢nh cáº£nh chÃ­nh" : sceneImage?.status === "ready" ? "áº¢nh cáº£nh chÃ­nh Â· áº£nh cÅ©" : "áº¢nh cáº£nh chÃ­nh Â· chÆ°a cÃ³ áº£nh"]
-        : mediaLabel === "video" && sceneImage?.status === "ready" ? ["áº¢nh cáº£nh Â· khÃ´ng gá»­i video"] : []),
-      ...selectedIds.map((id) => characterProfiles.find((character) => character.id === id)?.name).filter(Boolean),
-      locationProfiles.find((location) => location.id === selectedLocationId)?.name,
-    ].filter(Boolean);
-    return <details className="ai-drama-row-reference-picker" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
-      <summary aria-label={`Chá»n áº£nh tham chiáº¿u cho táº¡o ${mediaLabel} ${sceneNumberLabel(scene)}`}>
-        <span>áº¢nh tham chiáº¿u Â· {mediaLabel}</span>
-        <strong title={selectedNames.join(", ")}>{selectedNames.join(", ") || "Chá»n tÃªn nhÃ¢n váº­t / bá»‘i cáº£nh"}</strong>
-      </summary>
-      <div className="ai-drama-row-reference-options">
-        {flowFramesMode ? <fieldset className="ai-drama-scene-reference-option">
-          <legend>Hai áº£nh Frames gá»­i cho Flow</legend>
-          <small>{sceneImage?.status === "ready" && !sceneImage.stale ? `Khung Ä‘áº§u: ${sceneNumberLabel(scene)}` : `Khung Ä‘áº§u: ${sceneNumberLabel(scene)} chÆ°a cÃ³ áº£nh sáºµn sÃ ng`}</small>
-          <small>{flowFrameEndScene && flowFrameEndImage?.status === "ready" && !flowFrameEndImage.stale ? `Khung cuá»‘i: ${sceneNumberLabel(flowFrameEndScene)}` : "ChÆ°a chá»n áº£nh cáº£nh sáºµn sÃ ng lÃ m khung cuá»‘i"}</small>
-          <small>Flow gá»­i Ä‘Ãºng hai áº£nh theo thá»© tá»± nÃ y. Há»“ sÆ¡ nhÃ¢n váº­t vÃ  bá»‘i cáº£nh chá»‰ Ä‘Æ°á»£c gá»­i á»Ÿ Ingredients/References.</small>
-        </fieldset> : <>
-        {mediaLabel === "video" && <fieldset className="ai-drama-scene-reference-option">
-          <legend>áº¢nh chÃ­nh cho video</legend>
-          <label>
-            <input type="checkbox" aria-label={`DÃ¹ng áº£nh cáº£nh lÃ m tham chiáº¿u video ${sceneNumberLabel(scene)}`} checked={sceneMediaSettings.videoUseSceneImageReference} disabled={flowFramesMode || sceneMediaSettingsSaving || Boolean(generatingSceneId) || sceneHasActiveMediaJob(scene) || batchMediaBusy || videoQueueRunning} onChange={(event) => updateDramaSceneImageReference(scene, event.target.checked)} />
-            <span>{flowFramesMode ? "áº¢nh cáº£nh lÃ m khung Ä‘áº§u Flow Â· báº¯t buá»™c" : "DÃ¹ng áº£nh cáº£nh lÃ m tham chiáº¿u video"}</span>
-            <small>{sceneMediaSettings.videoUseSceneImageReference
-              ? sceneImageIsCurrent
-                ? "áº¢nh AI sáºµn sÃ ng Â· sáº½ gá»­i kÃ¨m video"
-                : sceneImage?.status === "ready"
-                  ? sceneImage.stale ? "áº¢nh Ä‘Ã£ cÅ© Â· video váº«n dÃ¹ng áº£nh nÃ y" : "áº¢nh khÃ¡c há»“ sÆ¡ hiá»‡n táº¡i Â· video váº«n dÃ¹ng áº£nh nÃ y"
-                  : "ChÆ°a cÃ³ áº£nh cáº£nh Â· táº¡o áº£nh Ä‘á»ƒ báº­t tham chiáº¿u video"
-              : sceneImage?.status === "ready" ? "áº¢nh váº«n Ä‘Æ°á»£c lÆ°u Â· hiá»‡n khÃ´ng gá»­i video" : "ChÆ°a gá»­i áº£nh cáº£nh cho video"}</small>
-          </label>
-          <small className="ai-drama-row-reference-note">Táº¯t má»¥c nÃ y chá»‰ bá» áº£nh cáº£nh khá»i Ä‘áº§u vÃ o video; áº£nh Ä‘Ã£ lÆ°u vÃ  lá»±a chá»n tham chiáº¿u dÃ¹ng Ä‘á»ƒ táº¡o áº£nh cáº£nh váº«n giá»¯ nguyÃªn.</small>
-        </fieldset>}
-        <fieldset>
-          <legend>NhÃ¢n váº­t</legend>
-          {characterProfiles.map((character) => <label key={character.id}>
-            <input type="checkbox" checked={selectedIds.includes(character.id)} disabled={sceneCharacterSaving} onChange={(event) => void saveDramaSceneReferences(scene, event.target.checked ? [...selectedIds, character.id] : selectedIds.filter((id) => id !== character.id), selectedLocationId, referenceKind)} />
-            <span>{character.name}</span><small>{character.referenceImagePath ? "CÃ³ áº£nh" : "ChÆ°a cÃ³ áº£nh"}</small>
-          </label>)}
-          {!characterProfiles.length && <small>ChÆ°a cÃ³ há»“ sÆ¡ nhÃ¢n váº­t.</small>}
-        </fieldset>
-        <label className="ai-drama-row-location-select">Bá»‘i cáº£nh
-          <select value={selectedLocationId} disabled={sceneCharacterSaving || !locationProfiles.length} onChange={(event) => void saveDramaSceneReferences(scene, selectedIds, event.target.value, referenceKind)}>
-            <option value="">KhÃ´ng chá»n</option>
-            {locationProfiles.map((location) => <option key={location.id} value={location.id}>{location.name}{location.referenceImagePath ? " Â· cÃ³ áº£nh" : " Â· chÆ°a cÃ³ áº£nh"}</option>)}
-          </select>
-        </label>
-        <small className="ai-drama-row-reference-note">{mediaLabel === "video"
-          ? "Bá»‘i cáº£nh Ä‘Ã£ chá»n sáº½ thÃªm mÃ´ táº£ vÃ o prompt video vÃ  gá»­i áº£nh há»“ sÆ¡ náº¿u cÃ³. Khi báº­t áº£nh cáº£nh chÃ­nh, video nháº­n cáº£ áº£nh cáº£nh vÃ  há»“ sÆ¡ bá»‘i cáº£nh."
-          : "Ban Ä‘áº§u láº¥y há»“ sÆ¡ Ä‘Ã£ gÃ¡n cho cáº£nh. MÃ´ táº£ bá»‘i cáº£nh sáº½ Ä‘Æ°á»£c thÃªm vÃ o prompt; náº¿u há»“ sÆ¡ cÃ³ áº£nh táº£i lÃªn sáºµn, áº£nh Ä‘Ã³ cÅ©ng Ä‘Æ°á»£c gá»­i lÃ m tham chiáº¿u."}</small>
-        </>}
-      </div>
-    </details>;
-  }
-  const aiDramaWorkspace = project.presetId === "ai-drama" ? (
-<section id="scenes" className="ai-drama-workspace" aria-label="Phim AI">
-        <header className="ai-drama-workspace-heading">
-          <div><div className="section-kicker">PHIM AI</div><h2>Prompt áº£nh, video theo cáº£nh vÃ  timeline thoáº¡i</h2><p>Ká»‹ch báº£n vÃ  prompt táº¡o trÆ°á»›c; duyá»‡t/chá»‰nh xong má»›i báº¥m táº¡o áº£nh, video hÃ ng loáº¡t. TTS cháº¡y báº±ng nÃºt riÃªng.</p></div>
-        </header>
-
-        <nav className="ai-drama-subtabs" aria-label="Má»¥c Phim AI">
-          <button type="button" className={dramaTab === "scenes" ? "active" : ""} onClick={() => setDramaTab("scenes")}>Cáº£nh Â· prompt & thoáº¡i</button>
-          <button type="button" className={dramaTab === "characters" ? "active" : ""} onClick={() => setDramaTab("characters")}>Prompt nhÃ¢n váº­t Â· {characterProfiles.length}</button>
-          <button type="button" className={dramaTab === "locations" ? "active" : ""} onClick={() => setDramaTab("locations")}>Prompt bá»‘i cáº£nh Â· {locationProfiles.length}</button>
-        </nav>
-        {runMessage && <div className={`run-message ${runMessage.tone}`}><span><Icon name={runMessage.tone === "success" ? "check" : "alert"} size={13} /></span>{runMessage.text}</div>}
-        {characterError && <div className="run-message error" role="alert">{characterError}</div>}
-        {sceneError && <div className="run-message error" role="alert">{sceneError}</div>}
-
-        {dramaTab === "characters" && <section className="ai-drama-panel" aria-labelledby="ai-drama-cast-title">
-          <div className="ai-drama-panel-heading"><div><div className="section-kicker">CHARACTER REFERENCES</div><h3 id="ai-drama-cast-title">Prompt áº£nh nhÃ¢n váº­t</h3><span>{characterProfiles.length} nhÃ¢n váº­t{missingScriptCharacterCount ? ` Â· ${missingScriptCharacterCount} tÃªn thiáº¿u há»“ sÆ¡` : ""}</span></div><div className="ai-drama-batch-actions">
-            <button className="secondary-button compact" type="button" onClick={() => void generateDramaProfileImages("characters")} disabled={!characterProfilesMissingImage.length || Boolean(profileBusyId) || characterProfileImageBusy || profileBatchKinds.has("characters")} title="Chá»‰ táº¡o áº£nh cho nhÃ¢n váº­t chÆ°a cÃ³ áº£nh tham chiáº¿u; áº£nh hiá»‡n cÃ³ Ä‘Æ°á»£c giá»¯ nguyÃªn">{profileBatchKinds.has("characters") ? `Äang táº¡o ${profileBatchProgress.characters}â€¦` : `Táº¡o áº£nh hÃ ng loáº¡t Â· ${characterProfilesMissingImage.length}`}</button>
-            {missingScriptCharacterCount > 0 && <button className="secondary-button compact" type="button" onClick={() => void syncScriptCharacters()} disabled={characterSyncing || characterSaving || Boolean(profileBusyId) || profileBatchKinds.size > 0}>{characterSyncing ? "Äang Ä‘á»“ng bá»™â€¦" : "Táº¡o há»“ sÆ¡ tá»« ká»‹ch báº£n"}</button>}
-          </div></div>
-          <form id="ai-drama-character-create" className="ai-drama-profile-create" onSubmit={(event) => { event.preventDefault(); void createDramaProfile("characters"); }}>
-            <input aria-label="TÃªn nhÃ¢n váº­t" placeholder="TÃªn nhÃ¢n váº­t" value={newDramaProfile.name} onChange={(event) => setNewDramaProfile((current) => ({ ...current, name: event.target.value }))} disabled={Boolean(profileBusyId) || profileBatchKinds.size > 0} />
-            <input aria-label="MÃ´ táº£ há»“ sÆ¡" placeholder="MÃ´ táº£ nháº­n diá»‡n" value={newDramaProfile.description} onChange={(event) => setNewDramaProfile((current) => ({ ...current, description: event.target.value }))} disabled={Boolean(profileBusyId) || profileBatchKinds.size > 0} />
-            <textarea aria-label="Prompt áº£nh nhÃ¢n váº­t" rows={2} placeholder="Ngoáº¡i hÃ¬nh, tÃ³c, trang phá»¥c, mÃ u sáº¯câ€¦" value={newDramaProfile.imagePrompt} onChange={(event) => setNewDramaProfile((current) => ({ ...current, imagePrompt: event.target.value }))} disabled={Boolean(profileBusyId) || profileBatchKinds.size > 0} />
-            <button type="submit" className="secondary-button compact" disabled={Boolean(profileBusyId) || profileBatchKinds.size > 0 || !newDramaProfile.name.trim()}><Icon name="plus" size={14} /> ThÃªm nhÃ¢n váº­t</button>
-          </form>
-          {characterProfiles.length ? <div className="ai-drama-character-grid">
-            {characterProfiles.map((character) => {
-              const assignedCount = scenes.reduce((count, scene) => count + sceneDialogueSegments(scene, characterProfiles).filter((segment) => segment.speakerCharacterId === character.id).length, 0);
-              const selectedVoice = voiceCatalog?.voices.find((voice) => voice.id === character.voiceId);
-              return <article className="ai-drama-character-card" key={character.id}>
-                {character.referenceImagePath ? <img src={`/api/projects/${encodeURIComponent(project.slug)}/characters/${encodeURIComponent(character.id)}/image`} alt={`áº¢nh tham chiáº¿u ${character.name}`} loading="lazy" /> : <div className="ai-drama-character-image-empty"><Icon name="users" size={20} /><span>ChÆ°a cÃ³ áº£nh</span></div>}
-                <div className="ai-drama-character-content">
-                  <strong>{character.name}</strong>
-                  <label>Prompt táº¡o áº£nh<textarea key={`${character.id}-${character.imagePrompt || character.description}-${PROFILE_REFERENCE_ASPECT_RATIO}`} defaultValue={profileImagePrompt(character, "characters")} rows={7} onBlur={(event) => { if (event.target.value !== (character.imagePrompt || "")) void updateDramaProfile("characters", character.id, "PATCH", { imagePrompt: event.target.value }); }} disabled={Boolean(profileBusyId) || profileBatchKinds.has("characters") || profileImageBusyIds.has(`characters:${character.id}`)} /><small className="ai-drama-prompt-guidance">Báº¯t buá»™c: toÃ n thÃ¢n chÃ­nh diá»‡n Â· toÃ n thÃ¢n sau lÆ°ng Â· chÃ¢n dung cáº­n máº·t Â· khung hÃ¬nh 1:1.</small></label>
-                  <div className="ai-drama-icon-actions">
-                    <button type="button" title="Táº¡o áº£nh nhÃ¢n váº­t" onClick={() => void generateDramaProfileImage("characters", character.id)} disabled={Boolean(profileBusyId) || profileBatchKinds.has("characters") || profileImageBusyIds.has(`characters:${character.id}`)}><Icon name={profileImageBusyIds.has(`characters:${character.id}`) ? "clock" : "spark"} size={15} /> {profileImageBusyIds.has(`characters:${character.id}`) ? "Äang táº¡oâ€¦" : "Táº¡o áº£nh"}</button>
-                    <button type="button" title="Upload áº£nh tham chiáº¿u" onClick={() => chooseDramaUpload("characters", character.name, character.imagePrompt || "", character.description || "")} disabled={Boolean(profileBusyId) || profileBatchKinds.has("characters") || profileImageBusyIds.has(`characters:${character.id}`)}><Icon name="upload" size={15} /> Upload</button>
-                    <button type="button" title="XÃ³a nhÃ¢n váº­t" onClick={() => void updateDramaProfile("characters", character.id, "DELETE")} disabled={Boolean(profileBusyId) || profileBatchKinds.has("characters") || profileImageBusyIds.has(`characters:${character.id}`)}><Icon name="trash" size={15} /></button>
-                  </div>
-                  <details className="ai-drama-character-voice" open>
-                    <summary>Voice & TTS tÃ¹y chá»n<span>{characterVoiceSavingId === character.id ? "Äang lÆ°uâ€¦" : character.voiceId ? `${selectedVoice?.name || character.voiceName || character.voiceId} Â· ${assignedCount} lÆ°á»£t` : `${assignedCount} lÆ°á»£t Â· máº·c Ä‘á»‹nh`}</span></summary>
-                    <label>Voice nhÃ¢n váº­t
-                      <select value={character.voiceId || ""} onChange={(event) => void saveCharacterVoice(character, event.target.value)} disabled={voiceCatalogLoading || Boolean(characterVoiceSavingId) || ttsRunning || !voiceCatalog?.voices.length}>
-                        <option value="">DÃ¹ng voice máº·c Ä‘á»‹nh cá»§a project</option>
-                        {character.voiceId && !voiceCatalog?.voices.some((voice) => voice.id === character.voiceId) && <option value={character.voiceId}>{character.voiceName || character.voiceId} Â· voice Ä‘Ã£ lÆ°u</option>}
-                        {(voiceCatalog?.voices || []).map((voice) => <option key={voice.id} value={voice.id}>{voice.name} Â· {voiceLanguageLabel(voice.language)}{voice.gender ? ` Â· ${voice.gender}` : ""}</option>)}
-                      </select>
-                      <small>NgÃ´n ngá»¯ trong há»“ sÆ¡ voice chá»‰ mÃ´ táº£ giá»ng; lá»i thoáº¡i sáº½ Ä‘Æ°á»£c Ä‘á»c theo ngÃ´n ngá»¯ video cá»§a project.</small>
-                      {voiceCatalogLoading && <small>Äang táº£i thÆ° viá»‡n voiceâ€¦</small>}
-                      {!voiceCatalogLoading && !voiceCatalog?.voices.length && <small>KhÃ´ng táº£i Ä‘Æ°á»£c thÆ° viá»‡n voice MaiVideo. Kiá»ƒm tra API key trong CÃ i Ä‘áº·t.</small>}
-                    </label>
-                  </details>
-                </div>
-              </article>;
-            })}
-          </div> : <div className="ai-drama-empty"><strong>ChÆ°a cÃ³ há»“ sÆ¡ nhÃ¢n váº­t</strong><span>{missingScriptCharacterCount ? `Ká»‹ch báº£n cÃ³ ${missingScriptCharacterCount} nhÃ¢n váº­t; Ä‘á»“ng bá»™ há»“ sÆ¡ Ä‘á»ƒ gÃ¡n voice riÃªng.` : "Táº¡o há»“ sÆ¡ Ä‘á»ƒ gÃ¡n áº£nh vÃ  voice cho dÃ n diá»…n viÃªn."}</span>{missingScriptCharacterCount ? <button type="button" className="secondary-button compact" onClick={() => void syncScriptCharacters()} disabled={characterSyncing}>{characterSyncing ? "Äang Ä‘á»“ng bá»™â€¦" : "Táº¡o há»“ sÆ¡ tá»« ká»‹ch báº£n"}</button> : <button type="button" className="secondary-button compact" onClick={() => openProjectSection("ai-drama-character-create")}>Má»Ÿ form há»“ sÆ¡</button>}</div>}
-        </section>}
-
-        {dramaTab === "locations" && <section className="ai-drama-panel" aria-labelledby="ai-drama-locations-title">
-          <div className="ai-drama-panel-heading"><div><div className="section-kicker">LOCATION REFERENCES</div><h3 id="ai-drama-locations-title">Prompt áº£nh bá»‘i cáº£nh</h3><span>{locationProfiles.length} bá»‘i cáº£nh{missingScriptLocationCount ? ` Â· ${missingScriptLocationCount} tÃªn thiáº¿u há»“ sÆ¡` : ""}</span></div><div className="ai-drama-batch-actions">
-            <button className="secondary-button compact" type="button" onClick={() => void generateDramaProfileImages("locations")} disabled={!locationProfilesMissingImage.length || Boolean(profileBusyId) || locationProfileImageBusy || profileBatchKinds.has("locations")} title="Chá»‰ táº¡o áº£nh cho bá»‘i cáº£nh chÆ°a cÃ³ áº£nh tham chiáº¿u; áº£nh hiá»‡n cÃ³ Ä‘Æ°á»£c giá»¯ nguyÃªn">{profileBatchKinds.has("locations") ? `Äang táº¡o ${profileBatchProgress.locations}â€¦` : `Táº¡o áº£nh hÃ ng loáº¡t Â· ${locationProfilesMissingImage.length}`}</button>
-            {missingScriptLocationCount > 0 && <button className="secondary-button compact" type="button" onClick={() => void syncScriptCharacters()} disabled={characterSyncing || characterSaving || Boolean(profileBusyId) || profileBatchKinds.size > 0}>{characterSyncing ? "Äang Ä‘á»“ng bá»™â€¦" : "Táº¡o há»“ sÆ¡ tá»« ká»‹ch báº£n"}</button>}
-          </div></div>
-          <form className="ai-drama-profile-create" onSubmit={(event) => { event.preventDefault(); void createDramaProfile("locations"); }}>
-            <input aria-label="TÃªn bá»‘i cáº£nh" placeholder="TÃªn bá»‘i cáº£nh" value={newDramaProfile.name} onChange={(event) => setNewDramaProfile((current) => ({ ...current, name: event.target.value }))} disabled={Boolean(profileBusyId) || profileBatchKinds.size > 0} />
-            <input aria-label="MÃ´ táº£ há»“ sÆ¡" placeholder="MÃ´ táº£ nháº­n diá»‡n" value={newDramaProfile.description} onChange={(event) => setNewDramaProfile((current) => ({ ...current, description: event.target.value }))} disabled={Boolean(profileBusyId) || profileBatchKinds.size > 0} />
-            <textarea aria-label="Prompt áº£nh bá»‘i cáº£nh" rows={2} placeholder="Kiáº¿n trÃºc, máº·t báº±ng, váº­t liá»‡u, Ä‘iá»ƒm nháº­n diá»‡nâ€¦" value={newDramaProfile.imagePrompt} onChange={(event) => setNewDramaProfile((current) => ({ ...current, imagePrompt: event.target.value }))} disabled={Boolean(profileBusyId) || profileBatchKinds.size > 0} />
-            <button type="submit" className="secondary-button compact" disabled={Boolean(profileBusyId) || profileBatchKinds.size > 0 || !newDramaProfile.name.trim()}><Icon name="plus" size={14} /> ThÃªm bá»‘i cáº£nh</button>
-          </form>
-          <div className="ai-drama-character-grid">{locationProfiles.map((location) => <article className="ai-drama-character-card" key={location.id}>
-            {location.referenceImagePath ? <img src={`/api/projects/${encodeURIComponent(project.slug)}/locations/${encodeURIComponent(location.id)}/image`} alt={`áº¢nh ${location.name}`} loading="lazy" /> : <div className="ai-drama-character-image-empty"><Icon name="scene" size={20} /><span>ChÆ°a cÃ³ áº£nh</span></div>}
-            <div className="ai-drama-character-content"><strong>{location.name}</strong>
-              <label>Prompt táº¡o áº£nh<textarea key={`${location.id}-${location.imagePrompt || location.description}-${PROFILE_REFERENCE_ASPECT_RATIO}`} defaultValue={profileImagePrompt(location, "locations")} rows={7} onBlur={(event) => { if (event.target.value !== (location.imagePrompt || "")) void updateDramaProfile("locations", location.id, "PATCH", { imagePrompt: event.target.value }); }} disabled={Boolean(profileBusyId) || profileBatchKinds.has("locations") || profileImageBusyIds.has(`locations:${location.id}`)} /><small className="ai-drama-prompt-guidance">Báº¯t buá»™c: bá»‘n gÃ³c camera Báº¯c Â· ÄÃ´ng Â· Nam Â· TÃ¢y cá»§a cÃ¹ng má»™t nÆ¡i Â· khung hÃ¬nh 1:1.</small></label>
-              <div className="ai-drama-icon-actions">
-                {location.imageGeneration && <small role="status">{location.imageGeneration.status === "running" || location.imageGeneration.status === "queued" ? "Äang tá»± táº¡o áº£nh bá»‘i cáº£nhâ€¦" : location.imageGeneration.status === "failed" ? `Lá»—i táº¡o áº£nh: ${location.imageGeneration.error || "Thá»­ láº¡i báº±ng nÃºt Táº¡o áº£nh"}` : "áº¢nh bá»‘i cáº£nh Ä‘Ã£ sáºµn sÃ ng"}</small>}
-                <button type="button" onClick={() => void generateDramaProfileImage("locations", location.id)} disabled={Boolean(profileBusyId) || profileBatchKinds.has("locations") || profileImageBusyIds.has(`locations:${location.id}`)}><Icon name={profileImageBusyIds.has(`locations:${location.id}`) ? "clock" : "spark"} size={15} /> {profileImageBusyIds.has(`locations:${location.id}`) ? "Äang táº¡oâ€¦" : "Táº¡o áº£nh"}</button>
-                <button type="button" onClick={() => chooseDramaUpload("locations", location.name, location.imagePrompt || "", location.description || "")} disabled={Boolean(profileBusyId) || profileBatchKinds.has("locations") || profileImageBusyIds.has(`locations:${location.id}`)}><Icon name="upload" size={15} /> Upload</button>
-                <button type="button" title="XÃ³a bá»‘i cáº£nh" onClick={() => void updateDramaProfile("locations", location.id, "DELETE")} disabled={Boolean(profileBusyId) || profileBatchKinds.has("locations") || profileImageBusyIds.has(`locations:${location.id}`)}><Icon name="trash" size={15} /></button>
-              </div>
-            </div>
-          </article>)}</div>
-        </section>}
-
-        {dramaTab === "scenes" && <section className="ai-drama-panel" aria-labelledby="ai-drama-scenes-title">
-          <div className="ai-drama-model-quick-settings" aria-label="Cáº¥u hÃ¬nh há»‡ thá»‘ng vÃ  model táº¡o media">
-            <div className="ai-drama-model-quick-system" aria-label="Há»‡ thá»‘ng táº¡o áº£nh"><span>Há»‡ thá»‘ng áº£nh</span><strong>{batchMuseImageSelected ? "Muse.ai" : batchFlowImageSelected ? "Flow" : "MaiVideo"}</strong></div>
-            <label><span>Model áº£nh</span><select aria-label="Model áº£nh Phim AI" value={batchMediaSettings.imageModel} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateQuickImageModel(event.target.value)}>{batchImageModelOptions.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}</select></label>
-            {!batchMuseImageSelected && !batchFlowImageSelected && <label><span>Äá»™ phÃ¢n giáº£i áº£nh</span><select aria-label="Äá»™ phÃ¢n giáº£i áº£nh Phim AI" value={batchMediaSettings.imageQuality} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateBatchMediaSettings({ imageQuality: event.target.value })}>{batchImageQualities.map((quality) => <option key={quality} value={quality}>{quality}</option>)}</select></label>}
-            {batchImageDetailLevels.length > 0 && <label><span>Detail level</span><select aria-label="Detail level áº£nh Phim AI" value={batchMediaSettings.imageDetailLevel} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateBatchMediaSettings({ imageDetailLevel: event.target.value as MediaGenerationSettings["imageDetailLevel"] })}>{batchImageDetailLevels.map((level) => <option key={level} value={level}>{IMAGE_DETAIL_LEVEL_LABELS[level]}</option>)}</select></label>}
-            <label><span>Há»‡ thá»‘ng video</span><select aria-label="Há»‡ thá»‘ng video Phim AI" value={batchSeedanceHiddenSelected ? "__hidden_seedance__" : batchMediaSettings.videoProvider === "higgsfield" ? "maivideo" : batchMediaSettings.videoProvider} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateBatchMediaSettings({ videoProvider: event.target.value as MediaGenerationSettings["videoProvider"] })}>{batchSeedanceHiddenSelected && <option value="__hidden_seedance__" disabled>Seedance trá»±c tiáº¿p Â· táº¡m áº©n</option>}<option value="maivideo">MaiVideo</option><option value="muse">Muse.ai Â· Seedance Gateway</option><option value="flow">Flow Â· Seedance Gateway</option></select></label>
-            <label><span>Model video</span><select aria-label="Model video Phim AI" value={batchSeedanceHiddenSelected ? "__hidden_seedance__" : batchMediaSettings.videoModel} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateQuickVideoModel(event.target.value)}>{batchSeedanceHiddenSelected && <option value="__hidden_seedance__" disabled>Model Seedance trá»±c tiáº¿p Â· táº¡m áº©n</option>}{batchVideoModelOptions.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}</select></label>
-            {batchSeedanceHiddenSelected && <small className="field-help">Dá»± Ã¡n Ä‘ang dÃ¹ng Seedance trá»±c tiáº¿p tá»« seedance.maivideo.top, hiá»‡n táº¡m áº©n. Chá»n MaiVideo, Muse.ai hoáº·c Flow Ä‘á»ƒ táº¡o video má»›i.</small>}
-            {batchMediaAccountSelected && <label><span>{batchFlowSelected || batchFlowImageSelected ? "API key Seedance Â· Flow" : batchMuseSelected || batchMuseImageSelected ? "API key Seedance Â· Muse.ai" : "TÃ i khoáº£n Seedance"}</span><select aria-label="TÃ i khoáº£n API áº£nh vÃ  video Phim AI" value={batchMediaSettings.seedanceAccountId === defaultSeedanceAccountId ? "" : batchMediaSettings.seedanceAccountId || ""} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateBatchMediaSettings({ seedanceAccountId: event.target.value })}><option value="">Máº·c Ä‘á»‹nh{seedanceAccounts.find((account) => account.id === defaultSeedanceAccountId) ? ` Â· ${seedanceAccounts.find((account) => account.id === defaultSeedanceAccountId)?.name}` : " Â· chÆ°a káº¿t ná»‘i"}</option>{seedanceAccounts.filter((account) => account.id !== defaultSeedanceAccountId).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>}
-            {batchSeedanceSelected && <label><span>Cháº¿ Ä‘á»™ chat</span><select aria-label="Cháº¿ Ä‘á»™ chat Seedance Phim AI" value={batchMediaSettings.seedanceChatMode} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateBatchMediaSettings({ seedanceChatMode: event.target.value === "Pro" ? "Pro" : "Fast" })}><option value="Fast">Fast Â· máº·c Ä‘á»‹nh</option><option value="Pro">Pro</option></select></label>}
-            <label><span>Cháº¥t lÆ°á»£ng video</span>{batchProviderAccountSelected ? <select aria-label="Cháº¥t lÆ°á»£ng video Phim AI" value="profile" disabled><option value="profile">{batchFlowSelected ? "1080p Â· cá»‘ Ä‘á»‹nh" : batchMuseSelected ? "Theo profile Muse.ai" : "Theo profile Seedance"}</option></select> : <select aria-label="Cháº¥t lÆ°á»£ng video Phim AI" value={batchMediaSettings.videoQuality} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateBatchMediaSettings({ videoQuality: event.target.value })}>{batchVideoQualities.map((quality) => <option key={quality} value={quality}>{quality}</option>)}</select>}</label>
-            <label><span>Thá»i lÆ°á»£ng clip</span><select aria-label="Cháº¿ Ä‘á»™ thá»i lÆ°á»£ng video Phim AI" value="scene" disabled><option value="scene">Theo Ä‘á»™ dÃ i tá»«ng cáº£nh</option></select></label>
-            {batchFlowSelected && <label><span>Tham chiáº¿u Flow</span>{isFlowStoryOnlyPreset(project.presetId)
-              ? <select aria-label="Tham chiáº¿u video Flow" value="ingredients" disabled><option value="ingredients">Ingredients / References Â· Story</option></select>
-              : <select aria-label="Tham chiáº¿u video Flow" value={batchMediaSettings.flowReferenceMode} disabled={batchMediaBusy || videoQueueRunning} onChange={(event) => updateBatchMediaSettings({ flowReferenceMode: event.target.value === "frames" ? "frames" : "ingredients" })}><option value="ingredients">Ingredients / References</option><option value="frames">Frames Â· khung Ä‘áº§u vÃ  cuá»‘i</option></select>}</label>}
-            {batchFlowSelected && batchMediaSettings.flowReferenceMode === "frames" && <small className="field-help">Má»—i cáº£nh cáº§n áº£nh cáº£nh hiá»‡n táº¡i lÃ m khung Ä‘áº§u vÃ  chá»n áº£nh khung cuá»‘i trong cáº¥u hÃ¬nh tá»«ng cáº£nh.</small>}
-            <small className="field-help">{batchMuseSelected ? "Muse.ai chá»‰ nháº­n clip 5 hoáº·c 10 giÃ¢y; cáº£nh dÃ i hÆ¡n dÃ¹ng tá»‘i Ä‘a 10 giÃ¢y." : batchFlowSelected ? "Flow nháº­n clip 6, 8 hoáº·c 10 giÃ¢y; thá»i lÆ°á»£ng cáº£nh Ä‘Æ°á»£c lÃ m trÃ²n lÃªn má»‘c phÃ¹ há»£p, tá»‘i Ä‘a 10 giÃ¢y." : "Má»—i clip Phim AI dÃ¹ng Ä‘Ãºng Ä‘á»™ dÃ i cáº£nh: 5, 10 hoáº·c 15 giÃ¢y."}</small>
-          </div>
-          <div className="ai-drama-model-quick-toggles" aria-label="Tuá»³ chá»n media Phim AI">
-            <label><input type="checkbox" checked={batchMediaSettings.imageUseCharacterReferences} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving} onChange={(event) => updateBatchMediaSettings({ imageUseCharacterReferences: event.target.checked })} /><span>Há»“ sÆ¡ nhÃ¢n váº­t cho áº£nh cáº£nh</span></label>
-            {!batchProviderAccountSelected && <>
-              <label><input type="checkbox" checked={batchPixverseSelected ? true : selectedBatchVideoModel?.supportsMultiShot === false ? false : batchMediaSettings.videoMultiShot} disabled={batchMediaBusy || videoQueueRunning || batchPixverseSelected || selectedBatchVideoModel?.supportsMultiShot === false} onChange={(event) => updateBatchMediaSettings({ videoMultiShot: event.target.checked })} /><span>Multi-shot{batchPixverseSelected ? " Â· luÃ´n báº­t vá»›i PixVerse" : selectedBatchVideoModel?.supportsMultiShot === false ? " Â· khÃ´ng há»— trá»£" : ""}</span></label>
-              <label><input type="checkbox" checked={batchPixverseSelected ? true : selectedBatchVideoModel?.supportsAudio === false ? false : batchMediaSettings.videoAudio} disabled={batchMediaBusy || videoQueueRunning || batchPixverseSelected || selectedBatchVideoModel?.supportsAudio === false} onChange={(event) => updateBatchMediaSettings({ videoAudio: event.target.checked })} /><span>Ã‚m thanh tá»« model{batchPixverseSelected ? " Â· luÃ´n báº­t vá»›i PixVerse" : selectedBatchVideoModel?.supportsAudio === false ? " Â· khÃ´ng há»— trá»£" : ""}</span></label>
-              <label><input type="checkbox" checked={batchVideoOffPeakRequired || (selectedBatchVideoModel?.supportsOffPeak === false ? false : batchMediaSettings.videoOffPeak)} disabled={batchMediaBusy || videoQueueRunning || batchVideoOffPeakRequired || selectedBatchVideoModel?.supportsOffPeak === false} onChange={(event) => updateBatchMediaSettings({ videoOffPeak: event.target.checked })} /><span>{batchVideoOffPeakRequired ? "Off-peak Â· báº¯t buá»™c vá»›i PixVerse" : selectedBatchVideoModel?.supportsOffPeak === false ? "Off-peak Â· khÃ´ng há»— trá»£" : "Off-peak"}</span></label>
-            </>}
-            <label><input type="checkbox" checked={batchMediaSettings.videoUseCharacterReferences} disabled={batchFlowFramesSelected || batchMediaBusy || videoQueueRunning} onChange={(event) => updateBatchMediaSettings({ videoUseCharacterReferences: event.target.checked })} /><span>{batchFlowFramesSelected ? "áº¢nh nhÃ¢n váº­t Â· chá»‰ Ingredients" : "áº¢nh nhÃ¢n váº­t cho video"}</span></label>
-            <label><input type="checkbox" checked={batchMediaSettings.videoUseLocationReferences} disabled={batchFlowFramesSelected || batchMediaBusy || videoQueueRunning} onChange={(event) => updateBatchMediaSettings({ videoUseLocationReferences: event.target.checked })} /><span>{batchFlowFramesSelected ? "áº¢nh bá»‘i cáº£nh Â· chá»‰ Ingredients" : project.presetId === "ai-drama" ? "áº¢nh & mÃ´ táº£ bá»‘i cáº£nh cho video" : "áº¢nh bá»‘i cáº£nh (chá»‰ dÃ¹ng khi táº¯t áº£nh cáº£nh)"}</span></label>
-            <label><input type="checkbox" checked={batchMediaSettings.videoUseSceneImageReference} disabled={batchFlowFramesSelected || batchMediaBusy || videoQueueRunning} onChange={(event) => updateBatchMediaSettings({ videoUseSceneImageReference: event.target.checked })} /><span>{batchFlowFramesSelected ? "áº¢nh cáº£nh lÃ m khung Ä‘áº§u Flow Â· báº¯t buá»™c" : "áº¢nh cáº£nh lÃ m tham chiáº¿u"}</span></label>
-          </div>
-          <div className="ai-drama-panel-heading ai-drama-scenes-heading"><div><div className="section-kicker">SCENE WORKFLOW</div><h3 id="ai-drama-scenes-title">Cáº£nh thoáº¡i & táº¡o media</h3><span>{filteredScenes.length} cáº£nh Â· {filteredScenes.reduce((sum, scene) => sum + sceneDialogueSegments(scene, characterProfiles).length, 0)} lÆ°á»£t thoáº¡i{filteredScenesNeedingDialogueTimeline.length ? ` Â· ${filteredScenesNeedingDialogueTimeline.length} cáº£nh chÆ°a cÃ³ timeline tÃ¡ch` : ""}</span></div>
-            <div className="ai-drama-batch-actions">
-              {filteredScenesNeedingDialogueTimeline.length > 0 && <button className="secondary-button compact" type="button" onClick={() => void extractFilteredSceneDialogues()} disabled={Boolean(dialogueExtractingSceneId) || Boolean(dialogueExtractBatchProgress) || ttsRunning || renderRunning || isRunning || Boolean(runningScriptChunkId)}>{dialogueExtractBatchProgress ? `Äang hoÃ n thiá»‡n ${dialogueExtractBatchProgress}` : `AI hoÃ n thiá»‡n thoáº¡i & chi tiáº¿t Â· ${filteredScenesNeedingDialogueTimeline.length}`}</button>}
-              <button className="secondary-button compact" type="button" title="Tá»± gÃ¡n há»“ sÆ¡ nhÃ¢n váº­t vÃ  bá»‘i cáº£nh theo ná»™i dung cáº£nh. Há»“ sÆ¡ bá»‘i cáº£nh Ä‘Æ°á»£c thÃªm vÃ o prompt áº£nh vÃ  video theo cÃ i Ä‘áº·t tham chiáº¿u." onClick={() => void autoAssignSceneReferences()} disabled={(!characterProfiles.length && !locationProfiles.length) || autoAssignCharactersBusy || batchMediaBusy || videoQueueRunning || sceneCharacterSaving}>{autoAssignCharactersBusy ? "Äang gÃ¡nâ€¦" : "Tá»± gÃ¡n há»“ sÆ¡"}</button>
-              <button className="secondary-button compact" type="button" onClick={() => void generateFilteredSceneImages()} disabled={!filteredImageTargets.length || batchMediaBusy || sceneMediaSettingsSaving || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning || Boolean(dialogueTtsBatchProgress) || Boolean(generatingSceneId)}>{batchMediaBusy && generatingSceneMediaKind === "image" ? batchMediaProgress || "Äang táº¡o áº£nhâ€¦" : `Táº¡o áº£nh Â· ${filteredImageTargets.length}`}</button>
-              <button className="primary-button compact" type="button" onClick={() => void generateFilteredSceneVideos()} disabled={!filteredVideoTargets.length || batchSeedanceHiddenSelected || batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || scriptBlocksIndependentTasks || ttsRunning || Boolean(dialogueTtsBatchProgress) || Boolean(generatingSceneId)}>{batchMediaBusy && generatingSceneMediaKind === "video" ? batchMediaProgress || "Äang táº¡o videoâ€¦" : `Táº¡o video Â· ${filteredVideoTargets.length}`}</button>
-              <button className="secondary-button compact" type="button" title="Táº¡o láº¡i video AI Ä‘Ã£ cÃ³ trong pháº¡m vi cáº£nh hiá»‡n táº¡i; video cÅ© Ä‘Æ°á»£c thay khi job má»›i hoÃ n táº¥t." onClick={() => void generateFilteredSceneVideos(filteredVideoRegenerationTargets, true)} disabled={!filteredVideoRegenerationTargets.length || batchSeedanceHiddenSelected || batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || scriptBlocksIndependentTasks || ttsRunning || Boolean(dialogueTtsBatchProgress) || Boolean(generatingSceneId)}>{batchMediaBusy && generatingSceneMediaKind === "video" ? batchMediaProgress || "Äang táº¡o láº¡i videoâ€¦" : `Táº¡o láº¡i video Â· ${filteredVideoRegenerationTargets.length}`}</button>
-              {project.presetId === "ai-drama" && <button className="secondary-button compact" type="button" onClick={() => void generateFilteredDialogueTts()} disabled={!filteredDialogueTtsVoiceTargets.length || Boolean(dialogueTtsBatchProgress) || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress) || ttsRunning || renderRunning || dialogueSavingSceneId !== "" || isRunning || Boolean(runningScriptChunkId) || Boolean(generatingSceneId) || batchMediaBusy || videoQueueRunning} title={filteredDialogueTtsVoiceTargets.length ? `Táº¡o voice ${voiceLanguageLabel(dialogueTranslationLanguage)} cho ${filteredDialogueTtsVoiceTargets.length} cáº£nh Ä‘Ã£ dá»‹ch` : filteredDialogueScenesNeedingTranslation.length ? `Dá»‹ch thoáº¡i sang ${voiceLanguageLabel(dialogueTranslationLanguage)} trÆ°á»›c` : filteredDialogueScenesMissingVoice.length ? "GÃ¡n voice cho nhÃ¢n váº­t trÆ°á»›c" : "CÃ¡c cáº£nh trong pháº¡m vi hiá»‡n táº¡i Ä‘Ã£ cÃ³ voice hoáº·c chÆ°a cÃ³ lá»i thoáº¡i"}>{dialogueTtsBatchProgress ? `Äang táº¡o voice ${voiceLanguageLabel(dialogueTranslationLanguage)} ${dialogueTtsBatchProgress}â€¦` : `Táº¡o voice ${voiceLanguageLabel(dialogueTranslationLanguage)} Â· ${filteredDialogueTtsVoiceTargets.length}`}</button>}
-              <button className="text-button" type="button" onClick={() => { setSceneSearch(""); setSceneChunkFilter("all"); setSceneReviewFilter("all"); setSceneAiReviewFilter("all"); setSceneMediaFilter("all"); }}>XÃ³a lá»c</button>
-            </div>
-          </div>
-          <div className="ai-drama-scene-filters">
-            <label><span>Táº­p</span><select value={sceneChunkFilter} onChange={(event) => setSceneChunkFilter(event.target.value)}><option value="all">Táº¥t cáº£ táº­p</option>{sceneChunks.map((chunkId) => <option key={chunkId} value={chunkId}>{chunkId}</option>)}</select></label>
-            <label className="ai-drama-scene-search"><span>TÃ¬m cáº£nh</span><input value={sceneSearch} onChange={(event) => setSceneSearch(event.target.value)} placeholder="MÃ£ cáº£nh, thoáº¡i, ná»™i dungâ€¦" /></label>
-            <div className="ai-drama-translation-tools">
-              <label><span>NgÃ´n ngá»¯ dá»‹ch & voice</span><select value={dialogueTranslationLanguage} onChange={(event) => setDialogueTranslationLanguage(event.target.value)} disabled={Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress) || Boolean(dialogueTtsBatchProgress) || ttsRunning || isRunning || Boolean(runningScriptChunkId)}>
-                {FALLBACK_VIDEO_LANGUAGES.map((language) => <option key={language} value={language}>{voiceLanguageLabel(language)}{language === project.language ? " Â· ngÃ´n ngá»¯ gá»‘c" : ""}</option>)}
-              </select></label>
-              <button type="button" className="secondary-button compact" onClick={() => void translateAllMissingDialogue()} disabled={!dialogueScenesNeedingTranslation.length || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress) || Boolean(dialogueTtsBatchProgress) || ttsRunning || renderRunning || dialogueSavingSceneId !== "" || isRunning || Boolean(runningScriptChunkId) || Boolean(generatingSceneId) || batchMediaBusy || videoQueueRunning}>
-                {dialogueTranslationBatchProgress ? `Äang dá»‹ch ${dialogueTranslationBatchProgress}â€¦` : `Dá»‹ch thoáº¡i cÃ²n thiáº¿u Â· ${dialogueScenesNeedingTranslation.length} cáº£nh`}
-              </button>
-              <small title={dialogueScenesNeedingTranslation.length ? `Ãp dá»¥ng cho ${dialogueScenesNeedingTranslation.length} cáº£nh cÃ³ lá»i thoáº¡i trong pháº¡m vi Ä‘ang chá»n.` : dialogueScenesWithoutTimeline.length ? `HoÃ n thiá»‡n timeline thoáº¡i cho ${dialogueScenesWithoutTimeline.length} cáº£nh trÆ°á»›c.` : `ÄÃ£ cÃ³ báº£n dá»‹ch ${voiceLanguageLabel(dialogueTranslationLanguage)} cho má»i cáº£nh trong pháº¡m vi Ä‘ang chá»n.`}>{dialogueScenesNeedingTranslation.length ? `CÃ²n ${dialogueScenesNeedingTranslation.length} cáº£nh cáº§n dá»‹ch` : dialogueScenesWithoutTimeline.length ? `Thiáº¿u timeline Â· ${dialogueScenesWithoutTimeline.length}` : `ÄÃ£ dá»‹ch ${voiceLanguageLabel(dialogueTranslationLanguage)}`}</small>
-            </div>
-          </div>
-          {scenesLoading ? <div className="ai-drama-empty">Äang táº£i cáº£nhâ€¦</div> : !filteredScenes.length ? <div className="ai-drama-empty"><strong>ChÆ°a cÃ³ cáº£nh trong pháº¡m vi nÃ y</strong><span>Nháº­p JSON riÃªng cho tá»«ng táº­p á»Ÿ Tá»•ng quan project, sau Ä‘Ã³ quay láº¡i gÃ¡n nhÃ¢n váº­t thoáº¡i.</span><button type="button" className="secondary-button compact" onClick={() => openProjectSection("episodes")}>Má»Ÿ nháº­p táº­p</button></div> : <div className="ai-drama-scene-table" role="table" aria-label="Danh sÃ¡ch cáº£nh Phim AI">
-            <div className="ai-drama-scene-table-head" role="rowgroup"><div className="ai-drama-scene-table-row" role="row"><span role="columnheader">STT cáº£nh</span><span role="columnheader">Timeline Â· lá»i thoáº¡i tá»«ng nhÃ¢n váº­t</span><span role="columnheader">Prompt táº¡o áº£nh Â· áº£nh tham chiáº¿u</span><span role="columnheader">Prompt táº¡o video Â· áº£nh tham chiáº¿u</span></div></div>
-            <div className="ai-drama-scene-table-body" role="rowgroup">
-            {filteredScenes.map((scene) => {
-              const dialogueSegments = sceneDialogueSegments(scene, characterProfiles);
-              const missingLineVoice = dialogueSegments.some((segment) => {
-                const lineSpeaker = characterProfiles.find((character) => character.id === segment.speakerCharacterId);
-                return !(lineSpeaker?.voiceId || scene.ttsVoiceId || scene.tts_voice_id || project.voiceId);
-              });
-              const readyLineCount = dialogueSegments.filter((segment) => Boolean(segment.audio?.localPath)).length;
-              const readyTranslatedLineCount = dialogueSegments.filter((segment) => Boolean(segment.translatedAudio?.[dialogueTranslationLanguage]?.localPath)).length;
-              const sceneHasTts = readyLineCount > 0 || readyTranslatedLineCount > 0
-                || dialogueSegments.some((segment) => Object.values(segment.translatedAudio || {}).some((audio) => audio?.localPath))
-                || Boolean(sceneAudioRecord(scene).localPath);
-              const missingTranslation = dialogueSegments.some((segment) => !segment.translations?.[dialogueTranslationLanguage]?.trim());
-              const mediaKind = scene.media?.kind === "video" ? "CÃ³ video" : scene.media?.kind === "image" ? "CÃ³ áº£nh" : "Thiáº¿u media";
-              const hasReadyVideo = scene.media?.kind === "video" && scene.media.status === "ready";
-              const mediaJobActive = scene.mediaJob?.status === "queued" || scene.mediaJob?.status === "running";
-              const mediaBusy = generatingSceneId === scene.id || mediaJobActive;
-              const canRecoverProviderJob = scene.mediaJob?.status === "failed"
-                && (scene.mediaJob.kind === "image" && (scene.mediaJob.provider === "maivideo-image" || scene.mediaJob.provider === "flow-image")
-                  || scene.mediaJob.kind === "video" && (scene.mediaJob.provider === "maivideo-video" || scene.mediaJob.provider === "seedance" || scene.mediaJob.provider === "muse" || scene.mediaJob.provider === "higgsfield" || scene.mediaJob.provider === "flow"))
-                && (/MÃ¡y chá»§ Ä‘Ã£ khá»Ÿi Ä‘á»™ng láº¡i trÆ°á»›c khi (?:nháº­n Ä‘Æ°á»£c káº¿t quáº£|lÆ°u job_id|nháº­n Ä‘Æ°á»£c job_id|nháº­n Ä‘Æ°á»£c mÃ£ tÃ¡c vá»¥)/i.test(scene.mediaJob.error || "")
-                  || scene.mediaJob.provider === "seedance" && /Seedance chÆ°a xÃ¡c nháº­n task ID; yÃªu cáº§u cÃ³ thá»ƒ Ä‘Ã£ Ä‘Æ°á»£c nháº­n/i.test(scene.mediaJob.error || "")
-                  || scene.mediaJob.provider === "muse" && /Muse\.ai chÆ°a xÃ¡c nháº­n task ID; yÃªu cáº§u cÃ³ thá»ƒ Ä‘Ã£ Ä‘Æ°á»£c nháº­n/i.test(scene.mediaJob.error || "")
-                  || (scene.mediaJob.provider === "flow" || scene.mediaJob.provider === "flow-image") && /Flow chÆ°a xÃ¡c nháº­n job ID; yÃªu cáº§u cÃ³ thá»ƒ Ä‘Ã£ Ä‘Æ°á»£c nháº­n/i.test(scene.mediaJob.error || "")
-                  || scene.mediaJob.provider === "higgsfield" && /Higgsfield chÆ°a xÃ¡c nháº­n job ID; yÃªu cáº§u cÃ³ thá»ƒ Ä‘Ã£ Ä‘Æ°á»£c nháº­n/i.test(scene.mediaJob.error || "")
-                  || scene.mediaJob.provider !== "seedance" && scene.mediaJob.provider !== "muse" && scene.mediaJob.provider !== "flow" && scene.mediaJob.provider !== "flow-image" && scene.mediaJob.provider !== "higgsfield" && /MaiVideo chÆ°a xÃ¡c nháº­n job ID; yÃªu cáº§u cÃ³ thá»ƒ Ä‘Ã£ Ä‘Æ°á»£c nháº­n/i.test(scene.mediaJob.error || ""));
-              const providerJobRecoveryMessage = "á»¨ng dá»¥ng chÆ°a nháº­n Ä‘Æ°á»£c mÃ£ tÃ¡c vá»¥ tá»« MaiVideo, Higgsfield, Seedance, Muse.ai hoáº·c Flow nÃªn chÆ°a thá»ƒ tá»± kiá»ƒm tra tiáº¿n Ä‘á»™. KhÃ´ng gá»­i láº¡i Ä‘á»ƒ trÃ¡nh táº¡o job trÃ¹ng; cÃ¡c tÃ¡c vá»¥ cÃ³ mÃ£ Ä‘Ã£ lÆ°u sáº½ tá»± tiáº¿p tá»¥c sau khi khá»Ÿi Ä‘á»™ng láº¡i.";
-              const mediaJobLabel = scene.mediaJob?.status === "queued"
-                ? `Äang chá» táº¡o ${scene.mediaJob.kind === "image" ? "áº£nh" : "video"}â€¦`
-                : scene.mediaJob?.status === "running"
-                  ? `Äang táº¡o ${scene.mediaJob.kind === "image" ? "áº£nh" : "video"}â€¦`
-                  : scene.mediaJob?.status === "failed"
-                    ? `${scene.mediaJob.kind === "image" ? "áº¢nh" : "Video"} lá»—i: ${scene.mediaJob.error || "báº¥m nÃºt Ä‘á»ƒ thá»­ láº¡i"}`
-                    : "";
-              const expanded = expandedDramaSceneId === scene.id;
-              const needsDialogueExtraction = sceneNeedsDialogueExtraction(scene);
-              const sceneImagePrompt = sceneFieldValue(scene, "image_prompt", "imagePrompt");
-              const sceneVideoPrompt = sceneFieldValue(scene, "video_prompt", "videoPrompt");
-              const sceneDuration = sceneDurationSeconds(scene);
-              const sceneReferenceImage = sceneReferenceMedia(scene);
-              const sceneReferenceImageUrl = sceneReferenceImage?.kind === "image" && sceneReferenceImage.status === "ready"
-                ? scene.referenceImagePreviewUrl || (scene.media?.kind === "image" ? scene.previewUrl : "")
-                : "";
-              const scenePromptDraft = scenePromptDrafts[scene.id] || { imagePrompt: sceneImagePrompt, videoPrompt: sceneVideoPrompt };
-              const scenePromptsChanged = scenePromptDraft.imagePrompt !== sceneImagePrompt || scenePromptDraft.videoPrompt !== sceneVideoPrompt;
-              const hasUploadedVideo = scene.media?.kind === "video" && scene.media.provider === "upload";
-              const submittedVideoPrompt = hasUploadedVideo ? "" : String(
-                (scene.mediaJob?.kind === "video" ? scene.mediaJob.submittedPrompt : "")
-                  || (scene.media?.kind === "video" ? scene.media.query : "")
-                  || "",
-              ).trim();
-              const normalizedSceneVideoPrompt = normalizePromptForComparison(sanitizeDramaVisualPrompt(sceneVideoPrompt));
-              const apiPromptHasCurrentScenePrompt = Boolean(normalizedSceneVideoPrompt && normalizePromptForComparison(submittedVideoPrompt).includes(normalizedSceneVideoPrompt));
-              const videoPromptPreview = sceneVideoPromptPreviews[scene.id];
-              return <Fragment key={`${scene.chunkId}-${scene.id}`}>
-                  <div role="row" className={`ai-drama-scene-table-row ai-drama-scene-table-item ${expanded ? "active" : ""}`}>
-                  <span className="ai-drama-scene-table-cell ai-drama-scene-table-ident" role="cell"><strong>{sceneNumberLabel(scene)}</strong><small>{scene.chunkId} Â· {project.chunks.find((chunk) => chunk.id === scene.chunkId)?.title || ""}</small></span>
-                  <span className="ai-drama-scene-table-cell ai-drama-timeline-cell" role="cell">
-                    <strong>{sceneTimeRange(scene)} Â· {Math.round((Number(scene.end_sec ?? scene.endSec) - Number(scene.start_sec ?? scene.startSec)) || 15)}s</strong>
-                    {sceneTimelineRows(scene, dialogueSegments).map((row, index) => row.kind === "dialogue" && row.segment
-                      ? <span className="ai-drama-timeline-cue" key={row.segment.id}>
-                        <b>{row.startSec.toFixed(1)}â€“{row.endSec.toFixed(1)}s Â· {row.segment.speakerName || characterProfiles.find((item) => item.id === row.segment?.speakerCharacterId)?.name || "Narrator"}</b>
-                        <label className="ai-drama-timeline-edit"><span>Lá»i thoáº¡i Â· tá»± lÆ°u khi rá»i Ã´</span><textarea rows={1} maxLength={2000} aria-label={`Sá»­a lá»i thoáº¡i ${sceneNumberLabel(scene)} cÃ¢u ${index + 1}`} value={row.segment.text} disabled={ttsRunning || dialogueSavingSceneId !== ""} onChange={(event) => updateDialogueDraft(scene.id, (items) => items.map((item) => item.id === row.segment?.id ? { ...item, text: event.target.value, audio: undefined, translations: undefined, translatedAudio: undefined } : item))} onBlur={(event) => { if (event.relatedTarget && event.currentTarget.closest(".ai-drama-timeline-cue")?.contains(event.relatedTarget as Node)) return; void saveDialogueSegments(scene, false); }} /></label>
-                        <label className="ai-drama-timeline-edit"><span>{voiceLanguageLabel(dialogueTranslationLanguage)} Â· tá»± lÆ°u khi rá»i Ã´</span><textarea rows={1} maxLength={2000} aria-label={`Sá»­a báº£n dá»‹ch ${voiceLanguageLabel(dialogueTranslationLanguage)} ${sceneNumberLabel(scene)} cÃ¢u ${index + 1}`} placeholder="Nháº­p hoáº·c dá»‹ch lá»i thoáº¡iâ€¦" value={row.segment.translations?.[dialogueTranslationLanguage] || ""} disabled={ttsRunning || dialogueSavingSceneId !== ""} onChange={(event) => updateDialogueDraft(scene.id, (items) => items.map((item) => {
-                          if (item.id !== row.segment?.id) return item;
-                          const translations = { ...(item.translations || {}), [dialogueTranslationLanguage]: event.target.value };
-                          const translatedAudio = { ...(item.translatedAudio || {}) };
-                          delete translatedAudio[dialogueTranslationLanguage];
-                          return { ...item, translations, translatedAudio };
-                        }))} onBlur={(event) => { if (event.relatedTarget && event.currentTarget.closest(".ai-drama-timeline-cue")?.contains(event.relatedTarget as Node)) return; void saveDialogueSegments(scene, false); }} /></label>
-                      </span>
-                      : <span className="ai-drama-timeline-gap" key={`gap-${scene.id}-${index}`}><b>{row.startSec.toFixed(1)}â€“{row.endSec.toFixed(1)}s Â· KhÃ´ng thoáº¡i</b></span>)}
-                  </span>
-                  <div className="ai-drama-scene-table-cell ai-drama-image-cell" role="cell">
-                    {sceneReferenceImageUrl ? <button className="ai-drama-scene-image-preview" type="button" onClick={() => setSceneImagePreview(scene)} aria-label={`Xem áº£nh ${sceneNumberLabel(scene)}`} title={`Xem áº£nh ${sceneNumberLabel(scene)}`}><img src={`${sceneReferenceImageUrl}${sceneReferenceImageUrl.includes("?") ? "&" : "?"}thumbnail=1`} alt={`áº¢nh ${sceneNumberLabel(scene)}`} loading="lazy" decoding="async" /></button> : <span className="ai-drama-scene-thumb ai-drama-scene-thumb-empty"><Icon name="scene" size={16} /></span>}
-                    {sceneReferenceImage?.status === "ready" && sceneReferenceImage.stale === true && <small className="scene-stale-reference-note" role="status">áº¢nh Ä‘Ã£ cÅ© Â· video váº«n dÃ¹ng áº£nh nÃ y</small>}
-                    <small className="ai-drama-scene-image-prompt">{sceneImagePrompt || "ChÆ°a cÃ³ prompt táº¡o áº£nh"}</small>
-                    {mediaJobActive && scene.mediaJob?.kind === "image" && <small className="scene-media-job-status" role="status">{mediaJobLabel}</small>}
-                    {scene.mediaJob?.status === "failed" && scene.mediaJob.kind === "image" && <small className="scene-media-job-status error" role="status">{canRecoverProviderJob ? providerJobRecoveryMessage : mediaJobLabel}</small>}
-                    {renderDramaSceneReferencePicker(scene, "áº£nh")}
-                    <div className="ai-drama-icon-actions" onClick={(event) => event.stopPropagation()}>
-                      <button type="button" title="Táº¡o áº£nh cáº£nh" onClick={() => void generateSceneImage(scene)} disabled={mediaBusy || batchMediaBusy || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning || Boolean(generatingSceneId)}><Icon name="spark" size={14} /></button>
-                      <button type="button" title="Upload áº£nh hoáº·c video" onClick={() => chooseDramaSceneUpload(scene)} disabled={mediaBusy}><Icon name="upload" size={14} /></button>
-                      <button type="button" title={expanded ? "Thu gá»n thÃ´ng tin cáº£nh" : "Chá»‰nh áº£nh tham chiáº¿u"} onClick={() => { setSelectedSceneId(scene.id); setExpandedDramaSceneId((current) => current === scene.id ? "" : scene.id); }}><Icon name="image" size={14} /></button>
-                      {scene.media?.status === "ready" && <button type="button" title="XÃ³a media cáº£nh" onClick={async () => { await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(scene.id)}/media`, { method: "DELETE" }); await loadScenes(); }}><Icon name="trash" size={14} /></button>}
-                    </div>
-                  </div>
-                  <div className="ai-drama-scene-table-cell ai-drama-video-prompt-cell" role="cell">
-                    <strong>{sceneVideoPrompt || "ChÆ°a cÃ³ prompt video"}</strong>
-                    {scene.mediaJob?.status === "failed" && scene.mediaJob.kind === "video" && <small className="scene-media-job-status error" role="status">{canRecoverProviderJob ? providerJobRecoveryMessage : mediaJobLabel}</small>}
-                    <div className="ai-drama-video-dialogue-summary">
-                      <b>Lá»i thoáº¡i gá»­i kÃ¨m API Â· {dialogueSegments.length} lÆ°á»£t</b>
-                      {dialogueSegments.length ? dialogueSegments.map((segment) => {
-                        const speaker = segment.speakerName || characterProfiles.find((character) => character.id === segment.speakerCharacterId)?.name || "Narrator";
-                        const startSec = Math.max(0, segment.startMs / 1000);
-                        const endSec = Math.min(sceneDuration, Math.max(startSec + 0.1, (segment.endMs ?? (segment.startMs + estimateDialogueDurationMs(segment.text))) / 1000));
-                        return <span key={segment.id}><strong>{startSec.toFixed(1)}â€“{endSec.toFixed(1)}s Â· {speaker}:</strong> {segment.text}</span>;
-                      }) : <span>KhÃ´ng cÃ³ lÆ°á»£t thoáº¡i trong timeline; prompt API sáº½ chá»‰ hÆ°á»›ng dáº«n khÃ´ng phÃ¡t sinh lá»i thoáº¡i.</span>}
-                    </div>
-                    <div className="ai-drama-api-video-prompt">
-                      <div className="ai-drama-api-video-prompt-head">
-                        <details className="ai-drama-api-video-prompt-details" onToggle={(event) => {
-                          if (!event.currentTarget.open) return;
-                          if (scenePromptsChanged) {
-                            sceneVideoPromptPreviewRequestIds.current[scene.id] = (sceneVideoPromptPreviewRequestIds.current[scene.id] || 0) + 1;
-                            setSceneVideoPromptPreviews((current) => ({ ...current, [scene.id]: { error: "Prompt cáº£nh Ä‘ang cÃ³ thay Ä‘á»•i chÆ°a lÆ°u. HÃ£y báº¥m â€˜LÆ°u prompt cáº£nhâ€™ rá»“i má»Ÿ láº¡i pháº§n xem trÆ°á»›c." } }));
-                            return;
-                          }
-                          void loadSceneVideoPromptPreview(scene, videoGenerationSettingsForScene(scene));
-                        }}>
-                          <summary>Xem prompt gá»­i API{videoPromptPreview?.result ? ` Â· ${videoPromptPreview.result.promptLength.toLocaleString("vi-VN")} kÃ½ tá»±` : ""}</summary>
-                          {videoPromptPreview?.loading && <small role="status">Äang dá»±ng prompt theo cáº¥u hÃ¬nh vÃ  ná»™i dung Ä‘Ã£ lÆ°uâ€¦ khÃ´ng gá»­i job táº¡o video.</small>}
-                          {videoPromptPreview?.error && <small className="scene-media-job-status error" role="alert">{videoPromptPreview.error}</small>}
-                          {videoPromptPreview?.result && <>
-                            <small className="ai-drama-video-preview-meta">Báº£n xem trÆ°á»›c Â· {videoPromptPreview.result.provider} Â· {videoPromptPreview.result.model} Â· {videoPromptPreview.result.promptLength.toLocaleString("vi-VN")} kÃ½ tá»± Â· {videoPromptPreview.result.dialogueCueCount} lÆ°á»£t thoáº¡i{videoPromptPreview.result.dialogueCueCount > 0 && !videoPromptPreview.result.dialogueIncluded ? " Â· cáº£nh bÃ¡o: cue thoáº¡i chÆ°a náº±m trong payload do giá»›i háº¡n prompt" : ""}</small>
-                            <pre>{videoPromptPreview.result.prompt}</pre>
-                            {videoPromptPreview.result.compaction && <details className="video-prompt-compaction">
-                              <summary>Tá»«/cÃ¢u Ä‘Ã£ rÃºt gá»n vÃ  Ä‘á» xuáº¥t xoÃ¡ Â· Ã¡p dá»¥ng má»i dá»± Ã¡n</summary>
-                              <p>Tá»± Ä‘á»™ng Ã¡p dá»¥ng khi dá»±ng prompt gá»­i API theo giá»›i háº¡n cá»§a model Ä‘ang chá»n: {videoPromptPreview.result.compaction.limit.toLocaleString("vi-VN")} kÃ½ tá»±. Náº¿u vÆ°á»£t giá»›i háº¡n, há»‡ thá»‘ng cáº¯t pháº§n cuá»‘i prompt; prompt cáº£nh Ä‘Ã£ lÆ°u khÃ´ng bá»‹ sá»­a.</p>
-                              <strong>ÄÃ£ xoÃ¡/thay trong máº«u chung</strong>
-                              <ul>{videoPromptPreview.result.compaction.templateEdits.map((edit, index) => <li key={index}><del>{edit.before}</del><br /><span>Thay báº±ng: {edit.after}</span><br /><small>{edit.reason}</small></li>)}</ul>
-                              <strong>Thay Ä‘á»•i thá»±c táº¿ trong prompt cáº£nh nÃ y</strong>
-                              {videoPromptPreview.result.compaction.sceneEdits?.length ? videoPromptPreview.result.compaction.sceneEdits.map((edit, index) => <details key={index}><summary>{edit.reason}</summary><p>TrÆ°á»›c:</p><pre>{edit.before}</pre><p>Sau:</p><pre>{edit.after}</pre></details>) : <p>KhÃ´ng xoÃ¡/sá»­a mÃ´ táº£ cáº£nh; chá»‰ ghÃ©p hÆ°á»›ng dáº«n chung.</p>}
-                              <strong>NguyÃªn táº¯c Ä‘ang Ã¡p dá»¥ng</strong>
-                              <ul>{videoPromptPreview.result.compaction.recommendations.map((note) => <li key={note}>{note}</li>)}</ul>
-                              <strong>Báº£o toÃ n ná»™i dung</strong>
-                              {videoPromptPreview.result.compaction.omittedSections.length ? <>{<p role="status">CÃ¡c pháº§n dÆ°á»›i khÃ´ng cÃ³ trong payload; hÃ£y kiá»ƒm tra vÃ¬ cÃ³ thá»ƒ thiáº¿u hÆ°á»›ng dáº«n phong cÃ¡ch/bá»‘i cáº£nh.</p>}<ul>{videoPromptPreview.result.compaction.omittedSections.map((text, index) => <li key={index}><del>{text}</del></li>)}</ul></> : <p>KhÃ´ng cÃ³ pháº§n nÃ o bá»‹ bá» ngoÃ i viá»‡c cáº¯t kÃ½ tá»± cuá»‘i náº¿u prompt vÆ°á»£t giá»›i háº¡n cá»§a model.</p>}
-                            </details>}
-
-                          </>}
-                        </details>
-                        <div className="ai-drama-api-video-copy-actions">
-                          <button type="button" className="secondary-button compact ai-drama-api-video-copy" title={scenePromptsChanged ? "LÆ°u prompt cáº£nh trÆ°á»›c khi sao chÃ©p" : "Sao chÃ©p prompt gá»­i API"} aria-label={`Copy prompt gá»­i API ${sceneNumberLabel(scene)}`} disabled={scenePromptsChanged || videoPromptPreview?.loading || copyingSceneVideoPromptId === scene.id || copyingSceneVideoReferencesId === scene.id} onClick={() => void copySceneVideoPrompt(scene, videoGenerationSettingsForScene(scene))}>
-                            <Icon name="copy" size={12} />{copyingSceneVideoPromptId === scene.id ? "Äang copyâ€¦" : copiedSceneVideoPromptId === scene.id ? "ÄÃ£ copy" : "Copy prompt"}
-                          </button>
-                          <button type="button" className="secondary-button compact ai-drama-api-video-copy" title="Copy tá»«ng áº£nh: chuyá»ƒn sang Seedance nháº¥n âŒ˜V/Ctrl+V, rá»“i quay láº¡i báº¥m nÃºt Ä‘á»ƒ copy áº£nh tiáº¿p theo." aria-label={`Copy áº£nh tham chiáº¿u video ${sceneNumberLabel(scene)}`} disabled={videoPromptPreview?.loading || copyingSceneVideoPromptId === scene.id || copyingSceneVideoReferencesId === scene.id} onPointerEnter={() => warmSceneVideoReferenceImages(scene, videoGenerationSettingsForScene(scene))} onFocus={() => warmSceneVideoReferenceImages(scene, videoGenerationSettingsForScene(scene))} onClick={() => void copySceneVideoReferenceImages(scene, videoGenerationSettingsForScene(scene))}>
-                            <Icon name="image" size={12} />{copyingSceneVideoReferencesId === scene.id ? "Äang copyâ€¦" : copiedSceneVideoReferencesId === scene.id ? `ÄÃ£ copy ${sceneVideoReferenceCopyProgress[scene.id]?.lastCopiedIndex || 1}/${sceneVideoReferenceCopyProgress[scene.id]?.total || "áº£nh"}` : preparedSceneVideoReferencesId === scene.id ? `Copy áº£nh 1/${sceneVideoReferenceCopyProgress[scene.id]?.total || "â€¦"}` : sceneVideoReferenceCopyProgress[scene.id]?.complete ? `Copy láº¡i ${sceneVideoReferenceCopyProgress[scene.id].total} áº£nh` : sceneVideoReferenceCopyProgress[scene.id] ? `Copy áº£nh ${sceneVideoReferenceCopyProgress[scene.id].nextIndex + 1}/${sceneVideoReferenceCopyProgress[scene.id].total}` : "Copy áº£nh"}
-                          </button>
-                        </div>
-                      </div>
-                      {sceneVideoReferenceCopyNotice?.sceneId === scene.id && <small className="scene-media-job-status" role="status">{sceneVideoReferenceCopyNotice.text}</small>}
-                    </div>
-                    {submittedVideoPrompt && <details className="ai-drama-api-video-prompt">
-                      <summary>Prompt cá»§a láº§n gá»­i gáº§n nháº¥t Â· {submittedVideoPrompt.length.toLocaleString("vi-VN")} kÃ½ tá»±</summary>
-                      {!apiPromptHasCurrentScenePrompt && <small className="scene-stale-reference-note" role="status">Prompt láº§n trÆ°á»›c khÃ¡c prompt cáº£nh Ä‘ang hiá»ƒn thá»‹; hÃ£y má»Ÿ pháº§n xem trÆ°á»›c Ä‘á»ƒ kiá»ƒm tra payload hiá»‡n táº¡i.</small>}
-                      <pre>{submittedVideoPrompt}</pre>
-                    </details>}
-                    {scene.media?.kind === "video" && scene.media.status === "ready" && scene.previewUrl && <div className="ai-drama-scene-video-preview">
-                      <div className="ai-drama-scene-video-links">
-                        <a href={scene.previewUrl} target="_blank" rel="noreferrer">Má»Ÿ video â†—</a>
-                        <a href={scene.previewUrl} download={`${sceneNumberLabel(scene)}.mp4`}>Táº£i video</a>
-                        <details>
-                          <summary>Xem trÆ°á»›c táº¡i Ä‘Ã¢y Â· {sceneDuration}s</summary>
-                          <video src={scene.previewUrl} controls preload="metadata" aria-label={`Video ${sceneNumberLabel(scene)}`}>TrÃ¬nh duyá»‡t khÃ´ng há»— trá»£ phÃ¡t video.</video>
-                        </details>
-                      </div>
-                    </div>}
-                    <div className="ai-drama-video-reference-row" onClick={(event) => event.stopPropagation()}>
-                      {renderDramaSceneReferencePicker(scene, "video")}
-                      <div className="ai-drama-scene-media-actions">
-                        <button type="button" className="primary-button compact" title={mediaJobActive && scene.mediaJob?.kind === "video" ? mediaJobLabel : hasReadyVideo ? "Táº¡o láº¡i video Ä‘Ã£ hoÃ n thÃ nh" : "Táº¡o video"} onClick={() => void generateSceneVideo(scene)} disabled={batchSeedanceHiddenSelected || mediaBusy || batchMediaBusy || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning || Boolean(dialogueTtsBatchProgress) || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress)}><Icon name="play" size={13} />{mediaJobActive && scene.mediaJob?.kind === "video" ? scene.mediaJob.status === "queued" ? " Äang chá»â€¦" : "Äang táº¡oâ€¦" : hasReadyVideo ? " Táº¡o láº¡i" : " Táº¡o video"}</button>
-                        <button type="button" className="secondary-button compact" title={missingTranslation ? `Dá»‹ch thoáº¡i sang ${voiceLanguageLabel(dialogueTranslationLanguage)} trÆ°á»›c` : `Táº¡o voice ${voiceLanguageLabel(dialogueTranslationLanguage)} cho cáº£nh`} onClick={() => void generateSceneTts(scene, Boolean(dialogueSegments.length && readyTranslatedLineCount === dialogueSegments.length), dialogueTranslationLanguage)} disabled={!dialogueSegments.length || missingTranslation || missingLineVoice || ttsRunning || renderRunning || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || Boolean(generatingSceneId) || Boolean(dialogueTtsBatchProgress) || dialogueSavingSceneId === scene.id || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress)}>
-                          {ttsRunning && ttsSceneId === scene.id ? "Äang táº¡o voiceâ€¦" : readyTranslatedLineCount === dialogueSegments.length && dialogueSegments.length ? "Táº¡o láº¡i voice" : "Táº¡o voice"}
-                        </button>
-                        <button type="button" className="secondary-button compact" title="Upload video MP4 cho cáº£nh; file tá»« 50 MiB sáº½ tá»± chia thÃ nh cÃ¡c pháº§n 50 MiB" onClick={() => chooseDramaSceneUpload(scene, true)} disabled={mediaBusy || batchMediaBusy || videoQueueRunning || renderRunning || Boolean(generatingSceneId)}><Icon name="upload" size={13} /> {sceneUploadProgress?.sceneId === scene.id ? sceneUploadProgress.text : "Upload video"}</button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                {expanded && <div className="ai-drama-scene-expanded-row" role="row"><div className="ai-drama-scene-expanded" role="cell" aria-colspan={4}>
-                  <div className="ai-drama-scene-expanded-heading"><div><span>{sceneNumberLabel(scene)} Â· {scene.chunkId} Â· {sceneDuration}s</span><h4>Prompt vÃ  timeline cáº£nh</h4></div><span className="ai-drama-media-state">{mediaBusy ? mediaJobLabel || `Äang xáº¿p ${generatingSceneMediaKind === "image" ? "áº£nh" : "video"}â€¦` : mediaKind}</span></div>
-                  <div className="ai-drama-scene-actions ai-drama-scene-expanded-actions">
-                    {needsDialogueExtraction && <button className="secondary-button compact" type="button" onClick={() => void extractSceneDialogue(scene)} disabled={Boolean(dialogueExtractingSceneId) || Boolean(dialogueExtractBatchProgress) || ttsRunning || renderRunning || isRunning || Boolean(runningScriptChunkId)}>{dialogueExtractingSceneId === scene.id ? "AI Ä‘ang hoÃ n thiá»‡nâ€¦" : "AI tÃ¡ch thoáº¡i & bá»• sung chi tiáº¿t"}</button>}
-                    <button className="secondary-button compact" type="button" onClick={() => void generateSceneImage(scene)} disabled={mediaBusy || batchMediaBusy || sceneMediaSettingsSaving || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning}>{mediaBusy && scene.mediaJob?.kind === "image" ? scene.mediaJob.status === "queued" ? "Äang chá» áº£nhâ€¦" : "Äang táº¡o áº£nhâ€¦" : generatingSceneId === scene.id && generatingSceneMediaKind === "image" ? "Äang xáº¿p áº£nhâ€¦" : "Táº¡o áº£nh"}</button>
-                    <button className="primary-button compact" type="button" onClick={() => void generateSceneVideo(scene)} disabled={batchSeedanceHiddenSelected || mediaBusy || batchMediaBusy || sceneMediaSettingsSaving || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning}>{mediaBusy && scene.mediaJob?.kind === "video" ? scene.mediaJob.status === "queued" ? "Äang chá» videoâ€¦" : "Äang táº¡o videoâ€¦" : generatingSceneId === scene.id && generatingSceneMediaKind === "video" ? "Äang xáº¿p videoâ€¦" : hasReadyVideo ? "Táº¡o láº¡i video" : "Táº¡o video"}</button>
-                  </div>
-                  <section className="ai-drama-prompt-editor" aria-label={`Prompt táº¡o media cho ${sceneNumberLabel(scene)}`}>
-                    <div className="ai-drama-prompt-editor-heading"><strong>Prompt chi tiáº¿t cho cáº£nh</strong><span>áº¢nh Â· video Â· {sceneDuration} giÃ¢y</span></div>
-                    <label><span>Prompt táº¡o áº£nh</span><textarea value={scenePromptDraft.imagePrompt} maxLength={9000} rows={6} onChange={(event) => updateScenePromptDraft(scene, "imagePrompt", event.target.value)} aria-label={`Prompt táº¡o áº£nh ${sceneNumberLabel(scene)}`} placeholder="Chá»§ thá»ƒ, hÃ nh Ä‘á»™ng, cáº£m xÃºc, bá»‘ cá»¥c, gÃ³c mÃ¡y, Ã¡nh sÃ¡ng, mood vÃ  styleâ€¦" /></label>
-                    <label><span>Prompt táº¡o video theo timeline</span><textarea value={scenePromptDraft.videoPrompt} maxLength={4500} rows={9} onChange={(event) => updateScenePromptDraft(scene, "videoPrompt", event.target.value)} aria-label={`Prompt táº¡o video ${sceneNumberLabel(scene)}`} placeholder="Chia timecode tá»« 0 Ä‘áº¿n háº¿t cáº£nh; mÃ´ táº£ camera, blocking, acting vÃ  gáº¯n nguyÃªn vÄƒn thoáº¡i Ä‘Ãºng nhÃ¢n váº­tâ€¦" /></label>
-                    <div className="ai-drama-prompt-editor-footer"><small>{scenePromptDraft.videoPrompt.length.toLocaleString("vi-VN")} / 4.500 kÃ½ tá»±</small><button className="secondary-button compact" type="button" onClick={() => void saveScenePrompts(scene)} disabled={!scenePromptsChanged || Boolean(scenePromptSavingId) || renderRunning || videoQueueRunning || batchMediaBusy || Boolean(generatingSceneId) || !scenePromptDraft.imagePrompt.trim() || !scenePromptDraft.videoPrompt.trim()}>{scenePromptSavingId === scene.id ? "Äang lÆ°uâ€¦" : "LÆ°u prompt cáº£nh"}</button></div>
-                  </section>
-                  <details className="ai-drama-dialogue-editor" open>
-                    <summary><strong>Timeline thoáº¡i Â· {dialogueSegments.length} lÆ°á»£t</strong><span>{needsDialogueExtraction ? "ChÆ°a tÃ¡ch tá»« ká»‹ch báº£n cÅ©" : "Theo timeline cáº£nh"} Â· 0â€“{sceneDurationSeconds(scene)} giÃ¢y</span></summary>
-                    <div className="ai-drama-dialogue-content">
-                      <div className="ai-drama-timeline-overview" aria-label="PhÃ¢n bá»• thá»i gian cáº£nh">
-                        {sceneTimelineRows(scene, dialogueSegments).map((row, index) => row.kind === "dialogue" && row.segment
-                          ? <span className="dialogue" key={`overview-${row.segment.id}`} style={{ flexGrow: Math.max(1, row.endSec - row.startSec) }}><b>{row.startSec.toFixed(1)}â€“{row.endSec.toFixed(1)}s</b><small>{row.segment.speakerName || characterProfiles.find((item) => item.id === row.segment?.speakerCharacterId)?.name || "Narrator"}</small></span>
-                          : <span className="gap" key={`overview-gap-${scene.id}-${index}`} style={{ flexGrow: Math.max(1, row.endSec - row.startSec) }}><b>{row.startSec.toFixed(1)}â€“{row.endSec.toFixed(1)}s</b><small>KhÃ´ng thoáº¡i</small></span>)}
-                      </div>
-                      {dialogueSegments.length ? <div className="ai-drama-dialogue-list">
-                        {dialogueSegments.map((segment, index) => {
-                          const durationMs = Number(segment.audio?.durationMs) || 0;
-                          const targetDurationMs = segment.endMs === undefined ? undefined : segment.endMs - segment.startMs;
-                          const overrunMs = targetDurationMs === undefined || !durationMs ? 0 : Math.max(0, durationMs - targetDurationMs - 150);
-                          return <article className="ai-drama-dialogue-line" key={segment.id}>
-                            <div className="ai-drama-dialogue-line-heading"><strong>CÃ¢u {index + 1}</strong><span>{secondsInput(segment.startMs)}â€“{secondsInput(segment.endMs ?? segment.startMs + estimateDialogueDurationMs(segment.text))} giÃ¢y</span><button type="button" className="text-button" onClick={() => updateDialogueDraft(scene.id, (items) => items.filter((item) => item.id !== segment.id))} disabled={ttsRunning || dialogueSavingSceneId === scene.id}>XÃ³a</button></div>
-                            <div className="ai-drama-dialogue-line-fields">
-                              <label>NhÃ¢n váº­t<select value={segment.speakerCharacterId || ""} onChange={(event) => {
-                                const selected = characterProfiles.find((character) => character.id === event.target.value);
-                                updateDialogueDraft(scene.id, (items) => items.map((item) => item.id === segment.id ? { ...item, speakerCharacterId: selected?.id || undefined, speakerName: selected?.name || "NARRATOR", audio: undefined, translatedAudio: undefined } : item));
-                              }} disabled={ttsRunning || dialogueSavingSceneId === scene.id}>
-                                <option value="">Narrator / voice máº·c Ä‘á»‹nh</option>
-                                {characterProfiles.map((character) => <option key={character.id} value={character.id}>{character.name}</option>)}
-                              </select></label>
-                              <label>Báº¯t Ä‘áº§u (giÃ¢y)<input type="number" min="0" max={Math.max(0, sceneDurationSeconds(scene) - 0.1)} step="0.1" value={secondsInput(segment.startMs)} onChange={(event) => updateDialogueDraft(scene.id, (items) => items.map((item) => item.id === segment.id ? { ...item, startMs: Math.round(Math.max(0, Math.min(sceneDurationSeconds(scene) * 1000 - 100, (Number(event.target.value) || 0) * 1000))) } : item))} disabled={ttsRunning || dialogueSavingSceneId === scene.id} /></label>
-                              <label>Káº¿t thÃºc (giÃ¢y)<input type="number" min={secondsInput(segment.startMs + 100)} max={sceneDurationSeconds(scene)} step="0.1" placeholder="Theo audio" value={secondsInput(segment.endMs)} onChange={(event) => updateDialogueDraft(scene.id, (items) => items.map((item) => {
-                                if (item.id !== segment.id) return item;
-                                const endMs = event.target.value === "" ? undefined : Math.round(Math.max(item.startMs + 100, Math.min(sceneDurationSeconds(scene) * 1000, Number(event.target.value) * 1000)));
-                                if (endMs === undefined) {
-                                  const rest = { ...item };
-                                  delete rest.endMs;
-                                  return rest;
-                                }
-                                return { ...item, endMs };
-                              }))} disabled={ttsRunning || dialogueSavingSceneId === scene.id} /></label>
-                            </div>
-                            <textarea value={segment.text} rows={2} maxLength={2000} aria-label={`Lá»i thoáº¡i cÃ¢u ${index + 1}`} onChange={(event) => updateDialogueDraft(scene.id, (items) => items.map((item) => {
-                              if (item.id !== segment.id) return item;
-                              return { ...item, text: event.target.value, audio: undefined, translations: undefined, translatedAudio: undefined };
-                            }))} disabled={ttsRunning || dialogueSavingSceneId === scene.id} />
-                            <div className="ai-drama-dialogue-translation">
-                              <label><span>{voiceLanguageLabel(dialogueTranslationLanguage)}</span><textarea value={segment.translations?.[dialogueTranslationLanguage] || ""} rows={2} maxLength={2000} aria-label={`Báº£n dá»‹ch ${voiceLanguageLabel(dialogueTranslationLanguage)} cÃ¢u ${index + 1}`} placeholder="Báº£n dá»‹ch lá»i thoáº¡i sáº½ hiá»‡n á»Ÿ Ä‘Ã¢y" onChange={(event) => updateDialogueDraft(scene.id, (items) => items.map((item) => {
-                                if (item.id !== segment.id) return item;
-                                const translations = { ...(item.translations || {}), [dialogueTranslationLanguage]: event.target.value };
-                                const translatedAudio = { ...(item.translatedAudio || {}) };
-                                delete translatedAudio[dialogueTranslationLanguage];
-                                return { ...item, translations, translatedAudio };
-                              }))} disabled={ttsRunning || dialogueSavingSceneId === scene.id} /></label>
-                              {segment.translatedAudio?.[dialogueTranslationLanguage]?.localPath && <audio controls preload="none" src={`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(scene.id)}/tts?segmentId=${encodeURIComponent(segment.id)}&language=${encodeURIComponent(dialogueTranslationLanguage)}`}>TrÃ¬nh duyá»‡t khÃ´ng há»— trá»£ phÃ¡t audio.</audio>}
-                            </div>
-                            {overrunMs > 0 && <small className="ai-drama-dialogue-overrun">Audio dÃ i hÆ¡n khoáº£ng timecode {(overrunMs / 1000).toFixed(1)} giÃ¢y; hÃ£y ná»›i cue hoáº·c dá»i cÃ¢u sau.</small>}
-                          </article>;
-                        })}
-                      </div> : <div className="ai-drama-empty compact"><strong>Cáº£nh chÆ°a cÃ³ cÃ¢u thoáº¡i</strong><span>ThÃªm cÃ¢u thá»§ cÃ´ng hoáº·c dÃ¡n SRT theo timecode cá»§a riÃªng cáº£nh nÃ y.</span></div>}
-                      <div className="ai-drama-dialogue-actions">
-                        <button type="button" className="secondary-button compact" onClick={() => void translateSceneDialogue(scene)} disabled={!dialogueSegments.length || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress) || Boolean(dialogueTtsBatchProgress) || ttsRunning || renderRunning || dialogueSavingSceneId === scene.id}>{dialogueTranslationSceneId === scene.id ? "Äang dá»‹ch cáº£nhâ€¦" : `Dá»‹ch cáº£nh sang ${voiceLanguageLabel(dialogueTranslationLanguage)}`}</button>
-                        <button type="button" className="secondary-button compact" onClick={() => addDialogueSegment(scene)} disabled={ttsRunning || dialogueSavingSceneId === scene.id}>ThÃªm cÃ¢u</button>
-                        <button type="button" className="secondary-button compact" onClick={() => void saveDialogueSegments(scene)} disabled={ttsRunning || dialogueSavingSceneId === scene.id}>{dialogueSavingSceneId === scene.id ? "Äang lÆ°uâ€¦" : "LÆ°u timeline"}</button>
-                      </div>
-                      <details className="ai-drama-timeline-optional">
-                        <summary>Voice & TTS tÃ¹y chá»n<span>{readyLineCount}/{dialogueSegments.length} cÃ¢u cÃ³ audio</span></summary>
-                        <div>
-                          <button type="button" className="primary-button compact" onClick={() => void generateSceneTts(scene, dialogueSegments.length > 0 && readyLineCount === dialogueSegments.length)} disabled={!dialogueSegments.length || missingLineVoice || ttsRunning || renderRunning || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || Boolean(dialogueTtsBatchProgress) || Boolean(generatingSceneId) || dialogueSavingSceneId === scene.id}>{ttsRunning && ttsSceneId === scene.id ? "Äang táº¡o audioâ€¦" : readyLineCount === dialogueSegments.length && dialogueSegments.length ? "Táº¡o láº¡i audio" : `Táº¡o TTS Â· ${dialogueSegments.length - readyLineCount} cÃ¢u`}</button>
-                          {sceneHasTts && <button type="button" className="secondary-button compact episode-delete-tts-button" onClick={() => void deleteChunkTts(scene.chunkId, project.chunks.findIndex((chunk) => chunk.id === scene.chunkId) + 1, scene.id)} disabled={Boolean(deletingTtsChunkId) || ttsRunning || renderRunning || isRunning || Boolean(runningScriptChunkId) || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || Boolean(generatingSceneId) || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress) || Boolean(dialogueTtsBatchProgress) || Boolean(dialogueSavingSceneId)}>{deletingTtsChunkId === scene.chunkId ? "Äang xoÃ¡â€¦" : "XoÃ¡ TTS cáº£nh"}</button>}
-                          {missingLineVoice && <small>GÃ¡n voice trong há»“ sÆ¡ nhÃ¢n váº­t hoáº·c dÃ¹ng voice máº·c Ä‘á»‹nh cá»§a project.</small>}
-                          {dialogueSegments.filter((segment) => segment.audio?.localPath).map((segment) => <label key={`audio-${segment.id}`}><span>{segment.speakerName || characterProfiles.find((character) => character.id === segment.speakerCharacterId)?.name || "Narrator"} Â· {segment.text}</span><audio controls preload="none" src={`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(scene.id)}/tts?segmentId=${encodeURIComponent(segment.id)}`}>TrÃ¬nh duyá»‡t khÃ´ng há»— trá»£ phÃ¡t audio.</audio></label>)}
-                        </div>
-                      </details>
-                      <details className="ai-drama-srt-import">
-                        <summary>DÃ¡n SRT cho cáº£nh nÃ y</summary>
-                        <textarea value={dialogueSrtDrafts[scene.id] || ""} onChange={(event) => setDialogueSrtDrafts((current) => ({ ...current, [scene.id]: event.target.value }))} rows={5} placeholder={"1\n00:00:02,400 --> 00:00:04,100\n[An] Äá»«ng Ä‘i!\n\n2\n00:00:05,100 --> 00:00:07,300\n[BÃ¬nh] Anh pháº£i nÃ³i tháº­t."} aria-label={`DÃ¡n SRT cho ${scene.id}`} />
-                        <small>Timecode tÃ­nh tá»« Ä‘áº§u cáº£nh, trong 0â€“{sceneDurationSeconds(scene)} giÃ¢y. CÃ³ thá»ƒ ghi [TÃªn nhÃ¢n váº­t] trÆ°á»›c lá»i thoáº¡i.</small>
-                        <button type="button" className="secondary-button compact" onClick={() => importDialogueSrt(scene)} disabled={ttsRunning || dialogueSavingSceneId === scene.id}>Náº¡p cue SRT vÃ o timeline</button>
-                      </details>
-                    </div>
-                  </details>
-                </div></div>
-                }
-              </Fragment>;
-            })}
-            </div>
-          </div>}
-        </section>}
-      </section>
-  ) : null;
-
-  return (
-    <div className="project-dashboard">
-      <section className="page-heading">
-        <div><div className="eyebrow"><span className="eyebrow-dot" />PROJECT / {preset.shortLabel.toUpperCase()}</div><h1>{project.title}</h1></div>
-        <div className="heading-actions">
-          <StatusPill tone={project.status === "draft" ? "gray" : project.status === "needs_review" ? "red" : "orange"}>{project.status === "draft" ? "Báº£n nhÃ¡p" : project.status === "needs_review" ? "Cáº§n review" : "Äang xá»­ lÃ½"}</StatusPill>
-          <Link className="secondary-button" href={`/projects/${project.slug}/settings`}><Icon name="sliders" size={15} />TÃ¹y chá»‰nh</Link>
-          <button className="secondary-button" type="button" onClick={() => setShowExtendEpisodes(true)} disabled={episodeExtensionBusy || project.scriptMode === "manual"} title={project.scriptMode === "manual" ? "ChÆ°a há»— trá»£ thÃªm khung táº­p cho project ká»‹ch báº£n thá»§ cÃ´ng." : episodeExtensionBusy ? "Äá»£i tÃ¡c vá»¥ hiá»‡n táº¡i hoÃ n táº¥t rá»“i thÃªm táº­p." : "ThÃªm khung táº­p trá»‘ng Ä‘á»ƒ nháº­p JSON"}><Icon name="plus" size={15} />ThÃªm táº­p trá»‘ng</button>
-        </div>
-      </section>
-
-      <>
-
-      <nav className="project-step-nav" aria-label="CÃ¡c bÆ°á»›c trong dá»± Ã¡n">
-        <a href="#source"><span>01</span>Nguá»“n</a>
-        <a href="#episodes"><span>02</span>Táº­p & ká»‹ch báº£n</a>
-        <a href="#scenes"><span>03</span>{project.presetId === "ai-drama" ? "Phim AI" : "Cáº£nh & media"}</a>
-        {hasEpisodeScripts && <a href="#publishing-package"><span>04</span>Title & thumbnail</a>}
-        <a href="#export"><span>{hasEpisodeScripts ? "05" : "04"}</span>QA & xuáº¥t</a>
-      </nav>
-      <section className="project-meta-row">
-        <div className="meta-chip"><Icon name="clock" size={16} /><span>{project.durationMinutes} phÃºt</span></div>
-        <div className="meta-chip"><Icon name="stack" size={16} /><span>{project.totalChunks} táº­p</span></div>
-        <div className="meta-chip"><Icon name="play" size={16} /><span>NgÃ´n ngá»¯ video Â· {voiceLanguageLabel(project.language)}</span></div>
-        <div className="meta-chip"><Icon name="users" size={16} /><span>{project.voiceName || "OmniVoice máº·c Ä‘á»‹nh"} Â· há»“ sÆ¡ {voiceLanguageLabel(project.voiceLanguage || project.language)}</span></div>
-      </section>
-
-      <section className="hero-grid" id="source"><div className="progress-card panel-card"><div className="card-heading"><div><div className="section-kicker">TIáº¾N Äá»˜</div><h2>Tiáº¿n Ä‘á»™ sáº£n xuáº¥t</h2></div><StatusPill tone={project.completedScenes >= project.totalScenes ? "green" : "orange"}>{progress}%</StatusPill></div><div className="progress-main"><div className="progress-ring" style={{ background: `conic-gradient(#766ce8 0 ${progress}%, #efeff8 ${progress}% 100%)` }}><div className="ring-inner"><strong>{progress}<span>%</span></strong><small>hoÃ n táº¥t</small></div></div><div className="progress-copy"><div className="progress-title">{project.completedScenes} <span>/ {project.totalScenes} cáº£nh</span></div><div className="progress-bar large"><span style={{ width: `${progress}%` }} /></div><div className="progress-foot"><span><span className="green-check"><Icon name="check" size={13} /></span>{project.completedChunks} / {project.totalChunks} gÃ³i Ä‘Ã£ xong</span><span>AI cáº§n sá»­a: {project.aiReviewCount || sceneStats.ai_needs_changes} Â· NgÆ°á»i dÃ¹ng cáº§n xá»­ lÃ½: {project.reviewCount}</span></div></div></div></div><div className="source-card panel-card"><div className="card-heading"><div><div className="section-kicker">NGUá»’N</div><h2>{project.scriptMode === "manual" ? "Ká»‹ch báº£n Ä‘áº§u vÃ o" : "Nguá»“n Ä‘áº§u vÃ o"}</h2></div><span className="source-badge">{project.language.toUpperCase()}</span></div><label className="input-label">Video URL</label><div className="url-input-wrap"><Icon name="link" size={16} /><input value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} aria-label="Video URL" /><button onClick={saveSource}><Icon name="save" size={15} /></button></div><label className="input-label compact-label">{project.scriptMode === "manual" ? "Ká»‹ch báº£n thá»§ cÃ´ng" : "Transcript / brief"}</label><textarea className="source-textarea" value={sourceText} onChange={(event) => setSourceText(event.target.value)} placeholder={project.scriptMode === "manual" ? "Nháº­p ká»‹ch báº£nâ€¦" : "Nháº­p transcript hoáº·c briefâ€¦"} /><div className="source-foot"><span><span className="source-status-dot" />{project.sourceStatus === "ready" ? project.scriptMode === "manual" ? "Ká»‹ch báº£n Ä‘Ã£ lÆ°u" : "Transcript Ä‘Ã£ sáºµn sÃ ng" : project.continuityContext ? `Continuity Ä‘Ã£ khÃ³a Ä‘áº¿n ${project.continuityContext.chunkId}` : "Continuity sáº½ Ä‘Æ°á»£c táº¡o sau chunk Ä‘áº§u tiÃªn"}</span><button onClick={saveSource}>{sourceUrl.trim() && !sourceText.trim() && project.scriptMode !== "manual" ? "LÆ°u & láº¥y transcript" : project.scriptMode === "manual" ? "LÆ°u ká»‹ch báº£n" : "LÆ°u nguá»“n"} <Icon name="arrow" size={13} /></button></div><div className="provider-note"><span className="provider-mark">O</span><span>{project.scriptMode === "manual" ? "Script Studio Â· phÃ¢n tÃ­ch tÃ¹y chá»n" : "Script LLM Â·"} <strong>{project.scriptMode === "manual" ? project.scriptModel : "OpenAI Responses API"}</strong></span></div></div></section>
-
-      {project.presetId !== "ai-drama" && runMessage && <div className={`run-message ${runMessage.tone}`}><span><Icon name={runMessage.tone === "success" ? "check" : "alert"} size={13} /></span>{runMessage.text}</div>}
-
-      <details className="config-overview panel-card">
-        <summary>
-          <span><strong>Cáº¥u hÃ¬nh dá»± Ã¡n</strong><small>áº¢nh {imageModelDisplayName(mediaGeneration.imageModel)}{!projectMuseImageSelected && !projectFlowImageSelected ? ` Â· ${mediaGeneration.imageQuality}` : ""} Â· Video {mediaGeneration.videoProvider === "seedance" ? "Cáº¥u hÃ¬nh táº¡m áº©n" : videoModelDisplayName(mediaGeneration.videoModel, mediaGeneration.videoProvider)} Â· {mediaGeneration.videoDurationMode === "scene" ? "thá»i lÆ°á»£ng theo cáº£nh" : `${mediaGeneration.videoDurationSec}s cá»‘ Ä‘á»‹nh`}</small></span>
-          <span className="config-overview-action">Xem / sá»­a</span>
-        </summary>
-        <div className="config-items">
-          <div><small>Model áº£nh</small><strong>{imageModelDisplayName(mediaGeneration.imageModel)}{!projectMuseImageSelected && !projectFlowImageSelected ? ` Â· ${mediaGeneration.imageQuality}${projectImageDetailLevels.length ? ` Â· ${IMAGE_DETAIL_LEVEL_LABELS[mediaGeneration.imageDetailLevel]}` : ""}` : ""}</strong></div>
-          <div><small>Model video</small><strong>{videoModelDisplayName(mediaGeneration.videoModel, mediaGeneration.videoProvider)} Â· {mediaGeneration.videoQuality}</strong></div>
-          <div><small>Thá»i lÆ°á»£ng video</small><strong>{mediaGeneration.videoDurationMode === "scene" ? "Theo cáº£nh" : `${mediaGeneration.videoDurationSec}s cá»‘ Ä‘á»‹nh`}</strong></div>
-          <div><small>Khung hÃ¬nh</small><strong>{project.aspectRatio}</strong></div>
-          <div><small>Thá»ƒ loáº¡i cÃ¢u chuyá»‡n</small><strong>{contentGenresLabel(project.contentGenre, project.secondaryGenres)}</strong></div>
-          <div><small>Bá»‘i cáº£nh thá»i Ä‘áº¡i</small><strong>{storySettingLabel(project.storySetting)}{project.settingNotes ? ` Â· ${project.settingNotes}` : ""}</strong></div>
-          <div><small>Phong cÃ¡ch hÃ¬nh áº£nh</small><strong>{project.imageStyle}</strong></div>
-          <div><small>Nguá»“n media</small><strong>{mediaSourceLabel(project.mediaSource)}</strong></div>
-          <div><small>Ká»‹ch báº£n</small><strong>{project.scriptMode === "manual" ? "Thá»§ cÃ´ng" : `AI Â· ${project.scriptModel}`}</strong></div>
-        </div>
-        <Link href={`/projects/${project.slug}/settings`} className="config-edit"><Icon name="sliders" size={14} />Má»Ÿ cÃ i Ä‘áº·t</Link>
-      </details>
-
-      <ShortDramaStudio project={project} sourceDirty={sourceText.trim() !== project.sourceText.trim()} />
-
-      <section className="chunks-card panel-card" id="episodes">
-        <div className="chunks-heading">
-          <div><div className="section-kicker">Táº¬P</div><h2>Táº­p & ká»‹ch báº£n</h2></div>
-          <div className="episode-heading-actions">
-            <button className="primary-button compact" type="button" onClick={() => openEpisodeScriptEditor()} disabled={importingScripts || episodeExtensionBusy || !project.chunks.length} title="Nháº­p JSON scene-script.v1 riÃªng cho tá»«ng táº­p">
-              <Icon name="file" size={14} />Nháº­p JSON tá»«ng táº­p
-            </button>
-            <button className="secondary-button compact" type="button" onClick={() => void generateAllEpisodeTts()} disabled={ttsRunning || renderRunning || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || Boolean(generatingSceneId) || pendingEpisodeTts.length === 0}>
-              <Icon name="spark" size={14} />{batchTtsProgress ? `Äang táº¡o TTS ${batchTtsProgress}` : pendingEpisodeTts.length ? `Táº¡o TTS hÃ ng loáº¡t Â· ${pendingEpisodeTts.length}` : project.chunks.some((chunk) => chunk.outputPath) ? "ÄÃ£ xá»­ lÃ½ TTS" : "ChÆ°a cÃ³ ká»‹ch báº£n"}
-            </button>
-            <button className="primary-button compact" type="button" onClick={() => void renderAllEpisodes()} disabled={renderRunning || ttsRunning || isRunning || Boolean(runningScriptChunkId) || pendingEpisodeRenders.length === 0}>
-              <Icon name="play" size={14} />{batchRenderProgress ? `Äang ghÃ©p ${batchRenderProgress}` : pendingEpisodeRenders.length ? `GhÃ©p hÃ ng loáº¡t Â· ${pendingEpisodeRenders.length}` : project.chunks.some((chunk) => chunk.outputPath) ? "ÄÃ£ ghÃ©p háº¿t" : "ChÆ°a cÃ³ ká»‹ch báº£n"}
-            </button>
-            <Link className="secondary-button compact" href={`/projects/${project.slug}/settings`}><Icon name="sliders" size={15} />Cáº¥u hÃ¬nh chunk</Link>
-          </div>
-        </div>
-        <div className="tabs-row"><div className="tabs">{["Táº¥t cáº£", "Äang xá»­ lÃ½", "Cáº§n review"].map((filter) => <button key={filter} className={`tab ${activeFilter === filter ? "active" : ""}`} onClick={() => setActiveFilter(filter)}>{filter}{filter === "Cáº§n review" && <span className="tab-count">{project.reviewCount}</span>}</button>)}</div><span className="sort-button">{project.totalChunks} táº­p</span></div>
-        <div className="chunk-table">
-          <div className="chunk-table-head"><span>Táº¬P</span><span>PHáº M VI</span><span>TIáº¾N Äá»˜ Cáº¢NH</span><span>Ká»ŠCH Báº¢N</span><span>XUáº¤T VIDEO / SRT</span><span>Cáº¬P NHáº¬T</span></div>
-          {visibleChunks.map((chunk) => {
-            const renderFileBase = `/api/projects/${encodeURIComponent(project.slug)}/chunks/${encodeURIComponent(chunk.id)}/render/file`;
-            const episodeScenes = scenes.filter((scene) => scene.chunkId === chunk.id);
-            const episodeHasTts = Number(chunk.tts?.completed) > 0 || episodeScenes.some((scene) => {
-              const sceneAudio = [scene.audio, scene.voice, scene.tts].some((value) => {
-                if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-                const record = value as Record<string, unknown>;
-                return Boolean(record.localPath || record.path || record.filePath || record.file_path);
-              });
-              return sceneAudio || sceneDialogueSegments(scene, characterProfiles).some((segment) => Boolean(
-                segment.audio?.localPath || Object.values(segment.translatedAudio || {}).some((audio) => audio?.localPath),
-              ));
-            });
-            const translatedRender = chunk.render?.localizedRenders?.[dialogueTranslationLanguage];
-            const localizedDialogue = episodeScenes.flatMap((scene) => sceneDialogueSegments(scene, characterProfiles));
-            const episodeVoiceTargets = dialogueTtsVoiceTargetsForScenes(episodeScenes, dialogueTranslationLanguage);
-            const episodeNeedsTranslation = localizedDialogue.some((segment) => !segment.translations?.[dialogueTranslationLanguage]?.trim());
-            const episodeMissingVoice = episodeScenes.some((scene) => {
-              const segments = sceneDialogueSegments(scene, characterProfiles);
-              if (!segments.length || segments.some((segment) => !segment.translations?.[dialogueTranslationLanguage]?.trim())) return false;
-              return segments.some((segment) => {
-                const speaker = characterProfiles.find((character) => character.id === segment.speakerCharacterId);
-                return !(speaker?.voiceId || scene.ttsVoiceId || scene.tts_voice_id || project.voiceId);
-              });
-            });
-            const hasNarrationWithoutTimeline = episodeScenes.some((scene) => {
-              const hasNarration = Boolean(sceneText(scene, "dialogue_or_voiceover", "voiceText", "voiceover"));
-              return hasNarration && !sceneDialogueSegments(scene, characterProfiles).length;
-            });
-            const translatedVoiceReady = project.presetId === "ai-drama"
-              && dialogueTranslationLanguage.toLowerCase() !== String(project.language || "vi").toLowerCase()
-              && localizedDialogue.length > 0
-              && !hasNarrationWithoutTimeline
-              && localizedDialogue.every((segment) => {
-                const translatedAudio = segment.translatedAudio?.[dialogueTranslationLanguage];
-                return Boolean(segment.translations?.[dialogueTranslationLanguage]?.trim()
-                  && translatedAudio?.localPath
-                  && (translatedAudio.language || "").toLowerCase() === dialogueTranslationLanguage.toLowerCase());
-              });
-            const localizedRenderTitle = !translatedVoiceReady
-              ? dialogueTranslationLanguage.toLowerCase() === String(project.language || "vi").toLowerCase()
-                ? "Chá»n ngÃ´n ngá»¯ khÃ¡c ngÃ´n ngá»¯ gá»‘c cá»§a project."
-                : hasNarrationWithoutTimeline
-                  ? "HoÃ n thiá»‡n timeline thoáº¡i cá»§a cÃ¡c cáº£nh trÆ°á»›c."
-                  : "Dá»‹ch lá»i thoáº¡i vÃ  táº¡o voice cho má»i cÃ¢u trong táº­p trÆ°á»›c."
-              : `GhÃ©p hÃ¬nh/video hiá»‡n cÃ³ vá»›i voice ${voiceLanguageLabel(dialogueTranslationLanguage)}.`;
-            const isRenderingThisChunk = renderRunning && renderingChunkId === chunk.id && !renderingLanguage;
-            const isRenderingLocalizedThisChunk = renderRunning && renderingChunkId === chunk.id && renderingLanguage === dialogueTranslationLanguage;
-            const isViewingScript = viewingScriptChunkId === chunk.id;
-            const isGeneratingThisTts = ttsRunning && ttsChunkId === chunk.id;
-            const isDeletingThisTts = deletingTtsChunkId === chunk.id;
-            return <Fragment key={chunk.id}>
-              <div className="chunk-row">
-                <div className="chunk-id chunk-episode"><span className={`chunk-icon ${chunk.tone}`}><Icon name="scene" size={15} /></span><span><strong>Táº­p {String(chunk.episodeNumber).padStart(2, "0")}</strong><small>{chunk.id}</small></span></div>
-                <span className="chunk-range">{chunk.range}</span>
-                <div className="chunk-progress"><div className="mini-progress"><span style={{ width: `${(Number(chunk.scenes.split("/")[0]) / Number(chunk.scenes.split("/")[1])) * 100}%` }} /></div><span>{chunk.scenes}</span></div>
-                <div className="episode-script-actions">
-                  <StatusPill tone={chunk.tone}>{chunk.label}</StatusPill>
-                  <div className="episode-script-controls">
-                    {chunk.hasScript && <button className="text-button episode-script-view" type="button" aria-expanded={isViewingScript} onClick={() => setViewingScriptChunkId(isViewingScript ? "" : chunk.id)}><Icon name="file" size={13} />{isViewingScript ? "áº¨n" : "Xem ká»‹ch báº£n"}</button>}
-                    <button className="text-button episode-script-view" type="button" onClick={() => openEpisodeScriptEditor(chunk.id)} disabled={importingScripts || episodeExtensionBusy} title={`Nháº­p JSON cho táº­p ${chunk.id}`}>
-                      <Icon name="file" size={13} />Nháº­p JSON
-                    </button>
-                  </div>
-                </div>
-                <div className="chunk-export-actions">
-                  {isGeneratingThisTts
-                    ? <StatusPill tone="orange">TTS {chunk.tts?.completed || 0}/{chunk.tts?.total || 0}</StatusPill>
-                    : chunk.tts?.status !== "not_needed" && <button className="secondary-button compact episode-render-button" type="button" onClick={() => void generateChunkTts(chunk.id, chunk.episodeNumber, chunk.tts?.status === "completed")} disabled={!chunk.hasScript || ttsRunning || renderRunning || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || Boolean(generatingSceneId)} title={chunk.tts?.status === "completed" ? "Táº¡o láº¡i TTS cho táº­p nÃ y" : "Táº¡o TTS cho táº­p nÃ y"}>
-                      <Icon name="spark" size={13} />{chunk.tts?.status === "completed" ? "Táº¡o láº¡i TTS" : chunk.tts?.status === "partial" || chunk.tts?.status === "failed" || chunk.tts?.status === "running" ? "Thá»­ láº¡i TTS" : "Táº¡o TTS"}
-                    </button>}
-                  {chunk.tts && chunk.tts.status !== "not_needed" && (chunk.tts.completed > 0 || chunk.tts.failed > 0) && <small className={chunk.tts.failed ? "episode-render-error" : "episode-render-note"} title={chunk.tts.error}>{chunk.tts.status === "completed" ? `TTS sáºµn sÃ ng Â· ${chunk.tts.completed}/${chunk.tts.total} ${project.presetId === "ai-drama" ? "cÃ¢u" : "cáº£nh"}` : `TTS ${chunk.tts.completed}/${chunk.tts.total}${chunk.tts.failed ? ` Â· ${chunk.tts.failed} lá»—i` : ""}`}</small>}
-                  {episodeHasTts && <button className="secondary-button compact episode-render-button episode-delete-tts-button" type="button" onClick={() => void deleteChunkTts(chunk.id, chunk.episodeNumber)} disabled={Boolean(deletingTtsChunkId) || ttsRunning || renderRunning || isRunning || Boolean(runningScriptChunkId) || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || Boolean(generatingSceneId) || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress) || Boolean(dialogueTtsBatchProgress) || Boolean(dialogueSavingSceneId)} title={`XoÃ¡ táº¥t cáº£ TTS gá»‘c vÃ  voice báº£n dá»‹ch cá»§a Táº­p ${String(chunk.episodeNumber).padStart(2, "0")} Ä‘á»ƒ ghÃ©p báº±ng tiáº¿ng gá»‘c video`}>{isDeletingThisTts ? "Äang xoÃ¡ TTSâ€¦" : "XoÃ¡ TTS"}</button>}
-                  {project.presetId === "ai-drama" && <button className="secondary-button compact episode-render-button" type="button" onClick={() => void generateFilteredDialogueTts(chunk.id, chunk.episodeNumber)} disabled={!episodeVoiceTargets.length || Boolean(dialogueTtsBatchProgress) || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress) || ttsRunning || renderRunning || dialogueSavingSceneId !== "" || isRunning || Boolean(runningScriptChunkId) || Boolean(generatingSceneId) || batchMediaBusy || videoQueueRunning} title={episodeVoiceTargets.length ? `Táº¡o voice ${voiceLanguageLabel(dialogueTranslationLanguage)} cho ${episodeVoiceTargets.length} cáº£nh trong Táº­p ${String(chunk.episodeNumber).padStart(2, "0")}` : episodeNeedsTranslation ? `Dá»‹ch thoáº¡i sang ${voiceLanguageLabel(dialogueTranslationLanguage)} trÆ°á»›c khi táº¡o voice.` : episodeMissingVoice ? "GÃ¡n voice cho nhÃ¢n váº­t Ä‘ang thoáº¡i trÆ°á»›c." : `Táº­p nÃ y Ä‘Ã£ cÃ³ voice ${voiceLanguageLabel(dialogueTranslationLanguage)} hoáº·c chÆ°a cÃ³ thoáº¡i.`}>{dialogueTtsBatchProgress ? `Äang táº¡o voice ${voiceLanguageLabel(dialogueTranslationLanguage)}â€¦` : episodeVoiceTargets.length ? `Táº¡o voice ${voiceLanguageLabel(dialogueTranslationLanguage)} Â· ${episodeVoiceTargets.length}` : episodeNeedsTranslation ? `Dá»‹ch ${voiceLanguageLabel(dialogueTranslationLanguage)} trÆ°á»›c` : episodeMissingVoice ? "GÃ¡n voice nhÃ¢n váº­t trÆ°á»›c" : localizedDialogue.length ? `Äá»§ voice ${voiceLanguageLabel(dialogueTranslationLanguage)}` : "KhÃ´ng cÃ³ thoáº¡i"}</button>}
-                  {chunk.render?.status === "running" || isRenderingThisChunk
-                    ? <StatusPill tone="orange">{batchRenderProgress ? `GhÃ©p ${batchRenderProgress}` : "Äang ghÃ©p"}</StatusPill>
-                    : <button className="secondary-button compact episode-render-button" type="button" onClick={() => void renderChunkVideo(chunk.id, chunk.episodeNumber)} disabled={renderRunning || ttsRunning || isRunning || Boolean(runningScriptChunkId) || !project.chunks.find((item) => item.id === chunk.id)?.outputPath}><Icon name="play" size={13} />{chunk.render?.outputPath ? "Xuáº¥t láº¡i" : chunk.render?.status === "failed" ? "Thá»­ láº¡i" : "GhÃ©p táº­p"}</button>}
-                  {project.presetId === "ai-drama" && <button className="secondary-button compact episode-render-button" type="button" title={localizedRenderTitle} onClick={() => void renderChunkVideo(chunk.id, chunk.episodeNumber, dialogueTranslationLanguage)} disabled={!translatedVoiceReady || renderRunning || ttsRunning || isRunning || Boolean(runningScriptChunkId) || !chunk.hasScript}>{isRenderingLocalizedThisChunk || translatedRender?.status === "running" ? `Äang ghÃ©p ${voiceLanguageLabel(dialogueTranslationLanguage)}â€¦` : translatedRender?.outputPath ? `Xuáº¥t láº¡i Â· ${voiceLanguageLabel(dialogueTranslationLanguage)}` : `GhÃ©p táº­p Â· ${voiceLanguageLabel(dialogueTranslationLanguage)}`}</button>}
-                  {chunk.render?.outputPath && (chunk.render.status === "completed" || chunk.render.stale) && <div className="episode-download-links"><a href={`${renderFileBase}?kind=video&download=1`} download={`tap-${String(chunk.episodeNumber).padStart(2, "0")}.mp4`}><Icon name="download" size={12} />{chunk.render.stale ? "MP4 báº£n cÅ©" : "MP4"}</a><a href={`${renderFileBase}?kind=subtitle&download=1`} download={`tap-${String(chunk.episodeNumber).padStart(2, "0")}.srt`}>{chunk.render.stale ? "SRT báº£n cÅ©" : "SRT"}</a></div>}
-                  {translatedRender?.outputPath && (translatedRender.status === "completed" || translatedRender.stale) && <div className="episode-download-links"><a href={`${renderFileBase}?kind=video&language=${encodeURIComponent(dialogueTranslationLanguage)}&download=1`} download={`tap-${String(chunk.episodeNumber).padStart(2, "0")}-${dialogueTranslationLanguage.toLowerCase()}.mp4`}><Icon name="download" size={12} />MP4 {voiceLanguageLabel(dialogueTranslationLanguage)}</a><a href={`${renderFileBase}?kind=subtitle&language=${encodeURIComponent(dialogueTranslationLanguage)}&download=1`} download={`tap-${String(chunk.episodeNumber).padStart(2, "0")}-${dialogueTranslationLanguage.toLowerCase()}.srt`}>SRT {voiceLanguageLabel(dialogueTranslationLanguage)}</a></div>}
-                  {chunk.render?.outputPath && (chunk.render.status === "idle" || chunk.render.stale) && <small className="episode-render-note">Media/ká»‹ch báº£n Ä‘Ã£ Ä‘á»•i Â· cáº§n ghÃ©p láº¡i</small>}
-                  {chunk.render?.status === "completed" && (!chunk.render.audioReady || Boolean(chunk.render.missingMedia)) && <small className="episode-render-note">{[!chunk.render.audioReady ? "KhÃ´ng cÃ³ tiáº¿ng TTS hoáº·c tiáº¿ng gá»‘c" : "", chunk.render.missingMedia ? `${chunk.render.missingMedia} cáº£nh dÃ¹ng media dá»± phÃ²ng` : ""].filter(Boolean).join(" Â· ")}</small>}
-                  {chunk.render?.status === "failed" && chunk.render.error && <small className="episode-render-error" title={chunk.render.error}>Láº§n xuáº¥t gáº§n nháº¥t lá»—i</small>}
-                </div>
-                <span className="chunk-time">{chunk.time}</span>
-              </div>
-              {isViewingScript && <div className="episode-script-preview">
-                <div className="episode-script-preview-heading"><div><strong>Ká»‹ch báº£n Táº­p {String(chunk.episodeNumber).padStart(2, "0")}</strong><span>{episodeScenes.length} cáº£nh Ä‘Ã£ lÆ°u</span></div><button className="text-button" type="button" onClick={() => setViewingScriptChunkId("")}>ÄÃ³ng</button></div>
-                {scenesLoading ? <p className="episode-script-empty">Äang táº£i ká»‹ch báº£nâ€¦</p> : episodeScenes.length ? <div className="episode-script-scene-list">{episodeScenes.map((scene) => {
-                  const purpose = sceneText(scene, "purpose", "beat_summary", "description");
-                  const voiceover = sceneText(scene, "dialogue_or_voiceover", "voiceText", "voiceover");
-                  const prompt = sceneText(scene, "video_prompt", "videoPrompt", "image_prompt", "imagePrompt");
-                  return <article className="episode-script-scene" key={`${scene.chunkId}-${scene.id}`}><span className="episode-script-scene-number">{sceneNumberLabel(scene)}</span><div><strong>{purpose || "MÃ´ táº£ cáº£nh"}</strong>{voiceover && <p><b>Lá»i thoáº¡i:</b> {voiceover}</p>}{prompt && <p><b>Prompt:</b> {prompt}</p>}</div></article>;
-                })}</div> : <p className="episode-script-empty">ChÆ°a cÃ³ cáº£nh. HÃ£y nháº­p JSON riÃªng cho táº­p nÃ y.</p>}
-              </div>}
-            </Fragment>;
-          })}
-        </div>
-        <div className="table-footer"><span>Hiá»ƒn thá»‹ {visibleChunks.length} / {project.totalChunks} táº­p</span><Link className="text-button" href={`/projects/${project.slug}/settings`}>Quáº£n lÃ½ project <Icon name="arrow" size={13} /></Link></div>
-      </section>
-      {usesAiDramaWorkflow() ? aiDramaWorkspace : <section className="scene-review-card panel-card" id="scenes">
-        <div className="chunks-heading scene-review-heading">
-          <div>
-            <div className="section-kicker">Cáº¢NH & MEDIA</div>
-            <h2>Kiá»ƒm tra tá»«ng cáº£nh & táº¡o video AI</h2>
-          </div>
-          <div className="scene-review-heading-actions">
-            <button className="secondary-button compact" type="button" onClick={() => void runAiPrecheck()} disabled={aiReviewRunning || scenesLoading || !scenes.length}>
-              <Icon name="spark" size={14} />{aiReviewRunning ? aiReviewProgress || "AI Ä‘ang cháº¥mâ€¦" : "Cháº¡y AI pre-check"}
-            </button>
-            <span className="scene-output-badge"><span className="scene-output-icon"><Icon name="scene" size={14} /></span>{scenes.length}/{project.totalScenes} cáº£nh cÃ³ output</span>
-          </div>
-        </div>
-        <details id="character-reference-panel" className="character-reference-panel">
-          <summary className="character-reference-heading">
-                <div><div className="section-kicker">CHARACTER REFERENCES</div><h3>Há»“ sÆ¡ nhÃ¢n váº­t</h3></div>
-            <span className="character-reference-count">{characterProfiles.length} nhÃ¢n váº­t Â· Quáº£n lÃ½</span>
-          </summary>
-          {characterProfiles.length > 0 && <div className="character-reference-list">
-            {characterProfiles.map((character) => {
-              const assignedCount = scenes.filter((scene) => sceneCharacterIds(scene).includes(character.id)).length;
-              return <article className="character-reference-item" key={character.id}>
-                {character.referenceImagePath ? <img src={`/api/projects/${encodeURIComponent(project.slug)}/characters/${encodeURIComponent(character.id)}/image`} alt={`áº¢nh tham chiáº¿u ${character.name}`} /> : <div className="character-reference-image-empty"><Icon name="users" size={18} /><span>ChÆ°a cÃ³ áº£nh</span></div>}
-                <div><strong>{character.name}</strong><p>{character.description || "ChÆ°a cÃ³ mÃ´ táº£ nháº­n diá»‡n"}</p><small>ÄÃ£ gÃ¡n {assignedCount} cáº£nh</small></div>
-              </article>;
-            })}
-          </div>}
-          <form className="character-reference-form" onSubmit={(event) => void createCharacter(event)}>
-            <label htmlFor="character-name"><span>TÃªn nhÃ¢n váº­t</span><input id="character-name" value={characterName} onChange={(event) => setCharacterName(event.target.value)} maxLength={80} placeholder="VÃ­ dá»¥: Maya Chen" required /></label>
-            <label className="character-reference-description"><span>MÃ´ táº£ nháº­n diá»‡n</span><input value={characterDescription} onChange={(event) => setCharacterDescription(event.target.value)} maxLength={300} placeholder="TÃ³c Ä‘en ngang vai, ná»‘t ruá»“i dÆ°á»›i máº¯t trÃ¡i, Ã¡o khoÃ¡c xanhâ€¦" /></label>
-            <div className="character-reference-image-picker">
-              <div className="character-reference-image-tabs" role="group" aria-label="Nguá»“n áº£nh nhÃ¢n váº­t">
-                <button className={characterImageSource === "upload" ? "active" : ""} type="button" aria-pressed={characterImageSource === "upload"} onClick={() => { setCharacterImageSource("upload"); setSelectedCharacterMediaSceneId(""); setSelectedMaiVideoImageId(""); }}>Táº£i áº£nh lÃªn</button>
-                <button className={characterImageSource === "project" ? "active" : ""} type="button" aria-pressed={characterImageSource === "project"} onClick={() => { setCharacterImageSource("project"); setSelectedMaiVideoImageId(""); if (characterImageInputRef.current) characterImageInputRef.current.value = ""; }}>{`áº¢nh project Â· ${characterMediaImages.length}`}</button>
-                <button className={characterImageSource === "maivideo" ? "active" : ""} type="button" aria-pressed={characterImageSource === "maivideo"} onClick={() => { setCharacterImageSource("maivideo"); setSelectedCharacterMediaSceneId(""); if (characterImageInputRef.current) characterImageInputRef.current.value = ""; void loadMaiVideoLibraryImages(); }}>{`ThÆ° viá»‡n MaiVideo${maiVideoLibraryLoaded ? ` Â· ${maiVideoLibraryImages.length}` : ""}`}</button>
-              </div>
-              {characterImageSource === "upload" ? <label className="character-reference-file"><span>áº¢nh há»“ sÆ¡ nhÃ¢n váº­t</span><input ref={characterImageInputRef} type="file" accept="image/png,image/jpeg,image/webp" /><small>NÃªn dÃ¹ng báº£ng trÆ°á»›c/sau vÃ  chÃ¢n dung trÃªn ná»n tráº¯ng Â· tá»‘i Ä‘a 8 MB</small></label> : characterImageSource === "project" ? characterMediaImages.length ? <>
-                <div className="character-media-image-grid" aria-label="Chá»n áº£nh tá»« media cá»§a project">
-                  {characterMediaImages.map((scene) => <button className={`character-media-image-option ${selectedCharacterMediaSceneId === scene.id ? "selected" : ""}`} type="button" key={`${scene.chunkId}-${scene.id}`} aria-pressed={selectedCharacterMediaSceneId === scene.id} onClick={() => setSelectedCharacterMediaSceneId(scene.id)}>
-                    <img src={scene.previewUrl} alt={`áº¢nh ${sceneNumberLabel(scene)}`} />
-                    <span>{sceneNumberLabel(scene)}</span>
-                  </button>)}
-                </div>
-                {selectedCharacterMediaScene && <p className="character-media-image-selected">ÄÃ£ chá»n áº£nh {sceneNumberLabel(selectedCharacterMediaScene)}</p>}
-              </> : <p className="character-media-image-empty">Project chÆ°a cÃ³ áº£nh cáº£nh Ä‘á»ƒ chá»n.</p> : maiVideoLibraryLoading ? <p className="character-media-image-empty">Äang táº£i thÆ° viá»‡n MaiVideoâ€¦</p> : maiVideoLibraryError ? <div className="character-media-image-error" role="alert"><span>{maiVideoLibraryError}</span><button type="button" className="text-button" onClick={() => void loadMaiVideoLibraryImages(true)}>Thá»­ láº¡i</button></div> : maiVideoLibraryImages.length ? <>
-                <div className="character-media-image-grid" aria-label="Chá»n áº£nh tá»« thÆ° viá»‡n MaiVideo">
-                  {maiVideoLibraryImages.map((image) => <button className={`character-media-image-option ${selectedMaiVideoImageId === image.id ? "selected" : ""}`} type="button" key={image.id} aria-pressed={selectedMaiVideoImageId === image.id} onClick={() => setSelectedMaiVideoImageId(image.id)}>
-                    <img src={image.previewUrl} alt={image.name} />
-                    <span title={image.fileName}>{image.name}</span>
-                  </button>)}
-                </div>
-                {selectedMaiVideoImage && <p className="character-media-image-selected">ÄÃ£ chá»n {selectedMaiVideoImage.name}</p>}
-              </> : <p className="character-media-image-empty">ThÆ° viá»‡n MaiVideo chÆ°a cÃ³ áº£nh phÃ¹ há»£p.</p>}
-            </div>
-            <button className="secondary-button compact character-reference-submit" type="submit" disabled={characterSaving}>{characterSaving ? "Äang lÆ°uâ€¦" : "ï¼‹ ThÃªm nhÃ¢n váº­t"}</button>
-          </form>
-          {characterError && <p className="character-reference-error" role="alert">{characterError}</p>}
-        </details>
-        <details id="location-reference-panel" className="character-reference-panel">
-          <summary className="character-reference-heading">
-            <div><div className="section-kicker">LOCATIONS</div><h3>Há»“ sÆ¡ bá»‘i cáº£nh</h3></div>
-            <span className="character-reference-count">{locationProfiles.length} bá»‘i cáº£nh Â· Quáº£n lÃ½</span>
-          </summary>
-          {locationProfiles.length > 0 && <div className="character-reference-list">
-            {locationProfiles.map((location) => {
-              const assignedCount = scenes.filter((scene) => sceneLocationId(scene) === location.id).length;
-              return <article className="character-reference-item" key={location.id}>
-                <img src={`/api/projects/${encodeURIComponent(project.slug)}/locations/${encodeURIComponent(location.id)}/image`} alt={`áº¢nh tham chiáº¿u ${location.name}`} />
-                <div><strong>{location.name}</strong><p>{location.aliases?.length ? `TÃªn khÃ¡c: ${location.aliases.join(", ")}` : location.description || "áº¢nh bá»‘i cáº£nh 4 gÃ³c"}</p><small>ÄÃ£ gÃ¡n {assignedCount} cáº£nh</small></div>
-              </article>;
-            })}
-          </div>}
-          <form className="character-reference-form" onSubmit={(event) => void createLocation(event)}>
-            <label><span>TÃªn bá»‘i cáº£nh</span><input value={locationName} onChange={(event) => setLocationName(event.target.value)} maxLength={100} placeholder="VÃ­ dá»¥: ThÆ° viá»‡n ven sÃ´ng" required /></label>
-            <label><span>TÃªn khÃ¡c Ä‘á»ƒ tá»± gÃ¡n</span><input value={locationAliases} onChange={(event) => setLocationAliases(event.target.value)} maxLength={500} placeholder="ThÆ° viá»‡n cÅ©, phÃ²ng lÆ°u trá»¯" /></label>
-            <label><span>MÃ´ táº£ nháº­n diá»‡n</span><input value={locationDescription} onChange={(event) => setLocationDescription(event.target.value)} maxLength={500} placeholder="Kiáº¿n trÃºc, váº­t liá»‡u, mÃ u sáº¯c cá»‘ Ä‘á»‹nhâ€¦" /></label>
-            <div className="character-reference-image-picker">
-              <div className="character-reference-image-tabs" role="group" aria-label="Nguá»“n áº£nh bá»‘i cáº£nh">
-                <button className={locationImageSource === "upload" ? "active" : ""} type="button" aria-pressed={locationImageSource === "upload"} onClick={() => { setLocationImageSource("upload"); setSelectedLocationMediaSceneId(""); setSelectedLocationMaiVideoImageId(""); }}>Táº£i áº£nh 4 gÃ³c lÃªn</button>
-                <button className={locationImageSource === "project" ? "active" : ""} type="button" aria-pressed={locationImageSource === "project"} onClick={() => { setLocationImageSource("project"); setSelectedLocationMaiVideoImageId(""); if (locationImageInputRef.current) locationImageInputRef.current.value = ""; }}>{`áº¢nh project Â· ${characterMediaImages.length}`}</button>
-                <button className={locationImageSource === "maivideo" ? "active" : ""} type="button" aria-pressed={locationImageSource === "maivideo"} onClick={() => { setLocationImageSource("maivideo"); setSelectedLocationMediaSceneId(""); if (locationImageInputRef.current) locationImageInputRef.current.value = ""; void loadMaiVideoLibraryImages(); }}>{`ThÆ° viá»‡n MaiVideo${maiVideoLibraryLoaded ? ` Â· ${maiVideoLibraryImages.length}` : ""}`}</button>
-              </div>
-              {locationImageSource === "upload" ? <label className="character-reference-file"><span>áº¢nh tham chiáº¿u 4 gÃ³c/hÆ°á»›ng</span><input ref={locationImageInputRef} type="file" accept="image/png,image/jpeg,image/webp" /><small>áº¢nh sáº½ dÃ¹ng Ä‘á»ƒ tÃ¡i hiá»‡n cÃ¹ng má»™t bá»‘i cáº£nh trong cáº£nh Ä‘Æ¡n.</small></label> : locationImageSource === "project" ? characterMediaImages.length ? <div className="character-media-image-grid" aria-label="Chá»n áº£nh bá»‘i cáº£nh tá»« media project">
-                {characterMediaImages.map((scene) => <button className={`character-media-image-option ${selectedLocationMediaSceneId === scene.id ? "selected" : ""}`} type="button" key={`${scene.chunkId}-${scene.id}`} aria-pressed={selectedLocationMediaSceneId === scene.id} onClick={() => setSelectedLocationMediaSceneId(scene.id)}><img src={scene.previewUrl} alt={`áº¢nh ${sceneNumberLabel(scene)}`} /><span>{sceneNumberLabel(scene)}</span></button>)}
-              </div> : <p className="character-media-image-empty">Project chÆ°a cÃ³ áº£nh Ä‘á»ƒ chá»n.</p> : maiVideoLibraryLoading ? <p className="character-media-image-empty">Äang táº£i thÆ° viá»‡n MaiVideoâ€¦</p> : maiVideoLibraryError ? <div className="character-media-image-error" role="alert"><span>{maiVideoLibraryError}</span><button type="button" className="text-button" onClick={() => void loadMaiVideoLibraryImages(true)}>Thá»­ láº¡i</button></div> : maiVideoLibraryImages.length ? <div className="character-media-image-grid" aria-label="Chá»n áº£nh bá»‘i cáº£nh tá»« thÆ° viá»‡n MaiVideo">
-                {maiVideoLibraryImages.map((image) => <button className={`character-media-image-option ${selectedLocationMaiVideoImageId === image.id ? "selected" : ""}`} type="button" key={image.id} aria-pressed={selectedLocationMaiVideoImageId === image.id} onClick={() => setSelectedLocationMaiVideoImageId(image.id)}><img src={image.previewUrl} alt={image.name} /><span title={image.fileName}>{image.name}</span></button>)}
-              </div> : <p className="character-media-image-empty">ThÆ° viá»‡n MaiVideo chÆ°a cÃ³ áº£nh phÃ¹ há»£p.</p>}
-            </div>
-            <button className="secondary-button compact character-reference-submit" type="submit" disabled={locationSaving}>{locationSaving ? "Äang lÆ°uâ€¦" : "ï¼‹ ThÃªm bá»‘i cáº£nh"}</button>
-          </form>
-          {locationError && <p className="character-reference-error" role="alert">{locationError}</p>}
-        </details>
-        {scenesLoading && <div className="scene-review-empty">Äang táº£i danh sÃ¡ch cáº£nhâ€¦</div>}
-        {!scenesLoading && sceneError && <div className="run-message error scene-review-message"><span><Icon name="alert" size={13} /></span>{sceneError}<button className="text-button" onClick={() => void loadScenes()}>Thá»­ láº¡i</button></div>}
-        {!scenesLoading && !sceneError && !scenes.length && <div className="scene-review-empty">ChÆ°a cÃ³ cáº£nh. HÃ£y nháº­p JSON cho tá»«ng táº­p Ä‘á»ƒ táº¡o vÃ  kiá»ƒm tra cáº£nh.</div>}
-        {!scenesLoading && !sceneError && scenes.length > 0 && (
-          <>
-            <div className="scene-review-toolbar">
-              <label className="scene-review-search"><Icon name="search" size={16} /><input value={sceneSearch} onChange={(event) => setSceneSearch(event.target.value)} placeholder="TÃ¬m S001, ná»™i dung, voiceoverâ€¦" aria-label="TÃ¬m cáº£nh" /></label>
-              <label className="scene-filter-control"><span>Chunk</span><select value={sceneChunkFilter} onChange={(event) => setSceneChunkFilter(event.target.value)} aria-label="Lá»c theo chunk"><option value="all">Táº¥t cáº£ chunk</option>{sceneChunks.map((chunkId) => <option key={chunkId} value={chunkId}>{chunkId}</option>)}</select></label>
-              <label className="scene-filter-control"><span>Review</span><select value={sceneReviewFilter} onChange={(event) => setSceneReviewFilter(event.target.value as SceneReviewFilter)} aria-label="Lá»c theo tráº¡ng thÃ¡i review"><option value="all">Táº¥t cáº£</option><option value="unreviewed">ChÆ°a review</option><option value="approved">ÄÃ£ Ä‘áº¡t</option><option value="needs_changes">Cáº§n sá»­a</option></select></label>
-              <label className="scene-filter-control"><span>AI</span><select value={sceneAiReviewFilter} onChange={(event) => setSceneAiReviewFilter(event.target.value as SceneAiReviewFilter)} aria-label="Lá»c theo tráº¡ng thÃ¡i AI pre-check"><option value="all">Táº¥t cáº£ AI</option><option value="pending">Chá» AI</option><option value="passed">AI Ä‘áº¡t</option><option value="needs_changes">AI cáº§n sá»­a</option><option value="error">AI lá»—i</option></select></label>
-              <label className="scene-filter-control"><span>Media</span><select value={sceneMediaFilter} onChange={(event) => setSceneMediaFilter(event.target.value as SceneMediaFilter)} aria-label="Lá»c theo media"><option value="all">Táº¥t cáº£ media</option><option value="ready">CÃ³ media</option><option value="missing">Thiáº¿u media</option><option value="ai">AI video</option><option value="stock">Stock</option></select></label>
-            </div>
-            <div className="scene-review-summary">
-              <span className="scene-summary-total">Hiá»ƒn thá»‹ <strong>{filteredScenes.length}</strong> / {scenes.length} cáº£nh</span>
-              <span className="scene-summary-item ai-pending"><strong>{sceneStats.ai_pending}</strong> chá» AI</span>
-              <span className="scene-summary-item ai"><strong>{sceneStats.ai_passed}</strong> AI Ä‘áº¡t</span>
-              <span className="scene-summary-item needs-changes"><strong>{sceneStats.ai_needs_changes}</strong> AI cáº§n sá»­a</span>
-              <span className="scene-summary-item unreviewed"><strong>{sceneStats.unreviewed}</strong> chá» ngÆ°á»i dÃ¹ng</span>
-              <span className="scene-summary-item approved"><strong>{sceneStats.approved}</strong> Ä‘áº¡t</span>
-              <span className="scene-summary-item ai"><strong>{sceneStats.ai}</strong> AI video</span>
-              <button className="text-button scene-reset-button" type="button" onClick={() => { setSceneSearch(""); setSceneChunkFilter("all"); setSceneReviewFilter("all"); setSceneAiReviewFilter("all"); setSceneMediaFilter("all"); }} disabled={!sceneSearch && sceneChunkFilter === "all" && sceneReviewFilter === "all" && sceneAiReviewFilter === "all" && sceneMediaFilter === "all"}>XÃ³a lá»c</button>
-            </div>
-            <div className="batch-media-action-panel">
-              <div><strong>Táº¡o áº£nh / video hÃ ng loáº¡t</strong><small>{filteredScenes.length} cáº£nh Â· {filteredImageTargets.length} áº£nh Â· {filteredVideoTargets.length} video Â· {activeSceneMediaJobCount ? `${activeSceneMediaJobCount} job Ä‘ang cháº¡y ná»n Â· ` : ""}khung hÃ¬nh {project.aspectRatio} Â· {filteredScenes.filter((scene) => sceneCharacterIds(scene).length > 0).length} cÃ³ nhÃ¢n váº­t Â· {filteredScenes.filter((scene) => Boolean(sceneLocationId(scene))).length} cÃ³ bá»‘i cáº£nh</small></div>
-              <div className="batch-media-actions">
-                <button className="secondary-button compact" type="button" title={`Tá»± gÃ¡n há»“ sÆ¡ nhÃ¢n váº­t vÃ  bá»‘i cáº£nh theo ná»™i dung ${filteredScenes.length} cáº£nh. Há»“ sÆ¡ bá»‘i cáº£nh Ä‘Æ°á»£c thÃªm vÃ o prompt áº£nh vÃ  video theo cÃ i Ä‘áº·t tham chiáº¿u.`} onClick={() => void autoAssignSceneReferences()} disabled={(!characterProfiles.length && !locationProfiles.length) || autoAssignCharactersBusy || batchMediaBusy || videoQueueRunning || sceneCharacterSaving}>
-                  <Icon name="users" size={13} />{autoAssignCharactersBusy ? "Äang gÃ¡nâ€¦" : "Tá»± gÃ¡n há»“ sÆ¡"}
-                </button>
-                <button className="secondary-button compact" type="button" onClick={() => void generateFilteredSceneImages()} disabled={!filteredImageTargets.length || batchMediaBusy || sceneMediaSettingsSaving || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning || Boolean(generatingSceneId)}>
-                  <Icon name="spark" size={13} />{batchMediaBusy && generatingSceneMediaKind === "image" ? batchMediaProgress || "Äang xáº¿p áº£nhâ€¦" : `Táº¡o áº£nh cáº£nh Â· ${filteredImageTargets.length}`}
-                </button>
-                <button className="primary-button compact" type="button" onClick={() => void generateFilteredSceneVideos()} disabled={!filteredVideoTargets.length || batchSeedanceHiddenSelected || batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || scriptBlocksIndependentTasks || ttsRunning || Boolean(generatingSceneId)}>
-                  <Icon name="play" size={13} />{batchMediaBusy && generatingSceneMediaKind === "video" ? batchMediaProgress || "Äang xáº¿p videoâ€¦" : `Táº¡o video hÃ ng loáº¡t Â· ${filteredVideoTargets.length}`}
-                </button>
-                {batchMediaBusy && batchMediaProgress && <span className="batch-media-progress" role="status">{batchMediaProgress}</span>}
-              </div>
-            </div>
-            <details className="batch-media-panel panel-card">
-              <summary><span><strong>Model & tuá»³ chá»‰nh</strong><small>{imageModelDisplayName(batchMediaSettings.imageModel)}{!batchMuseImageSelected && !batchFlowImageSelected ? ` Â· ${batchMediaSettings.imageQuality}${batchImageDetailLevels.length ? ` Â· ${IMAGE_DETAIL_LEVEL_LABELS[batchMediaSettings.imageDetailLevel]}` : ""}` : ""} / {batchSeedanceHiddenSelected ? "Seedance trá»±c tiáº¿p Â· táº¡m áº©n" : `${videoProviderDisplayName(batchMediaSettings.videoProvider)} Â· ${videoModelDisplayName(batchMediaSettings.videoModel, batchMediaSettings.videoProvider)}`}{batchMuseSelected ? " Â· profile máº·c Ä‘á»‹nh" : !batchSeedanceHiddenSelected ? ` Â· ${batchMediaSettings.videoQuality}` : ""} Â· {batchMediaSettings.videoDurationMode === "scene" ? "theo cáº£nh" : `${batchMediaSettings.videoDurationSec}s`} Â· khung hÃ¬nh {project.aspectRatio}</small></span><span className="batch-media-summary-count">Má»Ÿ cÃ i Ä‘áº·t</span></summary>
-              
-              <div className="batch-media-frame-note" role="note"><span>Khung hÃ¬nh dá»± Ã¡n</span><strong>{project.aspectRatio}</strong><small>Tá»± Ã¡p dá»¥ng cho áº£nh vÃ  video; Ä‘á»•i táº¡i CÃ i Ä‘áº·t dá»± Ã¡n.</small></div>
-              <div className="batch-media-settings-grid">
-                <label className="scene-media-field"><span>Model áº£nh</span><select aria-label="Model áº£nh Ã¡p dá»¥ng hÃ ng loáº¡t" value={batchMediaSettings.imageModel} disabled={batchMediaBusy || sceneMediaSettingsSaving} onChange={(event) => {
-                  const selected = mediaCatalog?.imageModels.find((item) => item.id === event.target.value);
-                  updateBatchMediaSettings({ imageModel: event.target.value, ...(selected?.qualities.length && !selected.qualities.includes(batchMediaSettings.imageQuality) ? { imageQuality: selected.qualities[0] } : {}) });
-                }}>{batchImageModelOptions.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}</select></label>
-                {!batchMuseImageSelected && !batchFlowImageSelected && <label className="scene-media-field"><span>Äá»™ phÃ¢n giáº£i áº£nh</span><select aria-label="Äá»™ phÃ¢n giáº£i áº£nh Ã¡p dá»¥ng hÃ ng loáº¡t" value={batchMediaSettings.imageQuality} disabled={batchMediaBusy || sceneMediaSettingsSaving} onChange={(event) => updateBatchMediaSettings({ imageQuality: event.target.value })}>{batchImageQualities.map((quality) => <option key={quality} value={quality}>{quality}</option>)}</select></label>}
-                {batchImageDetailLevels.length > 0 && <label className="scene-media-field"><span>Detail level</span><select aria-label="Detail level áº£nh Ã¡p dá»¥ng hÃ ng loáº¡t" value={batchMediaSettings.imageDetailLevel} disabled={batchMediaBusy || sceneMediaSettingsSaving} onChange={(event) => updateBatchMediaSettings({ imageDetailLevel: event.target.value as MediaGenerationSettings["imageDetailLevel"] })}>{batchImageDetailLevels.map((level) => <option key={level} value={level}>{IMAGE_DETAIL_LEVEL_LABELS[level]}</option>)}</select></label>}
-                <label className="scene-media-field"><span>Há»‡ thá»‘ng táº¡o video</span><select aria-label="Há»‡ thá»‘ng táº¡o video Ã¡p dá»¥ng hÃ ng loáº¡t" value={batchSeedanceHiddenSelected ? "__hidden_seedance__" : batchMediaSettings.videoProvider === "higgsfield" ? "maivideo" : batchMediaSettings.videoProvider} disabled={batchMediaBusy || sceneMediaSettingsSaving} onChange={(event) => updateBatchMediaSettings({ videoProvider: event.target.value as MediaGenerationSettings["videoProvider"] })}>
-                  {batchSeedanceHiddenSelected && <option value="__hidden_seedance__" disabled>Seedance trá»±c tiáº¿p Â· táº¡m áº©n</option>}<option value="maivideo">MaiVideo</option><option value="muse">Muse.ai Â· Seedance Gateway</option><option value="flow">Flow Â· Seedance Gateway</option>
-                </select></label>
-                {batchSeedanceHiddenSelected && <small className="scene-media-settings-help">Dá»± Ã¡n Ä‘ang dÃ¹ng Seedance trá»±c tiáº¿p tá»« seedance.maivideo.top, hiá»‡n táº¡m áº©n. Chá»n MaiVideo, Muse.ai hoáº·c Flow Ä‘á»ƒ táº¡o video má»›i.</small>}
-                {batchMediaAccountSelected && <label className="scene-media-field"><span>{batchFlowSelected || batchFlowImageSelected ? "API key Seedance Â· Flow" : batchMuseSelected || batchMuseImageSelected ? "API key Seedance Â· Muse.ai" : "TÃ i khoáº£n Seedance"}</span><select aria-label="TÃ i khoáº£n API áº£nh vÃ  video Ã¡p dá»¥ng hÃ ng loáº¡t" value={batchMediaSettings.seedanceAccountId === defaultSeedanceAccountId ? "" : batchMediaSettings.seedanceAccountId || ""} disabled={batchMediaBusy || sceneMediaSettingsSaving} onChange={(event) => updateBatchMediaSettings({ seedanceAccountId: event.target.value })}>
-                  <option value="">Máº·c Ä‘á»‹nh{seedanceAccounts.find((account) => account.id === defaultSeedanceAccountId) ? ` Â· ${seedanceAccounts.find((account) => account.id === defaultSeedanceAccountId)?.name}` : " Â· chÆ°a káº¿t ná»‘i"}</option>
-                  {seedanceAccounts.filter((account) => account.id !== defaultSeedanceAccountId).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
-                </select><small className="scene-media-settings-help"><Link href="/settings#seedance-login">{seedanceAccounts.length ? "Quáº£n lÃ½ tÃ i khoáº£n" : "Káº¿t ná»‘i API key Seedance"}</Link></small></label>}
-                {batchSeedanceSelected && <label className="scene-media-field"><span>Cháº¿ Ä‘á»™ chat Seedance</span><select aria-label="Cháº¿ Ä‘á»™ chat Seedance Ã¡p dá»¥ng hÃ ng loáº¡t" value={batchMediaSettings.seedanceChatMode} disabled={batchMediaBusy || sceneMediaSettingsSaving} onChange={(event) => updateBatchMediaSettings({ seedanceChatMode: event.target.value === "Pro" ? "Pro" : "Fast" })}><option value="Fast">Fast Â· máº·c Ä‘á»‹nh</option><option value="Pro">Pro</option></select></label>}
-                <label className="scene-media-field"><span>Model video</span><select aria-label="Model video Ã¡p dá»¥ng hÃ ng loáº¡t" value={batchSeedanceHiddenSelected ? "__hidden_seedance__" : batchMediaSettings.videoModel} disabled={batchMediaBusy || sceneMediaSettingsSaving} onChange={(event) => {
-                  const selected = batchVideoModelOptions.find((item) => item.id === event.target.value);
-                  const videoQuality = selected?.qualities.length && !selected.qualities.includes(batchMediaSettings.videoQuality) ? selected.qualities[0] : batchMediaSettings.videoQuality;
-                  updateBatchMediaSettings({ videoProvider: selected?.provider || batchMediaSettings.videoProvider, videoModel: event.target.value, videoQuality, videoDurationSec: normalizeVideoDuration(batchMediaSettings.videoDurationSec, selected, videoQuality), ...(selected?.supportsMultiShot === false ? { videoMultiShot: false } : {}), ...(selected?.supportsAudio === false ? { videoAudio: false } : {}), ...(selected?.supportsOffPeak === false ? { videoOffPeak: false } : {}) });
-                }}>{batchSeedanceHiddenSelected && <option value="__hidden_seedance__" disabled>Model Seedance trá»±c tiáº¿p Â· táº¡m áº©n</option>}{batchVideoModelOptions.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}</select></label>
-                <label className="scene-media-field"><span>Cháº¥t lÆ°á»£ng video</span>{batchProviderAccountSelected ? <select aria-label="Cháº¥t lÆ°á»£ng video Ã¡p dá»¥ng hÃ ng loáº¡t" value="profile" disabled><option value="profile">{batchFlowSelected ? "1080p Â· cá»‘ Ä‘á»‹nh" : batchMuseSelected ? "Theo profile Muse.ai" : "Theo profile Seedance"}</option></select> : <select aria-label="Cháº¥t lÆ°á»£ng video Ã¡p dá»¥ng hÃ ng loáº¡t" value={batchMediaSettings.videoQuality} disabled={batchMediaBusy || sceneMediaSettingsSaving} onChange={(event) => updateBatchMediaSettings({ videoQuality: event.target.value })}>{batchVideoQualities.map((quality) => <option key={quality} value={quality}>{quality}</option>)}</select>}</label>
-                <label className="scene-media-field"><span>Thá»i lÆ°á»£ng clip</span><select aria-label="Thá»i lÆ°á»£ng clip Ã¡p dá»¥ng hÃ ng loáº¡t" value={batchMediaSettings.videoDurationMode} disabled={project.presetId === "ai-drama" || batchMediaBusy || sceneMediaSettingsSaving} onChange={(event) => updateBatchMediaSettings({ videoDurationMode: event.target.value === "fixed" ? "fixed" : "scene" })}>
-                  <option value="scene">Theo thá»i lÆ°á»£ng tá»«ng cáº£nh</option>{project.presetId !== "ai-drama" && <option value="fixed">Cá»‘ Ä‘á»‹nh theo giÃ¢y</option>}
-                </select>{project.presetId !== "ai-drama" && batchMediaSettings.videoDurationMode === "fixed" && <select aria-label="Sá»‘ giÃ¢y clip cá»‘ Ä‘á»‹nh Ã¡p dá»¥ng hÃ ng loáº¡t" value={batchMediaSettings.videoDurationSec} disabled={batchMediaBusy || sceneMediaSettingsSaving} onChange={(event) => updateBatchMediaSettings({ videoDurationSec: Number(event.target.value) })}>{batchVideoDurationChoices.map((seconds) => <option key={seconds} value={seconds}>{seconds} giÃ¢y</option>)}</select>}{project.presetId === "ai-drama" && <small className="scene-media-settings-help">{batchMuseSelected ? "Muse.ai chá»‰ nháº­n clip 5 hoáº·c 10 giÃ¢y; cáº£nh dÃ i hÆ¡n dÃ¹ng tá»‘i Ä‘a 10 giÃ¢y." : batchFlowSelected ? "Flow nháº­n clip 6, 8 hoáº·c 10 giÃ¢y; thá»i lÆ°á»£ng cáº£nh Ä‘Æ°á»£c lÃ m trÃ²n lÃªn má»‘c phÃ¹ há»£p, tá»‘i Ä‘a 10 giÃ¢y." : "Clip Phim AI luÃ´n khá»›p cáº£nh 5/10/15 giÃ¢y."}</small>}</label>
-                {batchFlowSelected && <label className="scene-media-field"><span>Tham chiáº¿u Flow</span>{isFlowStoryOnlyPreset(project.presetId)
-                  ? <select aria-label="Tham chiáº¿u Flow Ã¡p dá»¥ng hÃ ng loáº¡t" value="ingredients" disabled><option value="ingredients">Ingredients / References Â· Story</option></select>
-                  : <select aria-label="Tham chiáº¿u Flow Ã¡p dá»¥ng hÃ ng loáº¡t" value={batchMediaSettings.flowReferenceMode} disabled={batchMediaBusy || sceneMediaSettingsSaving} onChange={(event) => updateBatchMediaSettings({ flowReferenceMode: event.target.value === "frames" ? "frames" : "ingredients" })}><option value="ingredients">Ingredients / References</option><option value="frames">Frames Â· khung Ä‘áº§u vÃ  cuá»‘i</option></select>}</label>}
-              </div>
-              <div className="scene-media-toggles batch-media-toggles">
-                <label><input type="checkbox" checked={batchMediaSettings.imageUseCharacterReferences} disabled={batchMediaBusy} onChange={(event) => updateBatchMediaSettings({ imageUseCharacterReferences: event.target.checked })} /><span>Há»“ sÆ¡ nhÃ¢n váº­t cho áº£nh cáº£nh</span></label>
-                {!batchProviderAccountSelected && <>
-                  <label><input type="checkbox" checked={batchPixverseSelected ? true : batchMediaSettings.videoMultiShot} disabled={batchMediaBusy || batchPixverseSelected || selectedBatchVideoModel?.supportsMultiShot === false} onChange={(event) => updateBatchMediaSettings({ videoMultiShot: event.target.checked })} /><span>Multi-shot{batchPixverseSelected ? " Â· luÃ´n báº­t vá»›i PixVerse" : ""}</span></label>
-                  <label><input type="checkbox" checked={batchPixverseSelected ? true : batchMediaSettings.videoAudio} disabled={batchMediaBusy || batchPixverseSelected || selectedBatchVideoModel?.supportsAudio === false} onChange={(event) => updateBatchMediaSettings({ videoAudio: event.target.checked })} /><span>Ã‚m thanh model{batchPixverseSelected ? " Â· luÃ´n báº­t vá»›i PixVerse" : ""}</span></label>
-                  <label><input type="checkbox" checked={batchVideoOffPeakRequired || (selectedBatchVideoModel?.supportsOffPeak === false ? false : batchMediaSettings.videoOffPeak)} disabled={batchMediaBusy || batchVideoOffPeakRequired || selectedBatchVideoModel?.supportsOffPeak === false} onChange={(event) => updateBatchMediaSettings({ videoOffPeak: event.target.checked })} /><span>{batchVideoOffPeakRequired ? "Off-peak Â· báº¯t buá»™c vá»›i PixVerse" : selectedBatchVideoModel?.supportsOffPeak === false ? "Off-peak Â· khÃ´ng há»— trá»£" : "Off-peak"}</span></label>
-                </>}
-                <label><input type="checkbox" checked={batchMediaSettings.videoUseCharacterReferences} disabled={batchFlowFramesSelected || batchMediaBusy} onChange={(event) => updateBatchMediaSettings({ videoUseCharacterReferences: event.target.checked })} /><span>{batchFlowFramesSelected ? "áº¢nh nhÃ¢n váº­t Â· chá»‰ Ingredients" : "áº¢nh nhÃ¢n váº­t cho video"}</span></label>
-                <label><input type="checkbox" checked={batchMediaSettings.videoUseLocationReferences} disabled={batchFlowFramesSelected || batchMediaBusy} onChange={(event) => updateBatchMediaSettings({ videoUseLocationReferences: event.target.checked })} /><span>{batchFlowFramesSelected ? "áº¢nh bá»‘i cáº£nh Â· chá»‰ Ingredients" : project.presetId === "ai-drama" ? "áº¢nh & mÃ´ táº£ bá»‘i cáº£nh cho video" : "áº¢nh bá»‘i cáº£nh (chá»‰ dÃ¹ng khi táº¯t áº£nh cáº£nh)"}</span></label>
-                <label><input type="checkbox" checked={batchMediaSettings.videoUseSceneImageReference} disabled={batchFlowFramesSelected || batchMediaBusy} onChange={(event) => updateBatchMediaSettings({ videoUseSceneImageReference: event.target.checked })} /><span>{batchFlowFramesSelected ? "áº¢nh cáº£nh lÃ m khung Ä‘áº§u Flow Â· báº¯t buá»™c" : "áº¢nh cáº£nh lÃ m tham chiáº¿u"}</span></label>
-              </div>
-              <div className="batch-media-regenerate">
-                <span>Tuá»³ chá»n ghi Ä‘Ã¨ media Ä‘Ã£ cÃ³</span>
-                <div className="scene-media-toggles">
-                  <label><input type="checkbox" checked={batchRegenerateImages} disabled={batchMediaBusy} onChange={(event) => setBatchRegenerateImages(event.target.checked)} /><span>Táº¡o láº¡i áº£nh Ä‘Ã£ cÃ³</span></label>
-                  <label><input type="checkbox" checked={batchRegenerateVideos} disabled={batchMediaBusy || videoQueueRunning} onChange={(event) => setBatchRegenerateVideos(event.target.checked)} /><span>Táº¡o láº¡i video AI Ä‘Ã£ cÃ³</span></label>
-                </div>
-              </div>
-              {batchMediaSettings.videoDurationMode === "scene" && <small className={`batch-media-duration-note ${batchOverLimitCount ? "warning" : ""}`}>
-                {batchOverLimitCount
-                  ? `${batchOverLimitCount} cáº£nh dÃ i hÆ¡n giá»›i háº¡n ${batchVideoMaxDuration}s cá»§a model/cháº¥t lÆ°á»£ng Ä‘Ã£ chá»n; clip sáº½ Ä‘Æ°á»£c táº¡o tá»‘i Ä‘a ${batchVideoMaxDuration}s vÃ  láº·p pháº§n cÃ²n láº¡i khi ghÃ©p. HÃ£y chá»n model há»— trá»£ clip dÃ i hÆ¡n náº¿u cáº§n chuyá»ƒn Ä‘á»™ng xuyÃªn suá»‘t.`
-                  : batchSeedanceSelected ? `Seedance chá»‰ nháº­n clip 5, 10 hoáº·c 15 giÃ¢y; má»—i cáº£nh Ä‘Æ°á»£c lÃ m trÃ²n lÃªn má»‘c káº¿ tiáº¿p.`  : batchMuseSelected ? `Muse.ai chá»‰ nháº­n clip 5 hoáº·c 10 giÃ¢y; má»—i cáº£nh dÃ i hÆ¡n 5 giÃ¢y dÃ¹ng tá»‘i Ä‘a 10 giÃ¢y.` : batchFlowSelected ? `Flow nháº­n 6/8/10 giÃ¢y; má»—i cáº£nh Ä‘Æ°á»£c lÃ m trÃ²n lÃªn má»‘c phÃ¹ há»£p, tá»‘i Ä‘a 10 giÃ¢y.` : `Theo timecode cáº£nh Â· tá»‘i Ä‘a ${batchVideoMaxDuration}s/model Â· nhÃ³m nÃ y tá»‘i Ä‘a ${Math.max(0, ...filteredScenes.map((scene) => Math.ceil(sceneDurationSeconds(scene, project.sceneDurationSec))))}s.`}
-              </small>}
-              {(mediaCatalogError || mediaCatalog?.videoError) && batchMediaSettings.videoProvider === "maivideo" && <small className="batch-media-duration-note warning">KhÃ´ng táº£i Ä‘Æ°á»£c model catalog MaiVideo; Ä‘ang giá»¯ lá»±a chá»n Ä‘Ã£ lÆ°u. Kiá»ƒm tra API key MaiVideo Ä‘á»ƒ chá»n model khÃ¡c.</small>}
-            </details>
-          </>
-        )}
-        {!scenesLoading && !sceneError && scenes.length > 0 && filteredScenes.length > 0 && (
-          <div className="scene-table-scroll">
-            <div className="scene-table" role="table" aria-label="Danh sÃ¡ch cáº£nh">
-              <div className="scene-table-head" role="rowgroup"><div className="scene-table-row" role="row"><span role="columnheader">Cáº£nh</span><span role="columnheader">MÃ´ táº£ / thoáº¡i</span><span role="columnheader">Há»“ sÆ¡</span><span role="columnheader">AI pre-check</span><span role="columnheader">Duyá»‡t</span><span role="columnheader">Media</span><span role="columnheader">TTS</span></div></div>
-              <div className="scene-table-body" role="rowgroup">
-                {filteredScenes.map((scene) => {
-                  const media = scene.media;
-                  const voice = sceneText(scene, "dialogue_or_voiceover", "voiceText", "voiceover");
-                  const audio = sceneAudioRecord(scene);
-                  const dialogueSegments = project.presetId === "ai-drama" ? sceneDialogueSegments(scene, characterProfiles) : [];
-                  const readyDialogueSegments = dialogueSegments.filter((segment) => Boolean(segment.audio?.localPath)).length;
-                  const ttsReady = project.presetId === "ai-drama" ? dialogueSegments.length > 0 && readyDialogueSegments === dialogueSegments.length : Boolean(audio.localPath);
-                  const ttsPending = project.presetId === "ai-drama" ? dialogueSegments.length > 0 : Boolean(voice);
-                  const review = sceneReviewStatus(scene);
-                  const aiReview = sceneAiReview(scene);
-                  const characterIds = sceneCharacterIds(scene);
-                  const location = project.locations?.find((item) => item.id === sceneLocationId(scene));
-                  const description = sceneText(scene, "purpose", "beat_summary") || "Cáº£nh chÆ°a cÃ³ mÃ´ táº£";
-                  const summary = project.presetId === "ai-drama" && dialogueSegments.length
-                    ? dialogueSegments.map((segment) => segment.text).join(" Â· ")
-                    : voice || sceneText(scene, "video_prompt", "videoPrompt");
-                  return <div role="row" tabIndex={0} aria-label={`${sceneNumberLabel(scene)}: ${sceneAiReviewLabel(aiReview.status)} Â· ${sceneReviewLabel(review)} Â· ${sceneMediaKindLabel(media, project.presetId === "ai-drama")} Â· ${compactSceneText(description, 90)}`} className={`scene-table-row scene-table-item ${selectedScene?.id === scene.id ? "active" : ""}`} key={`${scene.chunkId}-${scene.id}`} onClick={() => setSelectedSceneId(scene.id)} onKeyDown={(event) => {
-                    if (event.key !== "Enter" && event.key !== " ") return;
-                    event.preventDefault();
-                    setSelectedSceneId(scene.id);
-                  }}>
-                    <span className="scene-table-cell scene-table-ident" role="cell"><span className="scene-list-id">{sceneNumberLabel(scene)}</span>{scene.referenceImagePreviewUrl && <img className="scene-list-reference" src={`${scene.referenceImagePreviewUrl}${scene.referenceImagePreviewUrl.includes("?") ? "&" : "?"}thumbnail=1`} alt="" loading="lazy" decoding="async" />}<small>{scene.chunkId}</small></span>
-                    <span className="scene-table-cell scene-table-copy" role="cell"><strong>{description}</strong><small>{compactSceneText(summary || "ChÆ°a cÃ³ thoáº¡i hoáº·c prompt", 160)}</small></span>
-                    <span className="scene-table-cell scene-table-profiles" role="cell"><strong>{characterIds.length} nhÃ¢n váº­t</strong><small>{location?.name || "ChÆ°a gÃ¡n bá»‘i cáº£nh"}</small></span>
-                    <span className="scene-table-cell scene-table-status" role="cell"><span className={`scene-ai-badge ${sceneAiReviewTone(aiReview.status)}`}>{sceneAiReviewLabel(aiReview.status)}</span><small>{aiReview.score ? `${aiReview.score}/100` : "ChÆ°a cÃ³ Ä‘iá»ƒm"}</small></span>
-                    <span className="scene-table-cell scene-table-status" role="cell"><span className={`scene-review-badge ${sceneReviewTone(review)}`}>{sceneReviewLabel(review)}</span></span>
-                    <span className="scene-table-cell scene-table-status" role="cell"><strong>{sceneMediaKindLabel(media, project.presetId === "ai-drama")}</strong><small>{sceneMediaReady(media, project.presetId === "ai-drama") ? "Sáºµn sÃ ng" : media?.status === "failed" ? "Lá»—i" : media?.status === "ready" ? "Cáº§n táº¡o video" : "ChÆ°a táº¡o"}</small></span>
-                    <span className="scene-table-cell scene-table-status" role="cell"><span className={`scene-tts-badge ${ttsReady ? "ready" : ttsPending ? "pending" : "not-needed"}`}>{project.presetId === "ai-drama" ? `${readyDialogueSegments}/${dialogueSegments.length}` : audio.localPath ? "CÃ³ TTS" : voice ? "ChÆ°a TTS" : "KhÃ´ng lá»i"}</span></span>
-                  </div>;
-                })}
-              </div>
-            </div>
-          </div>
-        )}
-        {!scenesLoading && !sceneError && !filteredScenes.length && scenes.length > 0 && <div className="scene-review-empty">KhÃ´ng cÃ³ cáº£nh khá»›p bá»™ lá»c. HÃ£y Ä‘á»•i Ä‘iá»u kiá»‡n tÃ¬m kiáº¿m.</div>}
-        {!scenesLoading && !sceneError && sceneDetailOpen && selectedScene && (
-          <div className="scene-detail-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSceneDetailOpen(false); }} onKeyDown={(event) => { if (event.key === "Escape") setSceneDetailOpen(false); }}>
-            <article className="scene-detail scene-detail-modal" role="dialog" aria-modal="true" aria-labelledby="selected-scene-detail-title">
-              <button className="scene-detail-close" type="button" autoFocus onClick={() => setSceneDetailOpen(false)} aria-label="ÄÃ³ng chi tiáº¿t cáº£nh">Ã—</button>
-              <div className="scene-detail-heading">
-                <div><div className="section-kicker">{selectedScene.chunkId}</div><h3 id="selected-scene-detail-title">{sceneNumberLabel(selectedScene)} Â· {sceneText(selectedScene, "purpose", "beat_summary") || "Scene detail"}</h3></div>
-                <div className="scene-detail-badges"><span className={`scene-media-status ${sceneMediaReady(selectedMedia, project.presetId === "ai-drama") ? "ready" : "missing"}`}><span className="status-dot" />{sceneMediaKindLabel(selectedMedia, project.presetId === "ai-drama")}</span>{selectedMedia?.kind === "video" && selectedMedia.durationSec && <span className="scene-media-status ready">Clip gá»‘c Â· {selectedMedia.durationSec}s</span>}<span className={`scene-ai-badge ${sceneAiReviewTone(selectedAiReview.status)}`}>{sceneAiReviewLabel(selectedAiReview.status)} Â· {selectedAiReview.score}</span><span className={`scene-review-badge ${sceneReviewTone(selectedReviewStatus)}`}>{sceneReviewLabel(selectedReviewStatus)}</span></div>
-              </div>
-              <div className="scene-preview-frame">
-                {selectedMedia?.status === "ready" && selectedScene.previewUrl
-                  ? selectedMedia.kind === "image"
-                    ? <img src={selectedScene.previewUrl} alt={sceneNumberLabel(selectedScene)} />
-                    : <video src={selectedScene.previewUrl} controls preload="metadata" />
-                  : <div className="scene-preview-placeholder"><Icon name="play" size={26} /><span>ChÆ°a cÃ³ media preview cho cáº£nh nÃ y.</span></div>}
-              </div>
-              <div className="scene-reference-frame-card">
-                <div className="scene-reference-frame-copy"><strong>áº¢nh cáº£nh AI</strong><small>{selectedReferenceImage?.stale ? "áº¢nh Ä‘Ã£ cÅ© Â· video váº«n cÃ³ thá»ƒ dÃ¹ng áº£nh nÃ y" : selectedReferenceImage ? "áº¢nh cáº£nh nÃ y Ä‘Æ°á»£c dÃ¹ng Ä‘á»ƒ táº¡o video" : selectedCharacterIds.length && selectedSceneLocation ? "Táº¡o tá»« há»“ sÆ¡ nhÃ¢n váº­t vÃ  bá»‘i cáº£nh Ä‘Ã£ gÃ¡n" : selectedSceneLocation ? "Táº¡o tá»« há»“ sÆ¡ bá»‘i cáº£nh Ä‘Ã£ gÃ¡n" : selectedCharacterIds.length ? "Táº¡o tá»« há»“ sÆ¡ nhÃ¢n váº­t Ä‘Ã£ gÃ¡n" : "ChÆ°a gÃ¡n há»“ sÆ¡ tham chiáº¿u"}</small></div>
-                {selectedReferenceImageUrl
-                  ? <img src={selectedReferenceImageUrl} alt={`áº¢nh cáº£nh ${sceneNumberLabel(selectedScene)}`} />
-                  : <div className="scene-reference-frame-empty">ChÆ°a cÃ³ áº£nh cáº£nh</div>}
-                {Array.isArray(selectedReferenceImage?.referenceCharacterIds) && selectedReferenceImage.referenceCharacterIds.length > 0 && <span className="scene-reference-frame-meta">CÃ³ {selectedReferenceImage.referenceCharacterIds.length} áº£nh nhÃ¢n váº­t</span>}
-                {selectedReferenceImage?.referenceLocationId && <span className="scene-reference-frame-meta">CÃ³ áº£nh bá»‘i cáº£nh: {project.locations?.find((location) => location.id === selectedReferenceImage.referenceLocationId)?.name || "Ä‘Ã£ tham chiáº¿u"}</span>}
-              </div>
-              <div className="scene-detail-actions">
-                <button className="secondary-button compact" type="button" onClick={() => void generateSceneImage(selectedScene)} disabled={Boolean(generatingSceneId) || selectedScene.mediaJob?.status === "queued" || selectedScene.mediaJob?.status === "running" || sceneMediaSettingsSaving || batchMediaBusy || videoQueueRunning || ttsRunning || scriptBlocksIndependentTasks}>
-                  <Icon name="spark" size={14} />{selectedScene.mediaJob?.kind === "image" && selectedScene.mediaJob.status === "queued" ? "áº¢nh Ä‘ang chá»â€¦" : selectedScene.mediaJob?.kind === "image" && selectedScene.mediaJob.status === "running" ? "Äang táº¡o áº£nh cáº£nhâ€¦" : generatingSceneId === selectedScene.id && generatingSceneMediaKind === "image" ? "Äang xáº¿p áº£nh cáº£nhâ€¦" : selectedReferenceImage ? "Táº¡o láº¡i áº£nh cáº£nh" : "Táº¡o áº£nh cáº£nh"}
-                </button>
-                <button className="primary-button" type="button" onClick={() => void generateSceneVideo(selectedScene)} disabled={batchSeedanceHiddenSelected || Boolean(generatingSceneId) || selectedScene.mediaJob?.status === "queued" || selectedScene.mediaJob?.status === "running" || sceneMediaSettingsSaving || batchMediaBusy || videoQueueRunning || ttsRunning || scriptBlocksIndependentTasks}>
-                  <Icon name="play" size={15} />{selectedScene.mediaJob?.kind === "video" && selectedScene.mediaJob.status === "queued" ? "Video Ä‘ang chá»â€¦" : selectedScene.mediaJob?.kind === "video" && selectedScene.mediaJob.status === "running" ? "Äang táº¡o videoâ€¦" : generatingSceneId === selectedScene.id && generatingSceneMediaKind === "video" ? "Äang xáº¿p videoâ€¦" : selectedMedia?.kind === "video" ? "Táº¡o láº¡i video AI" : "Táº¡o video AI"}
-                </button>
-                {selectedMedia?.sourceUrl && <a className="secondary-button compact" href={selectedMedia.sourceUrl} target="_blank" rel="noreferrer">Má»Ÿ nguá»“n</a>}
-                <div className="scene-nav-actions"><button className="secondary-button compact" type="button" onClick={() => moveSelectedScene(-1)} disabled={selectedFilteredIndex <= 0} aria-label="Cáº£nh trÆ°á»›c">â† TrÆ°á»›c</button><span>{selectedFilteredIndex + 1} / {filteredScenes.length}</span><button className="secondary-button compact" type="button" onClick={() => moveSelectedScene(1)} disabled={selectedFilteredIndex < 0 || selectedFilteredIndex >= filteredScenes.length - 1} aria-label="Cáº£nh sau">Sau â†’</button></div>
-              </div>
-              <details className="scene-detail-disclosure">
-                <summary><span><strong>áº¢nh & video</strong><small>áº¢nh {imageModelDisplayName(selectedSceneMediaSettings.imageModel)}{!sceneMuseImageSelected && !sceneFlowImageSelected ? ` Â· ${selectedSceneMediaSettings.imageQuality}${selectedImageDetailLevels.length ? ` Â· ${IMAGE_DETAIL_LEVEL_LABELS[selectedSceneMediaSettings.imageDetailLevel]}` : ""}` : ""} / {sceneSeedanceHiddenSelected ? "Seedance trá»±c tiáº¿p Â· táº¡m áº©n" : `${videoProviderDisplayName(selectedSceneMediaSettings.videoProvider)} Â· ${videoModelDisplayName(selectedSceneMediaSettings.videoModel, selectedSceneMediaSettings.videoProvider)}`}{sceneMuseSelected ? " Â· profile máº·c Ä‘á»‹nh" : !sceneSeedanceHiddenSelected ? ` Â· ${selectedSceneMediaSettings.videoQuality}` : ""} Â· {selectedSceneRequestedVideoDuration}s Â· khung hÃ¬nh {project.aspectRatio}</small></span><span className="scene-detail-disclosure-status">{hasSceneMediaOverride ? "RiÃªng cáº£nh" : "Theo project"}</span></summary>
-                <section className="scene-media-settings-card" aria-label="Cáº¥u hÃ¬nh táº¡o áº£nh vÃ  video cho cáº£nh">
-                  <div className="scene-media-settings-heading"><div><strong>Cáº¥u hÃ¬nh táº¡o áº£nh & video cho cáº£nh nÃ y</strong><small>Khung hÃ¬nh {project.aspectRatio} Ä‘Æ°á»£c láº¥y tá»« dá»± Ã¡n vÃ  Ã¡p dá»¥ng cho cáº£ áº£nh láº«n video. Má»—i cáº£nh cÃ³ thá»ƒ dÃ¹ng model riÃªng; máº·c Ä‘á»‹nh káº¿ thá»«a cáº¥u hÃ¬nh project.</small></div><span>{sceneMediaSettingsSaving ? "Äang lÆ°uâ€¦" : selectedSceneMediaJobActive ? "Äang cháº¡y job Â· cáº¥u hÃ¬nh cáº£nh táº¡m khÃ³a" : hasSceneMediaOverride ? "LÆ°u riÃªng cho cáº£nh" : "Theo project"}</span></div>
-                  <div className="scene-media-settings-grid">
-                  <label className="scene-media-field"><span>Model áº£nh</span><select aria-label="Model áº£nh cho cáº£nh" value={selectedSceneMediaSettings.imageModel} disabled={sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive || batchMediaBusy} onChange={(event) => updateSelectedSceneMediaSettings({ imageModel: event.target.value })}>
-                    {imageModelOptions.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
-                  </select></label>
-                  {!sceneMuseImageSelected && !sceneFlowImageSelected && <label className="scene-media-field"><span>Äá»™ phÃ¢n giáº£i áº£nh</span><select aria-label="Äá»™ phÃ¢n giáº£i áº£nh cho cáº£nh" value={selectedSceneMediaSettings.imageQuality} disabled={sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive || batchMediaBusy} onChange={(event) => updateSelectedSceneMediaSettings({ imageQuality: event.target.value })}>
-                    {imageQualities.map((quality) => <option key={quality} value={quality}>{quality}</option>)}
-                  </select></label>}
-                  {selectedImageDetailLevels.length > 0 && <label className="scene-media-field"><span>Detail level</span><select aria-label="Detail level áº£nh cho cáº£nh" value={selectedSceneMediaSettings.imageDetailLevel} disabled={sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive || batchMediaBusy} onChange={(event) => updateSelectedSceneMediaSettings({ imageDetailLevel: event.target.value as MediaGenerationSettings["imageDetailLevel"] })}>{selectedImageDetailLevels.map((level) => <option key={level} value={level}>{IMAGE_DETAIL_LEVEL_LABELS[level]}</option>)}</select></label>}
-                  <label className="scene-media-field"><span>Há»‡ thá»‘ng táº¡o video</span><select aria-label="Há»‡ thá»‘ng táº¡o video cho cáº£nh" value={sceneSeedanceHiddenSelected ? "__hidden_seedance__" : selectedSceneMediaSettings.videoProvider === "higgsfield" ? "maivideo" : selectedSceneMediaSettings.videoProvider} disabled={sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive || batchMediaBusy} onChange={(event) => updateSelectedSceneMediaSettings({ videoProvider: event.target.value as MediaGenerationSettings["videoProvider"] })}>
-                    {sceneSeedanceHiddenSelected && <option value="__hidden_seedance__" disabled>Seedance trá»±c tiáº¿p Â· táº¡m áº©n</option>}<option value="maivideo">MaiVideo</option><option value="muse">Muse.ai Â· Seedance Gateway</option><option value="flow">Flow Â· Seedance Gateway</option>
-                  </select></label>
-                  {sceneMediaAccountSelected && <label className="scene-media-field"><span>{sceneFlowSelected || sceneFlowImageSelected ? "API key Seedance Â· Flow" : sceneMuseSelected || sceneMuseImageSelected ? "API key Seedance Â· Muse.ai" : "TÃ i khoáº£n Seedance"}</span><select aria-label="TÃ i khoáº£n API áº£nh vÃ  video cho cáº£nh" value={selectedSceneMediaSettings.seedanceAccountId === defaultSeedanceAccountId ? "" : selectedSceneMediaSettings.seedanceAccountId || ""} disabled={sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive || batchMediaBusy} onChange={(event) => updateSelectedSceneMediaSettings({ seedanceAccountId: event.target.value })}>
-                    <option value="">Máº·c Ä‘á»‹nh{seedanceAccounts.find((account) => account.id === defaultSeedanceAccountId) ? ` Â· ${seedanceAccounts.find((account) => account.id === defaultSeedanceAccountId)?.name}` : " Â· chÆ°a káº¿t ná»‘i"}</option>
-                    {seedanceAccounts.filter((account) => account.id !== defaultSeedanceAccountId).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
-                  </select><small className="scene-media-settings-help"><Link href="/settings#seedance-login">{seedanceAccounts.length ? "Quáº£n lÃ½ tÃ i khoáº£n" : "Káº¿t ná»‘i API key Seedance"}</Link></small></label>}
-                  {sceneSeedanceSelected && <label className="scene-media-field"><span>Cháº¿ Ä‘á»™ chat Seedance</span><select aria-label="Cháº¿ Ä‘á»™ chat Seedance cho cáº£nh" value={selectedSceneMediaSettings.seedanceChatMode} disabled={sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive || batchMediaBusy} onChange={(event) => updateSelectedSceneMediaSettings({ seedanceChatMode: event.target.value === "Pro" ? "Pro" : "Fast" })}><option value="Fast">Fast Â· máº·c Ä‘á»‹nh</option><option value="Pro">Pro</option></select></label>}
-                  <label className="scene-media-field"><span>Model video</span><select aria-label="Model video cho cáº£nh" value={sceneSeedanceHiddenSelected ? "__hidden_seedance__" : selectedSceneMediaSettings.videoModel} disabled={sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive || batchMediaBusy} onChange={(event) => updateSelectedSceneMediaSettings({ videoModel: event.target.value })}>
-                    {sceneSeedanceHiddenSelected && <option value="__hidden_seedance__" disabled>Model Seedance trá»±c tiáº¿p Â· táº¡m áº©n</option>}
-                    {videoModelOptions.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
-                  </select></label>
-                  {sceneSeedanceHiddenSelected && <small className="scene-media-settings-help">Dá»± Ã¡n Ä‘ang dÃ¹ng Seedance trá»±c tiáº¿p tá»« seedance.maivideo.top, hiá»‡n táº¡m áº©n. Chá»n MaiVideo, Muse.ai hoáº·c Flow Ä‘á»ƒ táº¡o video má»›i.</small>}
-                  <label className="scene-media-field"><span>Cháº¥t lÆ°á»£ng video</span>{sceneProviderAccountSelected ? <select aria-label="Cháº¥t lÆ°á»£ng video cho cáº£nh" value="profile" disabled><option value="profile">{sceneFlowSelected ? "1080p Â· cá»‘ Ä‘á»‹nh" : sceneMuseSelected ? "Theo profile Muse.ai" : "Theo profile Seedance"}</option></select> : <select aria-label="Cháº¥t lÆ°á»£ng video cho cáº£nh" value={selectedSceneMediaSettings.videoQuality} disabled={sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive || batchMediaBusy} onChange={(event) => updateSelectedSceneMediaSettings({ videoQuality: event.target.value })}>
-                    {videoQualities.map((quality) => <option key={quality} value={quality}>{quality}</option>)}
-                  </select>}</label>
-                  <label className="scene-media-field"><span>Thá»i lÆ°á»£ng clip</span><select aria-label="Thá»i lÆ°á»£ng video cho cáº£nh" value={selectedSceneMediaSettings.videoDurationMode === "scene" ? "scene" : String(selectedSceneMediaSettings.videoDurationSec)} disabled={project.presetId === "ai-drama" || sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive || batchMediaBusy} onChange={(event) => event.target.value === "scene" ? updateSelectedSceneMediaSettings({ videoDurationMode: "scene" }) : updateSelectedSceneMediaSettings({ videoDurationMode: "fixed", videoDurationSec: Number(event.target.value) })}>
-                    <option value="scene">Theo cáº£nh Â· yÃªu cáº§u {selectedSceneRequestedVideoDuration}s</option>
-                    {project.presetId !== "ai-drama" && sceneVideoDurationChoices.map((seconds) => <option key={seconds} value={seconds}>{seconds} giÃ¢y cá»‘ Ä‘á»‹nh</option>)}
-                  </select></label>
-                  {sceneFlowSelected && <label className="scene-media-field"><span>Tham chiáº¿u Flow</span>{isFlowStoryOnlyPreset(project.presetId)
-                    ? <select aria-label="Tham chiáº¿u Flow cho cáº£nh" value="ingredients" disabled><option value="ingredients">Ingredients / References Â· Story</option></select>
-                    : <select aria-label="Tham chiáº¿u Flow cho cáº£nh" value={selectedSceneMediaSettings.flowReferenceMode} disabled={sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive || batchMediaBusy} onChange={(event) => updateSelectedSceneMediaSettings({ flowReferenceMode: event.target.value === "frames" ? "frames" : "ingredients" })}><option value="ingredients">Ingredients / References</option><option value="frames">Frames Â· khung Ä‘áº§u vÃ  cuá»‘i</option></select>}</label>}
-                  </div>
-                  {(sceneFlowFramesSelected || batchFlowFramesSelected) && selectedScene && <div className="scene-media-fields">
-                    <label className="scene-media-field"><span>áº¢nh khung cuá»‘i</span><select aria-label="Chá»n áº£nh khung cuá»‘i Flow" value={selectedScene?.flowFrameEndSceneId || ""} disabled={sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive || batchMediaBusy} onChange={(event) => selectedScene && void updateFlowFrameEndScene(selectedScene, event.target.value)}>
-                      <option value="">Chá»n áº£nh cáº£nh lÃ m khung cuá»‘iâ€¦</option>
-                      {flowFrameImageScenes.filter((scene) => scene.id !== selectedScene?.id).map((scene) => <option key={scene.id} value={scene.id}>{sceneNumberLabel(scene)} Â· {sceneFieldValue(scene, "title", "beat_summary", "purpose") || "áº¢nh cáº£nh sáºµn sÃ ng"}</option>)}
-                    </select><small className="scene-media-settings-help">Khung Ä‘áº§u láº¥y áº£nh hiá»‡n táº¡i cá»§a {selectedScene ? sceneNumberLabel(selectedScene) : "cáº£nh"}; khung cuá»‘i láº¥y áº£nh cáº£nh Ä‘Æ°á»£c chá»n. Flow gá»­i Ä‘Ãºng hai áº£nh theo thá»© tá»± nÃ y.</small></label>
-                  </div>}
-                  <div className="scene-media-toggles">
-                  <label><input type="checkbox" checked={selectedSceneMediaSettings.imageUseCharacterReferences} disabled={sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive} onChange={(event) => updateSelectedSceneMediaSettings({ imageUseCharacterReferences: event.target.checked })} /><span>Há»“ sÆ¡ nhÃ¢n váº­t cho áº£nh cáº£nh</span></label>
-                  {!sceneProviderAccountSelected && <>
-                    <label><input type="checkbox" checked={scenePixverseSelected ? true : selectedSceneMediaSettings.videoMultiShot} disabled={sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive || scenePixverseSelected || selectedVideoModel?.supportsMultiShot === false} onChange={(event) => updateSelectedSceneMediaSettings({ videoMultiShot: event.target.checked })} /><span>Multi-shot{scenePixverseSelected ? " Â· luÃ´n báº­t vá»›i PixVerse" : ""}</span></label>
-                    <label><input type="checkbox" checked={scenePixverseSelected ? true : selectedSceneMediaSettings.videoAudio} disabled={sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive || scenePixverseSelected || selectedVideoModel?.supportsAudio === false} onChange={(event) => updateSelectedSceneMediaSettings({ videoAudio: event.target.checked })} /><span>Ã‚m thanh model{scenePixverseSelected ? " Â· luÃ´n báº­t vá»›i PixVerse" : ""}</span></label>
-                    <label><input type="checkbox" checked={sceneVideoOffPeakRequired || (selectedVideoModel?.supportsOffPeak === false ? false : selectedSceneMediaSettings.videoOffPeak)} disabled={sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive || sceneVideoOffPeakRequired || selectedVideoModel?.supportsOffPeak === false} onChange={(event) => updateSelectedSceneMediaSettings({ videoOffPeak: event.target.checked })} /><span>{sceneVideoOffPeakRequired ? "Off-peak Â· báº¯t buá»™c vá»›i PixVerse" : selectedVideoModel?.supportsOffPeak === false ? "Off-peak Â· khÃ´ng há»— trá»£" : "Off-peak"}</span></label>
-                  </>}
-                  <label><input type="checkbox" checked={selectedSceneMediaSettings.videoUseCharacterReferences} disabled={sceneFlowFramesSelected || batchFlowFramesSelected || sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive} onChange={(event) => updateSelectedSceneMediaSettings({ videoUseCharacterReferences: event.target.checked })} /><span>{sceneFlowFramesSelected || batchFlowFramesSelected ? "áº¢nh nhÃ¢n váº­t Â· chá»‰ Ingredients" : "áº¢nh nhÃ¢n váº­t cho video"}</span></label>
-                  <label><input type="checkbox" checked={selectedSceneMediaSettings.videoUseLocationReferences} disabled={sceneFlowFramesSelected || batchFlowFramesSelected || sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive} onChange={(event) => updateSelectedSceneMediaSettings({ videoUseLocationReferences: event.target.checked })} /><span>{sceneFlowFramesSelected || batchFlowFramesSelected ? "áº¢nh bá»‘i cáº£nh Â· chá»‰ Ingredients" : project.presetId === "ai-drama" ? "áº¢nh & mÃ´ táº£ bá»‘i cáº£nh cho video" : "áº¢nh bá»‘i cáº£nh (chá»‰ dÃ¹ng khi táº¯t áº£nh cáº£nh)"}</span></label>
-                  <label><input type="checkbox" checked={selectedSceneMediaSettings.videoUseSceneImageReference} disabled={sceneFlowFramesSelected || sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive} onChange={(event) => updateSelectedSceneMediaSettings({ videoUseSceneImageReference: event.target.checked })} /><span>{sceneFlowFramesSelected ? "áº¢nh cáº£nh lÃ m khung Ä‘áº§u Flow Â· báº¯t buá»™c" : "áº¢nh cáº£nh lÃ m tham chiáº¿u"}</span></label>
-                  </div>
-                  <small className="scene-media-settings-help">{project.presetId === "ai-drama"
-                    ? "Khi báº­t tham chiáº¿u bá»‘i cáº£nh, mÃ´ táº£ há»“ sÆ¡ Ä‘Æ°á»£c thÃªm vÃ o prompt video vÃ  áº£nh há»“ sÆ¡ Ä‘Æ°á»£c gá»­i kÃ¨m, ká»ƒ cáº£ khi video cÅ©ng dÃ¹ng áº£nh cáº£nh lÃ m frame Ä‘áº§u."
-                    : "Khi báº­t áº£nh cáº£nh lÃ m tham chiáº¿u, áº£nh Ä‘Ã³ Ä‘Ã£ mang thÃ´ng tin bá»‘i cáº£nh nÃªn há»‡ thá»‘ng khÃ´ng gá»­i thÃªm áº£nh há»“ sÆ¡ bá»‘i cáº£nh. Táº¯t áº£nh cáº£nh náº¿u muá»‘n dÃ¹ng áº£nh bá»‘i cáº£nh thay tháº¿."}</small>
-                  <small className="scene-media-settings-help">{sceneProviderAccountSelected ? `${sceneFlowSelected ? "Flow" : sceneMuseSelected ? "Muse.ai" : "Seedance"} Â· clip ${selectedSceneRequestedVideoDuration}s Â· dÃ¹ng cÃ¡c áº£nh tham chiáº¿u Ä‘Ã£ báº­t.` : mediaCatalogError || (selectedSceneMediaSettings.videoProvider === "maivideo" && mediaCatalog?.videoError) ? "KhÃ´ng táº£i Ä‘Æ°á»£c danh sÃ¡ch model; Ä‘ang dÃ¹ng lá»±a chá»n Ä‘Ã£ lÆ°u." : `Cáº£nh ${Math.ceil(selectedSceneDuration)}s Â· clip ${selectedSceneRequestedVideoDuration}s${selectedSceneMediaSettings.videoDurationMode === "scene" && selectedSceneDuration > sceneVideoMaxDuration ? ` Â· giá»›i háº¡n ${sceneVideoMaxDuration}s, pháº§n dÆ° láº·p khi ghÃ©p` : ""}.`}</small>
-                </section>
-              </details>
-              <details className="scene-detail-disclosure">
-                <summary><span><strong>NhÃ¢n váº­t trong cáº£nh</strong><small>áº¢nh há»“ sÆ¡ giÃºp giá»¯ Ä‘Ãºng nháº­n diá»‡n khi táº¡o áº£nh cáº£nh.</small></span><span className="scene-detail-disclosure-status">{sceneCharacterSaving ? "Äang lÆ°uâ€¦" : `${selectedCharacterIds.length} Ä‘Ã£ chá»n`}</span></summary>
-                <section className="scene-character-assignment" aria-label="Chá»n nhÃ¢n váº­t cho cáº£nh">
-                  <div className="scene-character-assignment-heading"><div><strong>NhÃ¢n váº­t xuáº¥t hiá»‡n trong cáº£nh</strong><small>áº¢nh Ä‘Ã£ chá»n sáº½ Ä‘Æ°á»£c gá»­i lÃ m reference image cho MaiVideo.</small></div><span>{sceneCharacterSaving ? "Äang lÆ°uâ€¦" : `${selectedCharacterIds.length} Ä‘Ã£ chá»n`}</span></div>
-                  {characterProfiles.length ? <div className="scene-character-options">{characterProfiles.map((character) => <label className={`scene-character-option ${selectedCharacterIds.includes(character.id) ? "selected" : ""}`} key={character.id}>
-                  <input type="checkbox" checked={selectedCharacterIds.includes(character.id)} disabled={sceneCharacterSaving} onChange={(event) => {
-                    const nextIds = event.target.checked ? [...selectedCharacterIds, character.id] : selectedCharacterIds.filter((id) => id !== character.id);
-                    void saveSceneReferences(nextIds);
-                  }} />
-                  <img src={`/api/projects/${encodeURIComponent(project.slug)}/characters/${encodeURIComponent(character.id)}/image`} alt="" />
-                  <span><strong>{character.name}</strong><small>{character.description || "áº¢nh nháº­n diá»‡n Ä‘Ã£ lÆ°u"}</small></span>
-                  </label>)}</div> : <p className="scene-character-empty">ThÃªm há»“ sÆ¡ vÃ  áº£nh nhÃ¢n váº­t á»Ÿ pháº§n trÃªn Ä‘á»ƒ gÃ¡n cho cáº£nh nÃ y.</p>}
-                </section>
-              </details>
-              <details className="scene-detail-disclosure">
-                <summary><span><strong>Bá»‘i cáº£nh trong cáº£nh</strong><small>{selectedSceneLocation?.name || "ChÆ°a gÃ¡n há»“ sÆ¡ bá»‘i cáº£nh"}</small></span><span className="scene-detail-disclosure-status">{sceneCharacterSaving ? "Äang lÆ°uâ€¦" : selectedSceneLocation ? "ÄÃ£ gÃ¡n" : "Chá»n bá»‘i cáº£nh"}</span></summary>
-                <section className="scene-character-assignment" aria-label="Chá»n bá»‘i cáº£nh cho cáº£nh">
-                  <label className="scene-media-field"><span>Há»“ sÆ¡ bá»‘i cáº£nh chÃ­nh</span><select value={selectedSceneLocationId} disabled={sceneCharacterSaving || !locationProfiles.length} onChange={(event) => void saveSceneReferences(selectedCharacterIds, event.target.value)}>
-                    <option value="">KhÃ´ng gÃ¡n bá»‘i cáº£nh</option>{locationProfiles.map((location) => <option key={location.id} value={location.id}>{location.name}{location.aliases?.length ? ` Â· ${location.aliases.slice(0, 2).join(", ")}` : ""}</option>)}
-                  </select></label>
-                  {selectedSceneLocation && <div className="scene-location-selected"><img src={`/api/projects/${encodeURIComponent(project.slug)}/locations/${encodeURIComponent(selectedSceneLocation.id)}/image`} alt={`áº¢nh bá»‘i cáº£nh ${selectedSceneLocation.name}`} /><span><strong>{selectedSceneLocation.name}</strong><small>{selectedSceneLocation.description || selectedSceneLocation.aliases?.join(", ") || "áº¢nh tham chiáº¿u bá»‘i cáº£nh"}</small></span></div>}
-                  {!locationProfiles.length && <p className="scene-character-empty">ThÃªm há»“ sÆ¡ bá»‘i cáº£nh 4 gÃ³c á»Ÿ pháº§n trÃªn Ä‘á»ƒ tá»± Ä‘á»™ng Ä‘á»“ng bá»™ vá»›i cáº£nh.</p>}
-                </section>
-              </details>
-              <details className="scene-detail-disclosure">
-                <summary><span><strong>Voice & TTS</strong><small>{project.presetId === "ai-drama" ? `${selectedSceneDialogueReadyCount}/${selectedSceneDialogueSegments.length} cÃ¢u cÃ³ audio` : selectedSceneAudio.localPath ? `ÄÃ£ cÃ³ audio Â· ${String(selectedSceneAudio.voiceName || "OmniVoice")}` : selectedSceneVoice ? `Voice: ${selectedSceneVoice.name}` : "ChÆ°a táº¡o audio"}</small></span><span className="scene-detail-disclosure-status">{sceneTtsSaving ? "Äang lÆ°uâ€¦" : "TÃ¹y chá»n"}</span></summary>
-                <section className="scene-tts-card" aria-label="Táº¡o vÃ  chá»n voice cho cáº£nh">
-                  <div className="scene-tts-heading"><div><small>VOICE Cá»¦A Cáº¢NH</small><strong>{project.presetId === "ai-drama" ? "TTS theo tá»«ng lÆ°á»£t thoáº¡i" : "Táº¡o vÃ  nghe TTS riÃªng"}</strong></div><span>{sceneTtsSaving ? "Äang lÆ°u voiceâ€¦" : project.presetId === "ai-drama" ? `${selectedSceneDialogueReadyCount}/${selectedSceneDialogueSegments.length} cÃ¢u cÃ³ audio` : selectedSceneAudio.localPath ? `ÄÃ£ cÃ³ audio Â· ${String(selectedSceneAudio.voiceName || "OmniVoice")}` : "ChÆ°a táº¡o audio"}</span></div>
-                  {project.presetId === "ai-drama" ? <>
-                    <label className="scene-tts-field"><span>NhÃ¢n váº­t thoáº¡i chÃ­nh</span><select value={selectedSceneSpeakerId} onChange={(event) => void saveSceneSpeaker(selectedScene, event.target.value)} disabled={sceneCharacterSaving || ttsRunning} aria-label="Chá»n nhÃ¢n váº­t thoáº¡i cho cáº£nh">
-                      <option value="">Narrator / giá»ng máº·c Ä‘á»‹nh</option>
-                      {characterProfiles.map((character) => <option key={character.id} value={character.id}>{character.name}{character.voiceName ? ` Â· ${character.voiceName}` : " Â· chÆ°a chá»n voice"}</option>)}
-                    </select><small>{selectedSceneSpeaker?.voiceName ? `TTS sáº½ dÃ¹ng ${selectedSceneSpeaker.voiceName} theo há»“ sÆ¡ nhÃ¢n váº­t.` : selectedSceneSpeaker ? "HÃ£y chá»n voice cho nhÃ¢n váº­t trong tab Phim AI." : "Chá»n ngÆ°á»i thoáº¡i Ä‘á»ƒ TTS tá»± láº¥y voice theo nhÃ¢n váº­t."}</small></label>
-                    {voiceCatalogLoading && <small>Äang táº£i thÆ° viá»‡n voiceâ€¦</small>}
-                  </> : <label className="scene-tts-field"><span>Giá»ng Ä‘á»c cho {sceneNumberLabel(selectedScene)}</span><select value={selectedSceneVoiceId} onChange={(event) => void saveSceneTtsVoice(event.target.value)} disabled={voiceCatalogLoading || sceneTtsSaving || ttsRunning || !voiceCatalog?.voices.length} aria-label="Chá»n voice cho cáº£nh hiá»‡n táº¡i">
-                    {!visibleSceneVoices.some((voice) => voice.id === selectedSceneVoiceId) && <option value="">Chá»n voiceâ€¦</option>}
-                    {visibleSceneVoices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name} Â· {voiceLanguageLabel(voice.language)}{voice.gender ? ` Â· ${voice.gender}` : ""}</option>)}
-                  </select><small>{voiceCatalogLoading ? "Äang táº£i danh sÃ¡ch voice tá»« MaiVideoâ€¦" : voiceCatalog?.voices.length ? "Voice Ä‘Æ°á»£c lÆ°u riÃªng cho cáº£nh; lá»i Ä‘á»c dÃ¹ng ngÃ´n ngá»¯ video cá»§a project, báº¥t ká»ƒ ngÃ´n ngá»¯ há»“ sÆ¡ voice." : "KhÃ´ng táº£i Ä‘Æ°á»£c danh sÃ¡ch voice MaiVideo. Kiá»ƒm tra API key trong CÃ i Ä‘áº·t."}</small></label>}
-                  <div className="scene-tts-actions"><button className="primary-button compact" type="button" onClick={() => void generateSelectedSceneTts(project.presetId === "ai-drama" ? selectedSceneDialogueSegments.length > 0 && selectedSceneDialogueReadyCount === selectedSceneDialogueSegments.length : Boolean(selectedSceneAudio.localPath))} disabled={(project.presetId === "ai-drama" ? !selectedSceneDialogueSegments.length || selectedSceneDialogueMissingVoice : !selectedSceneVoice || !sceneText(selectedScene, "dialogue_or_voiceover", "voiceText", "voiceover")) || ttsRunning || renderRunning || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || Boolean(dialogueTtsBatchProgress) || Boolean(generatingSceneId) || sceneTtsSaving}><Icon name={ttsRunning && ttsChunkId === selectedScene.chunkId ? "clock" : "spark"} size={14} />{ttsRunning && ttsChunkId === selectedScene.chunkId ? "Äang táº¡o voiceâ€¦" : project.presetId === "ai-drama" ? selectedSceneDialogueReadyCount === selectedSceneDialogueSegments.length && selectedSceneDialogueSegments.length ? "Táº¡o láº¡i TTS cÃ¡c cÃ¢u" : `Táº¡o TTS Â· ${selectedSceneDialogueSegments.length - selectedSceneDialogueReadyCount} cÃ¢u` : selectedSceneAudio.localPath ? "Táº¡o láº¡i TTS cáº£nh nÃ y" : "Táº¡o TTS cáº£nh nÃ y"}</button>{Boolean(selectedSceneAudio.voiceId) && project.presetId !== "ai-drama" && <span>Audio hiá»‡n cÃ³: {String(selectedSceneAudio.voiceName || selectedSceneAudio.voiceId)}</span>}</div>
-                  {project.presetId === "ai-drama" && <div className="scene-tts-segment-players">{selectedSceneDialogueSegments.filter((segment) => segment.audio?.localPath).map((segment) => <label key={segment.id}><span>{characterProfiles.find((character) => character.id === segment.speakerCharacterId)?.name || "Narrator"} Â· {segment.text}</span><audio controls preload="none" src={`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(selectedScene.id)}/tts?segmentId=${encodeURIComponent(segment.id)}`}>TrÃ¬nh duyá»‡t khÃ´ng há»— trá»£ phÃ¡t audio.</audio></label>)}</div>}
-                  {selectedSceneAudioUrl && <audio className="scene-tts-player" controls preload="none" src={selectedSceneAudioUrl}>TrÃ¬nh duyá»‡t khÃ´ng há»— trá»£ phÃ¡t audio.</audio>}
-                </section>
-              </details>
-              <details className="scene-detail-disclosure">
-                <summary><span><strong>AI pre-check & duyá»‡t</strong><small>{sceneAiReviewLabel(selectedAiReview.status)} Â· {selectedAiReview.score}/100 Â· {sceneReviewLabel(selectedReviewStatus)}</small></span><span className="scene-detail-disclosure-status">Má»Ÿ kiá»ƒm tra</span></summary>
-                <div className="scene-detail-review-content">
-                  <div className={`scene-ai-card ${sceneAiReviewTone(selectedAiReview.status)}`}>
-                    <div className="scene-ai-heading"><div><small>AI PRE-CHECK</small><strong>{sceneAiReviewLabel(selectedAiReview.status)}</strong></div><span>{selectedAiReview.score}/100</span></div>
-                    <p className="scene-ai-summary">{selectedAiReview.summary}</p>
-                    {Object.keys(selectedAiReview.checks).length > 0 && <div className="scene-ai-checks">{Object.entries(selectedAiReview.checks).map(([key, value]) => <span key={key} className={`scene-ai-check ${value}`}><i />{key}: {value === "pass" ? "Ä‘áº¡t" : value === "warning" ? "cáº£nh bÃ¡o" : "lá»—i"}</span>)}</div>}
-                    {selectedAiReview.issues.length > 0 && <ul className="scene-ai-issues">{selectedAiReview.issues.map((issue, index) => <li key={`${issue}-${index}`}>{issue}</li>)}</ul>}
-                  </div>
-                  <div className="scene-qa-card">
-                    <div className="scene-qa-heading"><div><small>HUMAN CHECK</small><strong>NgÆ°á»i dÃ¹ng xÃ¡c nháº­n</strong></div><span>{reviewSaving ? "Äang lÆ°uâ€¦" : selectedAiReview.status === "pending" ? "Chá» AI pre-check" : "LÆ°u theo project"}</span></div>
-                    <div className="scene-review-buttons">
-                  {(["unreviewed", "approved", "needs_changes"] as SceneReviewStatus[]).map((status) => <button key={status} type="button" className={`scene-review-button ${sceneReviewTone(status)} ${selectedReviewStatus === status ? "active" : ""}`} onClick={() => void saveSceneReview(status)} disabled={reviewSaving || selectedAiReview.status === "pending"}>{sceneReviewLabel(status)}</button>)}
-                    </div>
-                    <textarea className="scene-review-note" value={sceneReviewNote} onChange={(event) => setSceneReviewNote(event.target.value)} placeholder="Ghi chÃº: visual chÆ°a khá»›p, voice bá»‹ ngáº¯t, cáº§n táº¡o láº¡i báº±ng MaiVideoâ€¦" aria-label="Ghi chÃº review cáº£nh" />
-                    <div className="scene-qa-footer"><span>{selectedAiReview.status === "pending" ? "Chá» AI pre-check" : ""}</span><button className="secondary-button compact" type="button" onClick={() => void saveSceneReview()} disabled={reviewSaving || selectedAiReview.status === "pending"}>LÆ°u ghi chÃº</button></div>
-                  </div>
-                </div>
-              </details>
-              <details className="scene-detail-disclosure">
-                <summary><span><strong>Lá»i thoáº¡i & prompt</strong><small>{selectedVoice ? "CÃ³ voiceover" : "ChÆ°a cÃ³ voiceover"} Â· video prompt cáº£nh nÃ y</small></span><span className="scene-detail-disclosure-status">Ná»™i dung</span></summary>
-                <div className="scene-detail-copy"><div><small>VOICEOVER</small><p>{selectedVoice || "ChÆ°a cÃ³ voiceover"}</p></div><div><small>VIDEO PROMPT</small><p>{selectedPrompt || "ChÆ°a cÃ³ video prompt"}</p></div></div>
-              </details>
-            </article>
-          </div>
-        )}
-      </section>}
-
-      {hasEpisodeScripts && <section className="publishing-package-card panel-card" id="publishing-package">
-        <div className="publishing-package-heading">
-          <div className="publishing-package-title">
-            <span className="publishing-package-icon"><Icon name="spark" size={17} /></span>
-            <div><div className="section-kicker">VIDEO PACKAGING</div><h2>Title & prompt thumbnail</h2></div>
-          </div>
-          <span className={`tool-status ${selectedPublishingPackage?.stale ? "warning" : selectedPublishingPackage ? "good" : "neutral"}`}>{selectedPublishingPackage?.stale ? "Cáº§n cáº­p nháº­t" : selectedPublishingPackage?.source === "gpt-import" ? "ÄÃ£ nháº­p tá»« GPT" : selectedPublishingPackage ? "ÄÃ£ cÃ³ gá»£i Ã½" : "ChÆ°a táº¡o"}</span>
-        </div>
-        <p className="publishing-package-description">Title ngáº¯n cÃ³ KEY, tÃ² mÃ² vÃ  cháº¡m pain point; thumbnail Æ°u tiÃªn cáº£m xÃºc, chá»¯ lá»›n tÆ°Æ¡ng pháº£n vÃ  Ä‘iá»ƒm nháº¥n dá»… tháº¥y. Tranh luáº­n pháº£i bÃ¡m ná»™i dung tháº­t. Prompt áº£nh báº±ng tiáº¿ng Anh, overlay Ä‘Æ°á»£c táº¡o riÃªng Ä‘á»ƒ trÃ¡nh lá»—i chá»¯ trong áº£nh.</p>
-        <div className="publishing-package-controls">
-          <label htmlFor="publishing-package-scope"><span>Video cáº§n Ä‘Ã³ng gÃ³i</span><select id="publishing-package-scope" value={publishingScope} onChange={(event) => { setPublishingScope(event.target.value); setPublishingError(""); setPublishingNotice(""); }}>
-            <option value="series">Video toÃ n dá»± Ã¡n{allEpisodeScriptsReady ? "" : " Â· cáº§n hoÃ n táº¥t cÃ¡c táº­p"}</option>
-            {project.chunks.filter((chunk) => Boolean(chunk.outputPath)).map((chunk) => <option key={chunk.id} value={chunk.id}>Táº­p {String(project.chunks.findIndex((item) => item.id === chunk.id) + 1).padStart(2, "0")} Â· {chunk.id}</option>)}
-          </select></label>
-          <button className="primary-button compact" type="button" onClick={() => void generatePublishingPackage()} disabled={publishingBusy || !publishingTargetReady} title={!publishingTargetReady && publishingScope === "series" ? "Táº¡o xong ká»‹ch báº£n táº¥t cáº£ táº­p Ä‘á»ƒ Ä‘Ã³ng gÃ³i video toÃ n dá»± Ã¡n" : undefined}>
-            <Icon name="spark" size={14} />{publishingBusy ? "Äang táº¡o gá»£i Ã½â€¦" : selectedPublishingPackage?.stale ? "Cáº­p nháº­t gá»£i Ã½" : selectedPublishingPackage ? "Táº¡o láº¡i title & thumbnail" : "Táº¡o title & thumbnail"}
-          </button>
-        </div>
-        {!allEpisodeScriptsReady && publishingScope === "series" && <p className="publishing-package-hint">Táº¡o xong ká»‹ch báº£n táº¥t cáº£ táº­p Ä‘á»ƒ táº¡o gá»£i Ã½ cho video toÃ n dá»± Ã¡n. CÃ³ thá»ƒ chá»n má»™t táº­p Ä‘Ã£ xong Ä‘á»ƒ táº¡o riÃªng.</p>}
-        {publishingError && <p className="publishing-feedback error" role="alert">{publishingError}</p>}
-        {publishingNotice && <p className="publishing-feedback" role="status">{publishingNotice}</p>}
-        {selectedPublishingPackage ? <div className="publishing-results">
-          <div className="publishing-result-heading"><h3>{publishingScope === "series" ? "Video toÃ n dá»± Ã¡n" : `Gá»£i Ã½ cho ${publishingScope}`}</h3><small>{selectedPublishingPackage.updatedAt ? `Cáº­p nháº­t ${new Date(selectedPublishingPackage.updatedAt).toLocaleString("vi-VN", { dateStyle: "medium", timeStyle: "short" })}` : ""}</small></div>
-          <div className="publishing-results-grid">
-            <section className="publishing-result-group">
-              <h4>TiÃªu Ä‘á» Ä‘á» xuáº¥t</h4>
-              <div className="publishing-title-list">{selectedPublishingPackage.titles.map((option, index) => <article className="publishing-title-option" key={`${index}-${option.title}`}>
-                <div><span className="publishing-option-number">{String(index + 1).padStart(2, "0")}</span><div><strong>{option.title}</strong><p>{option.hook}</p>{option.angle && <small>{option.angle}</small>}</div></div>
-                <button className="secondary-button compact" type="button" onClick={() => void copyPublishingText(option.title, "title")}><Icon name="copy" size={13} />Sao chÃ©p</button>
-              </article>)}</div>
-            </section>
-            <section className="publishing-result-group">
-              <h4>Prompt thumbnail</h4>
-              <div className="publishing-thumbnail-list">{selectedPublishingPackage.thumbnails.map((thumbnail, index) => <details className="publishing-thumbnail-option" key={`${index}-${thumbnail.concept}`}>
-                <summary><span><strong>{thumbnail.concept}</strong><small>Chá»¯ overlay: {thumbnail.overlayText}</small></span><span className="publishing-prompt-toggle">Má»Ÿ prompt</span></summary>
-                <div className="publishing-prompt-copy"><p>{thumbnail.prompt}</p>{thumbnail.layoutNote && <small>{thumbnail.layoutNote}</small>}<button className="secondary-button compact" type="button" onClick={() => void copyPublishingText(`${thumbnail.prompt}\n\nOverlay text: ${thumbnail.overlayText}${thumbnail.layoutNote ? `\nLayout: ${thumbnail.layoutNote}` : ""}`, "prompt thumbnail")}><Icon name="copy" size={13} />Sao chÃ©p prompt</button></div>
-              </details>)}</div>
-            </section>
-          </div>
-        </div> : <div className="publishing-package-empty"><Icon name="file" size={17} /><span>ChÆ°a cÃ³ gá»£i Ã½ cho pháº¡m vi nÃ y. Táº¡o tá»« GPT khi xuáº¥t JSON hoáº·c báº¥m nÃºt Ä‘á»ƒ sinh báº±ng Script LLM.</span></div>}
-      </section>}
-
-      <section className="production-tools" id="export">
-        <article className="production-tool-card panel-card">
-          <div className="production-tool-heading"><div><div className="section-kicker">CONTINUITY QA</div><h2>Kiá»ƒm tra máº¡ch cáº£nh</h2></div><span className={`tool-status ${continuityQa?.status === "passed" ? "good" : continuityQa ? "warning" : "neutral"}`}>{continuityQa ? `${continuityQa.score}/100` : "ChÆ°a cháº¡y"}</span></div>
-          <p>{continuityQa ? `${continuityQa.issueCount} Ä‘iá»ƒm cáº§n xem Â· ${continuityQa.sceneCount}/${continuityQa.expectedSceneCount} cáº£nh` : "Kiá»ƒm tra thá»© tá»± cáº£nh vÃ  continuity giá»¯a cÃ¡c táº­p."}</p>
-          <div className="production-tool-actions"><button className="secondary-button compact" type="button" onClick={() => void runContinuityQa()} disabled={continuityRunning || scenesLoading || !scenes.length}><Icon name="spark" size={14} />{continuityRunning ? "Äang kiá»ƒm traâ€¦" : "Cháº¡y continuity QA"}</button>{continuityQa?.issueCount ? <span className="tool-hint">AI/ngÆ°á»i dÃ¹ng váº«n lÃ  bÆ°á»›c duyá»‡t cuá»‘i</span> : null}</div>
-        </article>
-        <article className="production-tool-card panel-card">
-          <div className="production-tool-heading"><div><div className="section-kicker">MAIVIDEO QUEUE</div><h2>Batch video AI</h2></div><span className={`tool-status ${videoQueue?.status === "completed" ? "good" : videoQueue?.status === "failed" ? "warning" : videoQueue?.status === "paused" ? "warning" : "neutral"}`}>{videoQueue ? `${videoQueueSummary.queued} chá»` : "ChÆ°a xáº¿p hÃ ng"}</span></div>
-          <p>{videoQueue ? `${videoQueueSummary.completed} xong Â· ${videoQueueSummary.failed} lá»—i Â· ${videoQueueSummary.running} Ä‘ang cháº¡y` : "Táº¡o video AI cho cÃ¡c cáº£nh cÃ²n thiáº¿u."}</p>
-          <div className="production-tool-actions"><button className="secondary-button compact" type="button" onClick={() => void queueVideoJobs(true)} disabled={!scenes.length || batchSeedanceHiddenSelected || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning || batchMediaBusy || Boolean(generatingSceneId)}><Icon name="layers" size={14} />Xáº¿p hÃ ng AI cÃ²n thiáº¿u</button><button className="primary-button compact" type="button" onClick={() => void runVideoQueue()} disabled={videoQueueRunning || !videoQueueCanRun || scriptBlocksIndependentTasks || ttsRunning || batchMediaBusy || Boolean(generatingSceneId)}><Icon name="play" size={14} />{videoQueueRunning ? "Äang cháº¡y queueâ€¦" : videoQueue?.status === "running" && !videoQueueSummary.queued ? "KhÃ´i phá»¥c queue" : "Cháº¡y queue"}</button>{videoQueueRunning && <button className="text-button" type="button" onClick={() => void controlVideoQueue("pause")}>Dá»«ng sau job hiá»‡n táº¡i</button>}{videoQueue?.status === "paused" && <button className="text-button" type="button" onClick={() => void controlVideoQueue("resume")} disabled={scriptBlocksIndependentTasks || ttsRunning || batchMediaBusy || Boolean(generatingSceneId)}>Tiáº¿p tá»¥c</button>}{videoQueueSummary.failed > 0 && <button className="text-button" type="button" onClick={() => void controlVideoQueue("retry_failed")} disabled={scriptBlocksIndependentTasks || ttsRunning || batchMediaBusy || Boolean(generatingSceneId)}>Retry lá»—i</button>}</div>
-          {failedVideoJobs.length > 0 && <div className="video-queue-errors" aria-label="Chi tiáº¿t job video lá»—i">
-            {failedVideoJobs.slice(0, 3).map((job) => <div className="video-queue-error" key={job.id}>
-              <strong>{job.sceneId} Â· {videoFailureStageLabel(job.failureStage, job.provider)}</strong>
-              <span>{job.error || "Táº¡o video tháº¥t báº¡i."}</span>
-              <small>{job.requestId ? `Request ${job.requestId}` : ""}{job.requestId && job.seedanceTaskId ? " Â· " : ""}{job.seedanceTaskId ? `Task ${job.seedanceTaskId}` : ""}{(job.requestId || job.seedanceTaskId) ? " Â· " : ""}{job.retryStrategy === "same_task" ? "Retry tiáº¿p tá»¥c task nÃ y" : "Retry táº¡o task má»›i"}</small>
-            </div>)}
-            {failedVideoJobs.length > 3 && <small className="video-queue-more-errors">CÃ²n {failedVideoJobs.length - 3} job lá»—i khÃ¡c.</small>}
-          </div>}
-        </article>
-        <article className="production-tool-card panel-card">
-          <div className="production-tool-heading"><div><div className="section-kicker">FULL PROJECT RENDER</div><h2>Xuáº¥t video toÃ n dá»± Ã¡n</h2></div><span className={`tool-status ${project.render?.stale || project.render?.status === "failed" ? "warning" : project.render?.status === "completed" ? "good" : "neutral"}`}>{project.render?.stale ? "Báº£n cÅ©" : project.render?.status === "completed" ? "ÄÃ£ render" : project.render?.status === "running" ? "Äang render" : "MP4 + SRT"}</span></div>
-          <p>{project.render?.status === "failed" && project.render.error ? `Láº§n render trÆ°á»›c tháº¥t báº¡i: ${project.render.error}` : project.render?.stale ? `Ká»‹ch báº£n, thoáº¡i hoáº·c media Ä‘Ã£ Ä‘á»•i sau láº§n xuáº¥t Â· báº£n cÅ© cÃ³ ${project.render.sceneCount || 0} cáº£nh. HÃ£y render láº¡i Ä‘á»ƒ Ä‘á»“ng bá»™ MP4/SRT.` : project.render?.outputPath ? `${project.render.sceneCount || scenes.length} cáº£nh toÃ n dá»± Ã¡n Â· ${Math.round((project.render.durationSec || 0) / 60)} phÃºt Â· ${project.render.audioReady ? "Ä‘Ã£ cÃ³ tiáº¿ng TTS hoáº·c tiáº¿ng gá»‘c" : "chÆ°a cÃ³ tiáº¿ng"}` : "GhÃ©p toÃ n bá»™ táº­p thÃ nh MP4 + SRT."}</p>
-          <div className="production-tool-actions"><button className="primary-button compact" type="button" onClick={() => void renderProjectVideo()} disabled={renderRunning || isRunning || Boolean(runningScriptChunkId)}><Icon name="play" size={14} />{renderRunning ? renderingChunkId ? `Äang ghÃ©p Táº­p ${String(chunks.find((chunk) => chunk.id === renderingChunkId)?.episodeNumber || "").padStart(2, "0")}â€¦` : renderSettings.renderer === "blender" ? "Äang render báº±ng Blenderâ€¦" : "Äang render toÃ n dá»± Ã¡nâ€¦" : project.render?.status === "failed" ? "Thá»­ render láº¡i toÃ n dá»± Ã¡n" : project.render?.stale ? "Render láº¡i Ä‘á»§ cÃ¡c táº­p" : renderSettings.renderer === "blender" ? "Render animation báº±ng Blender" : "Render toÃ n dá»± Ã¡n"}</button>{project.render?.outputPath && <><a className="text-button" href={`/api/projects/${encodeURIComponent(project.slug)}/render/file?kind=video`} target="_blank" rel="noreferrer">{project.render.stale ? "Má»Ÿ MP4 báº£n cÅ©" : "Má»Ÿ MP4"} <Icon name="arrow" size={13} /></a><a className="text-button" href={`/api/projects/${encodeURIComponent(project.slug)}/render/file?kind=video&download=1`} download={`${project.slug}.mp4`}>{project.render.stale ? "Táº£i MP4 báº£n cÅ©" : "Táº£i MP4"} <Icon name="download" size={13} /></a><a className="text-button" href={`/api/projects/${encodeURIComponent(project.slug)}/render/file?kind=subtitle`} target="_blank" rel="noreferrer">{project.render.stale ? "SRT báº£n cÅ©" : "SRT"}</a>{project.render.blenderProjectPath && <a className="text-button" href={`/api/projects/${encodeURIComponent(project.slug)}/render/file?kind=blend&download=1`} download={`${project.slug}.blend`}>Táº£i .blend <Icon name="download" size={13} /></a>}</>}</div>
-        </article>
-      </section>
-
-      <section className="render-settings-panel panel-card">
-        <div className="render-settings-heading">
-          <div><div className="section-kicker">RENDER LOCAL</div><h2>Chá»n cÃ¡ch dá»±ng video</h2><p>Chá»n FFmpeg Ä‘á»ƒ ghÃ©p media cÃ³ sáºµn hoáº·c Blender Ä‘á»ƒ dá»±ng cáº£nh 3D local tá»« script cá»§a coding agent.</p></div>
-          <span className="render-settings-save-status"><span className="render-settings-save-dot" />LÆ°u cÃ¹ng láº§n render</span>
-        </div>
-        <details className="render-settings-details">
-          <summary>
-            <span className="render-settings-summary-main"><span className="render-settings-summary-icon"><Icon name="spark" size={14} /></span><span><strong>TÃ¹y chá»‰nh háº­u ká»³</strong><small>Chuyá»ƒn Ä‘á»™ng Â· chá»¯ Â· watermark Â· logo</small></span></span>
-            <span className="render-settings-summary-action">Má»Ÿ / thu gá»n</span>
-          </summary>
-          <div className="render-settings-groups">
-            <section className="render-setting-group">
-              <div className="render-setting-group-heading"><span className="render-setting-group-number">00</span><div><strong>Engine render</strong><small>Chá»n cÃ´ng cá»¥ táº¡o MP4 cuá»‘i cÃ¹ng trÃªn mÃ¡y nÃ y</small></div></div>
-              <div className="render-setting-group-grid render-setting-group-grid-motion">
-                <label className="render-setting-field render-setting-field-wide"><span>Render báº±ng</span><select aria-label="Engine render dá»± Ã¡n" value={renderSettings.renderer} onChange={(event) => updateRenderSetting("renderer", event.target.value as RenderSettings["renderer"])}><option value="ffmpeg">FFmpeg Â· ghÃ©p media hiá»‡n cÃ³</option><option value="blender">Blender Â· dá»±ng hoáº¡t cáº£nh 3D local</option></select><small className="render-setting-help">Blender cáº§n coding agent táº¡o <code>data/outputs/{project.slug}/blender/scene.py</code>. StoryAI truyá»n ká»‹ch báº£n cáº£nh cho Blender, lÆ°u MP4 vÃ  file .blend; khÃ´ng gá»i dá»‹ch vá»¥ táº¡o video cloud. Báº£n Blender hiá»‡n chÆ°a ghÃ©p voice/TTS hoáº·c Ã¢m thanh gá»‘c.</small></label>
-              </div>
-            </section>
-            <section className="render-setting-group">
-              <div className="render-setting-group-heading"><span className="render-setting-group-number">01</span><div><strong>Nhá»‹p & chuyá»ƒn Ä‘á»™ng</strong><small>Kiá»ƒm soÃ¡t cÃ¡ch camera di chuyá»ƒn trÃªn toÃ n timeline</small></div></div>
-              <div className="render-setting-group-grid render-setting-group-grid-motion">
-                <label className="render-setting-field render-setting-field-wide"><span><span>Tá»‘c Ä‘á»™ video</span><strong>{renderSettings.speed.toFixed(2)}Ã—</strong></span><input type="range" min="0.5" max="3" step="0.05" value={renderSettings.speed} onChange={(event) => updateRenderSetting("speed", Number(event.target.value))} /><small className="render-setting-help">Máº·c Ä‘á»‹nh 1.00Ã— Â· 0.5Ã— cháº­m Â· 3Ã— nhanh</small></label>
-                <label className={`render-setting-check render-setting-check-card ${renderSettings.enableRandomPanZoom ? "is-active" : ""}`}><input type="checkbox" checked={renderSettings.enableRandomPanZoom} onChange={(event) => updateRenderSetting("enableRandomPanZoom", event.target.checked)} /><span className="render-setting-check-copy"><strong>Báº­t X / Y / zoom ngáº«u nhiÃªn</strong><small>{project.presetId === "ai-drama" ? "Máº·c Ä‘á»‹nh táº¯t cho Phim AI; giá»¯ nguyÃªn timeline, khÃ´ng cáº¯t cáº£nh" : "Máº·c Ä‘á»‹nh báº­t nhÆ° FastEdit; giá»¯ nguyÃªn timeline, khÃ´ng cáº¯t cáº£nh"}</small></span></label>
-                <label className={`render-setting-check render-setting-check-card ${renderSettings.useRandomInterval ? "is-active" : ""}`}><input type="checkbox" checked={renderSettings.useRandomInterval} disabled={!renderSettings.enableRandomPanZoom} onChange={(event) => updateRenderSetting("useRandomInterval", event.target.checked)} /><span className="render-setting-check-copy"><strong>Äá»•i nhá»‹p chuyá»ƒn Ä‘á»™ng</strong><small>FastEdit chá»n má»™t nhá»‹p trong khoáº£ng minâ€“max cho toÃ n timeline</small></span></label>
-                <div className="render-setting-subgrid render-setting-subgrid-three render-setting-field-wide">
-                  <label className="render-setting-field"><span>Nhá»‹p min (s)</span><input type="number" min="0.5" max="30" step="0.1" value={renderSettings.minInterval} disabled={!renderSettings.enableRandomPanZoom || !renderSettings.useRandomInterval} onChange={(event) => updateRenderSetting("minInterval", Number(event.target.value))} /></label>
-                  <label className="render-setting-field"><span>Nhá»‹p max (s)</span><input type="number" min="0.7" max="30" step="0.1" value={renderSettings.maxInterval} disabled={!renderSettings.enableRandomPanZoom || !renderSettings.useRandomInterval} onChange={(event) => updateRenderSetting("maxInterval", Number(event.target.value))} /></label>
-                  <label className="render-setting-field"><span>Nhá»‹p cá»‘ Ä‘á»‹nh (s)</span><input type="number" min="0.5" max="30" step="0.1" value={renderSettings.interval} disabled={!renderSettings.enableRandomPanZoom || renderSettings.useRandomInterval} onChange={(event) => updateRenderSetting("interval", Number(event.target.value))} /></label>
-                </div>
-                <label className="render-setting-field"><span><span>Pan X tá»‘i Ä‘a</span><strong>Â±{renderSettings.maxPanX}%</strong></span><input type="range" min="1" max="30" step="1" value={renderSettings.maxPanX} disabled={!renderSettings.enableRandomPanZoom} onChange={(event) => updateRenderSetting("maxPanX", Number(event.target.value))} /></label>
-                <label className="render-setting-field"><span><span>Pan Y tá»‘i Ä‘a</span><strong>Â±{renderSettings.maxPanY}%</strong></span><input type="range" min="1" max="30" step="1" value={renderSettings.maxPanY} disabled={!renderSettings.enableRandomPanZoom} onChange={(event) => updateRenderSetting("maxPanY", Number(event.target.value))} /></label>
-                <label className="render-setting-field"><span><span>Zoom min</span><strong>{renderSettings.minScale.toFixed(2)}Ã—</strong></span><input type="range" min="1.15" max="1.25" step="0.01" value={Math.min(1.25, renderSettings.minScale)} disabled={!renderSettings.enableRandomPanZoom} onChange={(event) => updateRenderSetting("minScale", Number(event.target.value))} /></label>
-                <label className="render-setting-field"><span><span>Zoom max</span><strong>{renderSettings.maxScale.toFixed(2)}Ã—</strong></span><input type="range" min="1.15" max="1.25" step="0.01" value={Math.min(1.25, renderSettings.maxScale)} disabled={!renderSettings.enableRandomPanZoom} onChange={(event) => updateRenderSetting("maxScale", Number(event.target.value))} /></label>
-              </div>
-            </section>
-
-            <section className="render-setting-group">
-              <div className="render-setting-group-heading"><span className="render-setting-group-number">02</span><div><strong>HÃ¬nh áº£nh & phÃ¡t láº¡i</strong><small>ThÃªm hiá»‡u á»©ng ná»n vÃ  thay Ä‘á»•i hÆ°á»›ng phÃ¡t</small></div></div>
-              <div className="render-setting-group-grid render-setting-group-grid-media">
-                <label className="render-setting-field"><span>Hiá»‡u á»©ng phá»§</span><select value={renderSettings.visualEffect} onChange={(event) => updateRenderSetting("visualEffect", event.target.value as RenderSettings["visualEffect"])}><option value="none">KhÃ´ng hiá»‡u á»©ng</option><option value="fog">SÆ°Æ¡ng mÃ¹</option><option value="fireflies">Äom Ä‘Ã³m</option><option value="fire">Lá»­a</option><option value="rain">MÆ°a</option><option value="snow">Tuyáº¿t rÆ¡i</option></select></label>
-                <label className="render-setting-field"><span>Bá»™ lá»c mÃ u</span><select value={renderSettings.colorFilter} onChange={(event) => updateRenderSetting("colorFilter", event.target.value as RenderSettings["colorFilter"])}><option value="None">Gá»‘c</option><option value="Warm">áº¤m</option><option value="Cool">Láº¡nh</option><option value="Vintage">Vintage</option><option value="B&W">Äen tráº¯ng</option></select></label>
-                <label className={`render-setting-check render-setting-check-card ${renderSettings.mirror ? "is-active" : ""}`}><input type="checkbox" checked={renderSettings.mirror} onChange={(event) => updateRenderSetting("mirror", event.target.checked)} /><span className="render-setting-check-copy"><strong>Láº­t ngang video</strong><small>Äáº£o hÃ¬nh trÃ¡i â†” pháº£i</small></span></label>
-                <label className={`render-setting-check render-setting-check-card ${renderSettings.reverse ? "is-active" : ""}`}><input type="checkbox" checked={renderSettings.reverse} onChange={(event) => updateRenderSetting("reverse", event.target.checked)} /><span className="render-setting-check-copy"><strong>Äáº£o chiá»u phÃ¡t</strong><small>PhÃ¡t cáº£nh vÃ  audio theo chiá»u ngÆ°á»£c</small></span></label>
-                <div className="render-setting-subgrid render-setting-subgrid-three render-setting-field-wide"><label className="render-setting-field"><span>Cáº¯t Ä‘áº§u (s)</span><input type="number" min="0" max="86400" step="0.1" value={renderSettings.trimStart} onChange={(event) => updateRenderSetting("trimStart", Number(event.target.value))} /></label><label className="render-setting-field"><span>Cáº¯t cuá»‘i (s)</span><input type="number" min="0" max="86400" step="0.1" value={renderSettings.trimEnd ?? ""} placeholder="Cuá»‘i video" onChange={(event) => updateRenderSetting("trimEnd", event.target.value === "" ? null : Number(event.target.value))} /></label><div className="render-setting-help render-setting-field"><span>FastEdit thá»© tá»±</span><small>Hiá»‡u á»©ng mÃ u/cáº¯t Ä‘Æ°á»£c Ã¡p dá»¥ng sau pan/zoom vÃ  trÆ°á»›c khi xuáº¥t MP4.</small></div></div>
-              </div>
-            </section>
-
-            <section className="render-setting-group">
-              <div className="render-setting-group-heading"><span className="render-setting-group-number">03</span><div><strong>Chá»¯ & nháº­n diá»‡n</strong><small>Thiáº¿t láº­p title, watermark vÃ  logo trÃªn video</small></div></div>
-              <div className="render-setting-group-grid render-setting-group-grid-identity">
-                <label className="render-setting-field render-setting-field-title"><span>TiÃªu Ä‘á» Ä‘áº§u video</span><input value={renderSettings.titleText} placeholder="VÃ­ dá»¥: 14 Chilling True Stories" onChange={(event) => updateRenderSetting("titleText", event.target.value)} /></label>
-                <label className="render-setting-field"><span>Vá»‹ trÃ­ tiÃªu Ä‘á»</span><select value={renderSettings.titlePosition} onChange={(event) => updateRenderSetting("titlePosition", event.target.value as RenderSettings["titlePosition"])}><option value="top">TrÃªn</option><option value="center">Giá»¯a</option><option value="bottom">DÆ°á»›i</option></select></label>
-                <label className="render-setting-field"><span><span>Cá»¡ chá»¯ title</span><strong>{renderSettings.titleFontSize}px</strong></span><input type="range" min="18" max="140" step="2" value={renderSettings.titleFontSize} onChange={(event) => updateRenderSetting("titleFontSize", Number(event.target.value))} /></label>
-                <label className="render-setting-field"><span>MÃ u title</span><select value={renderSettings.titleColor} onChange={(event) => updateRenderSetting("titleColor", event.target.value as RenderSettings["titleColor"])}><option value="white">Tráº¯ng</option><option value="yellow">VÃ ng</option><option value="cyan">Cyan</option><option value="black">Äen</option></select></label>
-                <label className="render-setting-field render-setting-field-watermark"><span>Watermark cháº¡y ngáº«u nhiÃªn</span><input value={renderSettings.watermarkText} placeholder="@tenkenh" onChange={(event) => updateRenderSetting("watermarkText", event.target.value)} /></label>
-                <label className="render-setting-field"><span><span>Tá»‘c Ä‘á»™ watermark</span><strong>{renderSettings.watermarkSpeed}</strong></span><input type="range" min="20" max="400" step="5" value={renderSettings.watermarkSpeed} onChange={(event) => updateRenderSetting("watermarkSpeed", Number(event.target.value))} /></label>
-                <div className="render-setting-field render-setting-logo-field"><span>Logo</span><div className="render-setting-logo-controls"><select value={renderSettings.logo} onChange={(event) => updateRenderSetting("logo", event.target.value as RenderSettings["logo"])}><option value="none">KhÃ´ng logo</option><option value="maivideo">Logo MaiVideo</option><option value="custom" disabled={!renderSettings.logoPath}>Logo táº£i lÃªn</option></select><label className="render-setting-file-picker" htmlFor={`render-logo-upload-${project.slug}`}><span>{logoUploading ? "Äang táº£iâ€¦" : "Táº£i logo"}</span><input id={`render-logo-upload-${project.slug}`} type="file" accept="image/png,image/jpeg,image/webp" onChange={uploadRenderLogo} disabled={logoUploading} /></label></div><small className="render-setting-help">{renderSettings.logoPath ? `ÄÃ£ cÃ³: ${renderSettings.logoPath.split("/").pop()}` : "PNG / JPG / WebP Â· tá»‘i Ä‘a 10 MB"}</small></div>
-                <label className="render-setting-field"><span>Vá»‹ trÃ­ logo</span><select value={renderSettings.logoPosition} onChange={(event) => updateRenderSetting("logoPosition", event.target.value as RenderSettings["logoPosition"])}><option value="top-left">TrÃªn trÃ¡i</option><option value="top-right">TrÃªn pháº£i</option><option value="center">Giá»¯a</option><option value="bottom-left">DÆ°á»›i trÃ¡i</option><option value="bottom-right">DÆ°á»›i pháº£i</option></select></label>
-              </div>
-            </section>
-
-          </div>
-        </details>
-      </section>
-
-<details className="project-activity-panel panel-card">
-        <summary><strong>Tiáº¿n trÃ¬nh & hoáº¡t Ä‘á»™ng</strong><span>{projectActivities.length} sá»± kiá»‡n Â· Má»Ÿ</span></summary>
-      <div className="content-grid"><div className="pipeline-card panel-card"><div className="card-heading"><div><div className="section-kicker">PIPELINE</div><h2>Quy trÃ¬nh sáº£n xuáº¥t</h2></div><Link href="/tasks" className="text-button">Nháº­t kÃ½ <Icon name="arrow" size={13} /></Link></div><div className="pipeline-list"><div className="pipeline-item done"><div className="pipeline-marker"><Icon name="check" size={15} /></div><div className="pipeline-body"><div className="pipeline-title-row"><strong>Master Pass</strong><StatusPill tone="green">ÄÃ£ xong</StatusPill></div><p>{project.sourceStatus === "ready" ? "Nguá»“n Ä‘Ã£ cÃ³ transcript/brief" : "Chá» transcript/brief tá»« ngÆ°á»i dÃ¹ng"}</p></div><div className="pipeline-line" /></div><div className={`pipeline-item ${project.completedScenes > 0 ? "done" : "pending"}`}><div className="pipeline-marker">{project.completedScenes > 0 ? <Icon name="check" size={15} /> : <span>02</span>}</div><div className="pipeline-body"><div className="pipeline-title-row"><strong>Nháº­p JSON tá»«ng táº­p</strong></div><p>{project.totalChunks} táº­p Â· má»—i láº§n nháº­p má»™t scene-script.v1</p></div><div className="pipeline-line" /></div><div className={`pipeline-item ${project.completedScenes >= project.totalScenes ? "done" : "pending"}`}><div className="pipeline-marker">{project.completedScenes >= project.totalScenes ? <Icon name="check" size={15} /> : <span>03</span>}</div><div className="pipeline-body"><div className="pipeline-title-row"><strong>AI pre-check & human check</strong></div><p>AI Ä‘Ã¡nh giÃ¡ tá»«ng táº­p sau khi nháº­p, sau Ä‘Ã³ ngÆ°á»i dÃ¹ng xÃ¡c nháº­n</p></div><div className="pipeline-line" /></div><div className="pipeline-item pending"><div className="pipeline-marker"><span>04</span></div><div className="pipeline-body"><div className="pipeline-title-row"><strong>Xuáº¥t project</strong></div><p>JSON, prompts, audio timing vÃ  bÃ¡o cÃ¡o lá»—i</p></div></div></div></div><div className="activity-card panel-card"><div className="card-heading"><div><div className="section-kicker">ACTIVITY</div><h2>Hoáº¡t Ä‘á»™ng tháº­t</h2></div><span className="live-label"><span className="live-dot" />Server</span></div><div className="activity-list">{projectActivities.length ? projectActivities.map((activity) => <div className="activity-item" key={activity.id}><div className={`activity-icon ${activity.status === "success" ? "green" : activity.status === "error" ? "orange" : "purple"}`}><Icon name={activity.status === "success" ? "check" : activity.status === "error" ? "alert" : "spark"} size={15} /></div><div><strong>{activity.title}</strong><p>{activity.detail}</p></div><span className="activity-time">{new Date(activity.createdAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}</span></div>) : <div className="empty-state"><strong>ChÆ°a cÃ³ hoáº¡t Ä‘á»™ng</strong><span>Hoáº¡t Ä‘á»™ng sáº½ xuáº¥t hiá»‡n sau khi lÆ°u nguá»“n hoáº·c nháº­p JSON.</span></div>}</div><Link className="activity-footer" href="/tasks">Xem hÃ ng Ä‘á»£i <Icon name="arrow" size={14} /></Link></div></div>
-
-
-      </details>
-      <footer className="page-footer"><span>StoryAI Â· {project.slug}</span><span>Autosaved Â· scene-script.v1</span></footer>
-      </>
-      {sceneImagePreview && sceneImagePreviewUrl && <div className="ai-drama-image-lightbox" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSceneImagePreview(null); }} onKeyDown={(event) => { if (event.key === "Escape") setSceneImagePreview(null); }}>
-        <figure className="ai-drama-image-lightbox-content" role="dialog" aria-modal="true" aria-label={`áº¢nh cáº£nh ${sceneNumberLabel(sceneImagePreview)}`}>
-          <button className="ai-drama-image-lightbox-close" type="button" autoFocus onClick={() => setSceneImagePreview(null)} aria-label="ÄÃ³ng áº£nh">Ã—</button>
-          <img src={sceneImagePreviewUrl} alt={`áº¢nh cáº£nh ${sceneNumberLabel(sceneImagePreview)}`} />
-          <figcaption>{sceneNumberLabel(sceneImagePreview)} Â· {sceneImagePreview.chunkId}</figcaption>
-        </figure>
-      </div>}
-      {episodeScriptEditorOpen && <div className="extend-episodes-backdrop episode-script-import-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !importingScripts) setEpisodeScriptEditorOpen(false); }}>
-        <section className="episode-script-import-dialog" role="dialog" aria-modal="true" aria-labelledby="episode-script-import-title">
-          <div className="episode-script-import-heading"><div><div className="section-kicker">NHáº¬P JSON</div><h2 id="episode-script-import-title">Nháº­p JSON má»™t táº­p</h2><p>Chá»n má»™t táº­p, dÃ¡n hoáº·c chá»‰nh JSON scene-script.v1 rá»“i nháº­p vÃ o project. Má»—i láº§n chá»‰ nháº­p má»™t táº­p.</p></div><button className="text-button" type="button" onClick={() => setEpisodeScriptEditorOpen(false)} disabled={importingScripts}>ÄÃ³ng</button></div>
-          <div className="episode-script-import-controls">
-            <label className="extend-episodes-field"><span>Táº­p cáº§n nháº­p</span><select value={episodeScriptChunkId} onChange={(event) => selectEpisodeScriptChunk(event.target.value)} disabled={importingScripts}>{project.chunks.map((chunk, index) => <option key={chunk.id} value={chunk.id}>{"Táº­p " + String(index + 1).padStart(2, "0") + " Â· " + chunk.id + " Â· S" + String(chunk.sceneStart).padStart(3, "0") + "â€“S" + String(chunk.sceneEnd).padStart(3, "0") + (chunk.outputPath ? " Â· Ä‘Ã£ cÃ³ ká»‹ch báº£n" : " Â· chÆ°a cÃ³ ká»‹ch báº£n")}</option>)}</select></label>
-            <button className="secondary-button compact" type="button" disabled={importingScripts || episodeScriptLoading || !episodeScriptChunkId} onClick={() => {
-              const target = project.chunks.find((chunk) => chunk.id === episodeScriptChunkId);
-              if (!target) return;
-              const currentTemplate = episodeScriptTemplate(target.id);
-              if (episodeScriptDraft.trim() && episodeScriptDraft !== currentTemplate
-                && !isUneditedLegacyEpisodeTemplateDraft(episodeScriptDraft, target)
-                && !window.confirm("Thay pháº§n JSON Ä‘ang soáº¡n báº±ng máº«u má»›i cho táº­p nÃ y?")) return;
-              updateEpisodeScriptDraft(currentTemplate);
-            }}><Icon name="file" size={14} />ChÃ¨n máº«u JSON</button>
-          </div>
-          <div className="episode-script-import-note"><Icon name="help" size={15} /><span>Máº«u táº¡o scene ID liÃªn tá»¥c theo pháº¡m vi táº­p, thá»i lÆ°á»£ng 15 giÃ¢y trong khung lÃ  giÃ¡ trá»‹ máº«u: hÃ£y chá»n 5/10/15 giÃ¢y theo tá»«ng cáº£nh vÃ  tÃ­nh láº¡i start/end liÃªn tá»¥c. ToÃ n bá»™ hÆ°á»›ng dáº«n náº±m trong prompt_guidance cá»§a JSON. Nhá»‹p dÃ i/ngáº¯n linh hoáº¡t theo hÃ nh Ä‘á»™ng, thoáº¡i vÃ  pháº£n á»©ng; khÃ´ng chia Ä‘á»u 2,5/3 giÃ¢y, khÃ´ng ngáº«u nhiÃªn thá»i Ä‘iá»ƒm vÃ´ cá»›, khÃ´ng báº¯t giá»¯ hÃ¬nh Ä‘áº§u 0,5 giÃ¢y. Giá»¯ camera/VFX cáº§n thiáº¿t vÃ  REFERENCE RULES khoÃ¡ theo áº£nh. ID cÃ³ thá»ƒ náº±m trong <code>id</code> hoáº·c <code>scene_id</code> (vÃ­ dá»¥ <code>S081</code>, <code>A03-S081</code>, hoáº·c sá»‘ <code>81</code>). HÃ£y thay cÃ¡c hÆ°á»›ng dáº«n trong dáº¥u [ ] báº±ng ná»™i dung ká»‹ch báº£n. Cáº£nh im láº·ng dÃ¹ng <code>dialogue_mode: &quot;visual_led&quot;</code>, <code>dialogue_or_voiceover: &quot;&quot;</code> vÃ  <code>dialogue_segments: []</code>; khÃ´ng Ä‘áº·t cÃ¢u hÆ°á»›ng dáº«n vÃ o trÆ°á»ng thoáº¡i. Vá»›i Phim AI, cáº£nh <code>dialogue_led</code> cÃ³ ngÆ°á»¡ng tham kháº£o 10 tá»«/5 giÃ¢y, 20 tá»«/10 giÃ¢y, 30 tá»«/15 giÃ¢y; thiáº¿u tá»« chá»‰ cáº£nh bÃ¡o, khÃ´ng cháº·n nháº­p JSON. TÃ­nh tá»‘c Ä‘á»™ báº±ng tá»•ng sá»‘ tá»« chia thá»i lÆ°á»£ng cáº£ cáº£nh, khÃ´ng tÃ­nh tá»«ng cue; má»¥c tiÃªu tá»‘i Ä‘a 3 tá»«/giÃ¢y. Sá»‘ tá»« vÃ  tá»‘c Ä‘á»™ chá»‰ cáº£nh bÃ¡o. Vá»›i dialogue_led, má»—i khoáº£ng nghá»‰ liÃªn tá»¥c báº¯t buá»™c â‰¤3 giÃ¢y; tá»•ng nghá»‰ â‰¤4 giÃ¢y/cáº£nh 10 giÃ¢y vÃ  â‰¤5 giÃ¢y/cáº£nh 15 giÃ¢y, tÃ­nh cáº£ Ä‘áº§u, giá»¯a vÃ  cuá»‘i cáº£nh. ÄuÃ´i cáº£nh trÆ°á»›c + Ä‘áº§u cáº£nh sau (vÃ  khoáº£ng trá»‘ng timeline) â‰¤3 giÃ¢y khi hai cáº£nh liá»n nhau Ä‘á»u dialogue_led. Cue start_sec/end_sec tÃ­nh tá»« Ä‘áº§u tá»«ng cáº£nh. visual_led/im láº·ng cÃ³ chá»§ Ä‘Ã­ch Ä‘Æ°á»£c miá»…n kiá»ƒm tra nghá»‰. Phim hÃ i hÃ¬nh áº£nh khÃ´ng cáº§n thoáº¡i. Hook má»Ÿ táº­p xuáº¥t hiá»‡n trong 0â€“5 giÃ¢y; end hook táº¡o há»‡ quáº£ ná»‘i sang táº­p káº¿.</span></div>
-          <label className="episode-script-json-field"><span>{episodeScriptLoading ? "Äang táº£i JSON Ä‘Ã£ nháº­pâ€¦" : project.chunks.find((chunk) => chunk.id === episodeScriptChunkId)?.outputPath ? "JSON scene-script.v1 Â· Ä‘Ã£ nháº­p" : "JSON scene-script.v1 Â· má»™t táº­p"}</span><textarea spellCheck={false} aria-label="JSON ká»‹ch báº£n cá»§a má»™t táº­p" placeholder="DÃ¡n JSON scene-script.v1 vÃ o Ä‘Ã¢y, hoáº·c chá»n â€œChÃ¨n máº«u JSONâ€ Ä‘á»ƒ xem máº«u." value={episodeScriptDraft} onChange={(event) => updateEpisodeScriptDraft(event.target.value)} disabled={importingScripts || episodeScriptLoading} /></label>
-          {runMessage && <div className={"run-message " + runMessage.tone} role={runMessage.tone === "error" ? "alert" : "status"}><span><Icon name={runMessage.tone === "success" ? "check" : "alert"} size={13} /></span>{runMessage.text}</div>}
-          <div className="character-setup-actions"><button className="secondary-button" type="button" onClick={() => setEpisodeScriptEditorOpen(false)} disabled={importingScripts}>Äá»ƒ sau</button><button className="primary-button" type="button" onClick={() => void importEpisodeScriptDraft()} disabled={importingScripts || episodeScriptLoading || !episodeScriptDraft.trim()}><Icon name={importingScripts ? "clock" : "file"} size={15} />{importingScripts ? "Äang nháº­p táº­pâ€¦" : "Nháº­p ká»‹ch báº£n táº­p nÃ y"}</button><button className="secondary-button" type="button" onClick={() => void copyEpisodeScriptDraft()} disabled={importingScripts || episodeScriptLoading || !episodeScriptChunkId} title={episodeScriptDraft.trim() ? "Sao chÃ©p JSON hiá»‡n cÃ³ trong trÃ¬nh soáº¡n tháº£o" : "Sao chÃ©p JSON máº«u cho táº­p Ä‘ang chá»n"}><Icon name="copy" size={15} />{episodeScriptDraft.trim() ? "Copy JSON" : "Copy JSON máº«u"}</button></div>
-        </section>
-      </div>}
-      {showExtendEpisodes && <div className="extend-episodes-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget && !extendingEpisodes) setShowExtendEpisodes(false); }}>
-        <section className="extend-episodes-dialog" role="dialog" aria-modal="true" aria-labelledby="extend-episodes-title">
-          <div className="extend-episodes-icon"><Icon name="plus" size={20} /></div>
-          <div className="section-kicker">Táº O KHUNG Táº¬P</div>
-          <h2 id="extend-episodes-title">ThÃªm táº­p vÃ o â€œ{project.title}â€</h2>
-          <p>CÃ¡c táº­p hiá»‡n táº¡i, video Ä‘Ã£ ghÃ©p vÃ  há»“ sÆ¡ nhÃ¢n váº­t sáº½ Ä‘Æ°á»£c giá»¯ nguyÃªn. Táº­p má»›i chá»‰ táº¡o khung trá»‘ng Ä‘á»ƒ báº¡n nháº­p JSON tá»«ng táº­p.</p>
-          <label className="extend-episodes-field"><span>Sá»‘ táº­p muá»‘n thÃªm</span><div><input type="number" min={1} max={10} step={1} value={extendEpisodeCount} disabled={extendingEpisodes} onChange={(event) => setExtendEpisodeCount(Math.min(10, Math.max(1, Math.floor(Number(event.target.value) || 1))))} /><small>1â€“10 táº­p má»—i láº§n</small></div></label>
-          <div className="extend-episodes-summary"><span><Icon name="scene" size={15} />{extendEpisodeCount * project.chunkSize} cáº£nh</span><span><Icon name="clock" size={15} />khoáº£ng {Math.round((extendEpisodeCount * project.chunkSize * (project.sceneDurationSec || 15)) / 60)} phÃºt</span><span><Icon name="stack" size={15} />Táº­p {String(project.chunks.length + 1).padStart(2, "0")}â€“{String(project.chunks.length + extendEpisodeCount).padStart(2, "0")}</span></div>
-          <div className="extend-episodes-note"><Icon name="users" size={15} /><span>Há»“ sÆ¡ nhÃ¢n váº­t cÅ© váº«n dÃ¹ng Ä‘Æ°á»£c. Sau khi táº¡o khung, nháº­p JSON riÃªng cho má»—i táº­p.</span></div>
-          <div className="character-setup-actions"><button className="secondary-button" type="button" onClick={() => setShowExtendEpisodes(false)} disabled={extendingEpisodes}>Äá»ƒ sau</button><button className="primary-button" type="button" onClick={() => void appendEpisodes()} disabled={extendingEpisodes}><Icon name={extendingEpisodes ? "clock" : "plus"} size={15} />{extendingEpisodes ? "Äang thÃªm táº­pâ€¦" : `ThÃªm ${extendEpisodeCount} táº­p trá»‘ng`}</button></div>
-        </section>
-      </div>}
-    </div>
-  );
-}
+YªçŠx-®éÜj×¢ëiºÚ+Š§j[h‘éÜ¢éí×{ß´èµ©hºÚn¶X§zÍH\ÙHÛY[ŽÂ‚š[\Ü\HÈšY[Ô›Û\ÛÛ\XÝ[Û”™\ÜHœ›ÛH‹‹‹ÛX‹ÝšY[Ë\›Û\XÛÛ\XÝ[ÛˆŽÂ‚š[\Ü[šÈœ›ÛH›™^Û[šÈŽÂš[\ÜÈœ˜YÛY[\ÙPØ[˜XÚË\ÙQY™™XÝ\ÙSY[[Ë\ÙT™Y‹\ÙTÝ]HHœ›ÛHœ™XXÝŽÂš[\ÜÈ\Ñ›ÝÔÝÜžSÛ›T™\Ù]ÕÔ–WÔ‘TÑUÈHœ›ÛH‹‹‹ÛX‹ÜÝÜžK\™\Ù]ÈŽÂš[\ÜÈ\ÙT›Ú™XÝÈHœ›ÛH‹‹‹ÛX‹Ü›Ú™XÝ\ÝÜ™HŽÂš[\ÜÈSPÒ×Õ’QS×ÓS‘ÕPQÑTË›ÚXÙS[™ÝXYÙSX™[\HÛ[šU›ÚXÙPØ][ÙË\HÛ[šU›ÚXÙSÜ[ÛˆHœ›ÛH‹‹‹ÛX‹ÛÛ[š]›ÚXÙHŽÂš[\ÜÈQUSÔ‘S‘T—ÔÑUS‘ÔË›Ü›X[^™T™[™\”Ù][™ÜÈHœ›ÛH‹‹‹ÛX‹Ü™[™\‹YY™™XÝÈŽÂš[\ÜÈQUSÓQQPWÑÑS‘TUSÓ—ÔÑUS‘ÔËSPQÑWÑURSÓU‘SÓP‘SË\HX[ÙÝYTÙYÛY[\H[XYÙQÙ[™\˜][Û“[Ù[Ü[Û‹\HYYXQÙ[™\˜][Û”Ù][™ÜË\HYYXS[Ù[Ø][ÙË\H›Ú™XÝÚ\˜XÝ\‹\H›Ú™XÝØØ][Û‹\H™[™\”Ù][™ÜË\HØÙ[™PZT™]šY]Ë\HØÙ[™SYYXR›Ø‹\HÝÜžT›Ú™XÝ\HšY[ÑÙ[™\˜][Û“[Ù[Ü[Û‹\HšY[ÔX›\Ú[™ÔÙ]Hœ›ÛH‹‹‹ÛX‹Ü›Ú™XÝ]\\ÈŽÂš[\ÜÈ]˜Z[X›R[XYÙS[Ù[È\Èš[\]˜Z[X›R[XYÙS[Ù[ËQUSÑ“Õ×Õ’QS×ÓSÑSÒQQUSÓUTÑWÕ’QS×ÓSÑSÒQQUSÔÑQQSÑWÕ’QS×ÓSÑSÒQQÑÔÑ’QSÔÑQQSÑWÓSÑSÒQ[XYÙQ]Z[]™[Ñ›Ü“[Ù[[XYÙS[Ù[\Ü^S˜[YK\Ñ›ÝÒ[XYÙS[Ù[\Ó]\ÙR[XYÙS[Ù[\Ô^™\œÙUšY[ÔÙ][™ÜË\Õ[\Ü˜\š[RY[“XZUšY[ÔÙYY[˜ÙLK\ÕšY[ÓÙ™”XZÔ™\]Z\™Y›Ü›X[^™UšY[Ñ\˜][Û‹™Y™\œ™YšY[Ô]X[]K™\ÛÛ™SYYXQÙ[™\˜][Û”Ù][™ÜËšY[Ñ\˜][Û›Ý[™Ñ›Ü“[Ù[šY[Ñ\˜][Û“Ü[ÛœËšY[Ó[Ù[\Ü^S˜[YKšY[Ô]X[]Y\Ñ›Ü“[Ù[š\ÚX›UšY[Ó[Ù[ÈHœ›ÛH‹‹‹ÛX‹ÛYYXKYÙ[™\˜][Û‹\Ù][™ÜÈŽÂš[\ÜÈ\Ý[X]QX[ÙÝYQ\˜][Û“\Ë\Ñ^XÚ]X[ÙÝYTÙYÛY[Ë\Õ[\]QX[ÙÝYU^™XYX[ÙÝYTÙYÛY[ÈHœ›ÛH‹‹‹ÛX‹ÙX[ÙÝYK\ÙYÛY[ÈŽÂš[\ÜÈ\ÙTÙYY[˜ÙPXØÛÝ[ÈHœ›ÛH‹‹‹ÛX‹ÜÙYY[˜ÙKXXØÛÝ[ËXÛY[ŽÂš[\ÜÈ\Õ[\]Q[]S˜[YK›Ü›X[^™Q[]S˜[YHHœ›ÛH‹‹‹ÛX‹Ù[]K[˜[YHŽÂš[\ÜÈÛÛ[Ù[œ™\ÓX™[ÝÜžTÙ][™ÓX™[Hœ›ÛH‹‹‹ÛX‹ØÛÛ[YÙ[œ™\ÈŽÂš[\ÜÈÚ\˜XÝ\”™Y™\™[˜ÙT›Û\ØØ][Û”™Y™\™[˜ÙT›Û\“Ñ’SWÔ‘Q‘T‘SÑWÐTÔPÕÔUSÈHœ›ÛH‹‹‹ÛX‹ØZKY˜[XK\™Y™\™[˜ÙK\›Û\ÈŽÂš[\ÜÈØÙ[™T™Y™\™[˜ÙPÚ\˜XÝ\’YËØÙ[™T™Y™\™[˜ÙSØØ][Û’Y\HØÙ[™T™Y™\™[˜ÙRÚ[™Hœ›ÛH‹‹‹ÛX‹ÜØÙ[™K\™Y™\™[˜ÙKX\ÜÚYÛ›Y[ÈŽÂš[\ÜÈØ[š]^™Q˜[XUš\ÝX[›Û\Hœ›ÛH‹‹‹ÛX‹Ýš\ÝX[\›Û\\ØY™]HŽÂš[\ÜÈPVÔÐÑS‘WÓQQPWÕTÐQÐ–UTÈHœ›ÛH‹‹‹ÛX‹ÜØÙ[™K[YYXK]\ØYXÛÛ™šYÈŽÂš[\ÜÈÚÝ[Ú[šÔØÙ[™SYYXQš[K\ØYØÙ[™SYYXR[Ú[šÜÈHœ›ÛH‹‹‹ÛX‹ÜØÙ[™K[YYXK]\ØYXÛY[ŽÂš[\ÜÈÜ™X]Q\\ÛÙTØÜš\[\]HHœ›ÛH‹‹‹ÛX‹Ü›Ú™XÝ\ØÜš\][\]\ÈŽÂš[\ÜÈÚÜ˜[XTÝY[ÈHœ›ÛH‹‹ÜÚÜY˜[XK\ÝY[ÈŽÂš[\ÜÈXÛÛˆHœ›ÛH‹‹ÝZKZXÛÛˆŽÂ‚\HØÙ[™SYYXT™]šY]ÈHÂˆÚ[™Îˆš[XYÙHˆšY[ÈŽÂˆ›ÝšY\ÎˆÝš[™ÎÂˆÝ]\ÏÎˆœ™XYHˆ™˜Z[YŽÂˆÝ[OÎˆ›ÛÛX[ŽÂˆ[Ù[ÎˆÝš[™ÎÂˆ]X[]OÎˆÝš[™ÎÂˆ\˜][Û”ÙXÏÎˆ[X™\ŽÂˆ]Y\žOÎˆÝš[™ÎÂˆÛÝ\˜ÙU\›ÎˆÝš[™ÎÂˆØØ[]ÎˆÝš[™ÎÂˆ™Y™\™[˜ÙPÚ\˜XÝ\’YÏÎˆÝš[™Ö×NÂˆ™Y™\™[˜ÙSØØ][Û’YÎˆÝš[™ÎÂˆ\œ›ÜÎˆÝš[™ÎÂŸNÂ‚\HØÙ[™SYYXR›Ø”™]šY]ÈHXÚÏØÙ[™SYYXR›Ø‹šYˆœØÙ[™RYˆ˜Ú[šÒYˆœØÙ[™R[™^ˆšÚ[™ˆœÝ]\Èˆ˜][\ˆ˜Ü™X]Y]ˆ\]Y]ˆœÝ\Y]ˆ™š[š\ÚY]ˆ™\œ›Üˆˆœ›ÝšY\ˆˆœÝYÙHˆœÝX›Z]Y›Û\ŽÂ‚\HØÙ[™T™]šY]ÔÝ]\ÈH[œ™]šY]ÙYˆ˜\›Ý™Yˆ›™YY×ØÚ[™Ù\ÈŽÂ\HØÙ[™T™]šY]Ñš[\ˆH˜[ˆØÙ[™T™]šY]ÔÝ]\ÎÂ\HØÙ[™SYYXQš[\ˆH˜[ˆœ™XYHˆ›Z\ÜÚ[™Èˆ˜ZHˆœÝØÚÈŽÂ\HØÙ[™PZT™]šY]ÔÝ]\ÈHœ[™[™Èˆœ\ÜÙYˆ›™YY×ØÚ[™Ù\Èˆ™\œ›ÜˆŽÂ\HØÙ[™PZT™]šY]Ñš[\ˆH˜[ˆØÙ[™PZT™]šY]ÔÝ]\ÎÂ‚\HØÙ[™T™]šY]ÈH™XÛÜ™Ýš[™Ë[šÛ›ÝÛˆ	ˆÂˆYˆÝš[™ÎÂˆÚ[šÒYˆÝš[™ÎÂˆØÙ[™R[™^ˆ[X™\ŽÂˆÚ\˜XÝ\’YÏÎˆÝš[™Ö×NÂˆØØ][Û’YÎˆÝš[™ÎÂˆ™]šY]Õ\›ÎˆÝš[™ÎÂˆ™Y™\™[˜ÙR[XYÙT™]šY]Õ\›ÎˆÝš[™ÎÂˆšY[Ô™Y™\™[˜ÙR[XYÙOÎˆØÙ[™SYYXT™]šY]ÎÂˆYYXOÎˆØÙ[™SYYXT™]šY]ÎÂˆYYXR›ØÎˆØÙ[™SYYXR›Ø”™]šY]ÎÂˆ›ÝÑœ˜[YQ[™ØÙ[™RYÎˆÝš[™ÎÂˆ™]šY]ÔÝ]\ÏÎˆØÙ[™T™]šY]ÔÝ]\ÎÂˆ™]šY]Ó›ÝOÎˆÝš[™ÎÂˆZT™]šY]ÏÎˆØÙ[™PZT™]šY]ÎÂŸNÂ‚\HØÙ[™UšY[Ô›Û\™]šY]ÈHÂˆÛÛ\XÝ[ÛÎˆšY[Ô›Û\ÛÛ\XÝ[Û”™\ÜÂˆ›Û\ˆÝš[™ÎÂˆ›Û\[™Ýˆ[X™\ŽÂˆ›ÝšY\ŽˆÝš[™ÎÂˆ[Ù[ˆÝš[™ÎÂˆX[ÙÝYPÝYPÛÝ[ˆ[X™\ŽÂˆX[ÙÝYR[˜ÛYYˆ›ÛÛX[ŽÂŸNÂ‚\HØÙ[™UšY[Ô›Û\™]šY]ÔÝ]HHÂˆØY[™ÏÎˆ›ÛÛX[ŽÂˆ\œ›ÜÎˆÝš[™ÎÂˆ™\Ý[ÎˆØÙ[™UšY[Ô›Û\™]šY]ÎÂŸNÂ‚˜ÛÛœÝØÙ[™SYYXTÛšY[ÈHÂˆ›YYXH‹ˆ›YYXR›Øˆ‹ˆšY[Ô™Y™\™[˜ÙR[XYÙH‹ˆšY[×Ü™Y™\™[˜ÙWÚ[XYÙH‹ˆœ™]šY]Õ\›‹ˆœ™Y™\™[˜ÙR[XYÙT™]šY]Õ\›‹ˆœ™]šY]ÔÝ]\È‹ˆœ™]šY]Ó›ÝH‹ˆ˜ZT™]šY]È‹—H\ÈÛÛœÝÂ‚™[˜Ý[ÛˆY\™ÙTÛYØÙ[™SYYXJÝ\œ™[ˆØÙ[™T™]šY]Ö×K[˜ÛÛZ[™ÎˆØÙ[™T™]šY]Ö×JHÂˆ]Ú[™ÙYHÝ\œ™[›[™ÝOOH[˜ÛÛZ[™Ë›[™ÝˆÝ\œ™[œÛÛYJ
+ØÙ[™K[™^
+HOˆØÙ[™KšYOOH[˜ÛÛZ[™ÖÚ[™^OËšY
+NÂˆÛÛœÝÝ\œ™[žRYH™]ÈX\
+Ý\œ™[›X\
+
+ØÙ[™JHOˆÜØÙ[™KšYØÙ[™WJJNÂˆÛÛœÝY\™ÙYH[˜ÛÛZ[™Ë›X\
+
+™^
+HOˆÂˆÛÛœÝ™]š[Ý\ÈHÝ\œ™[žRY™Ù]
+™^šY
+NÂˆYˆ
+\™]š[Ý\ÊHÂˆÚ[™ÙYHYNÂˆ™]\›ˆ™^ÂˆBˆ]ØÙ[™PÚ[™ÙYH˜[ÙNÂˆ›Üˆ
+ÛÛœÝšY[ÙˆØÙ[™SYYXTÛšY[ÊHÂˆYˆ
+”ÓÓ‹œÝš[™ÚYžJ™]š[Ý\ÖÙšY[JHOOH”ÓÓ‹œÝš[™ÚYžJ™^ÙšY[JJHÂˆØÙ[™PÚ[™ÙYHYNÂˆœ™XZÎÂˆBˆBˆYˆ
+\ØÙ[™PÚ[™ÙY
+H™]\›ˆ™]š[Ý\ÎÂˆÚ[™ÙYHYNÂˆÛÛœÝ™Yœ™\ÚYYYXTÝ]HHØš™XÝ™œ›ÛQ[šY\ÊØÙ[™SYYXTÛšY[Ë›X\
+
+šY[
+HOˆÙšY[™^ÙšY[WJJNÂˆ™]\›ˆÈ‹‹œ™]š[Ý\Ë‹‹œ™Yœ™\ÚYYYXTÝ]HNÂˆJNÂˆ™]\›ˆÚ[™ÙYÈY\™ÙYˆÝ\œ™[ÂŸB‚\HXZUšY[Ò[XYÙT™]šY]ÈHÂˆYˆÝš[™ÎÂˆ˜[YNˆÝš[™ÎÂˆš[S˜[YNˆÝš[™ÎÂˆ™]šY]Õ\›ˆÝš[™ÎÂˆÛÝ\˜ÙNˆÝš[™ÎÂŸNÂ‚˜ÛÛœÝUÒÔ“Ñ’SWÒSPQÑWÐÓÓÕT”‘SÖHHNÂ˜ÛÛœÝUÒÕ×ÑTTÓÑWÐÓÓÕT”‘SÖHHNÂ˜ÛÛœÝ’QS×ÔUQUQWÐÓÓÕT”‘SÖHHLÂ‚˜\Þ[˜È[˜Ý[Ûˆ›Ü‘XXÚÛÛ˜Ý\œ™[Š][\Îˆ×KÛÛ˜Ý\œ™[˜ÞNˆ[X™\‹\ÚÎˆ
+][Nˆ[™^ˆ[X™\ŠHOˆ›ÛZ\ÙO›ÚYŠHÂˆ]™^[™^HÂˆÛÛœÝÛÜšÙ\ÛÝ[HX]›Z[Š][\Ë›[™ÝX]›X^
+KX]™›ÛÜŠÛÛ˜Ý\œ™[˜ÞJJJNÂˆ]ØZ]›ÛZ\ÙK˜[
+\œ˜^K™œ›ÛJÈ[™ÝˆÛÜšÙ\ÛÝ[K\Þ[˜È
+
+HOˆÂˆÚ[H
+YJHÂˆÛÛœÝ[™^H™^[™^
+ÊÎÂˆYˆ
+[™^H][\Ë›[™Ý
+H™]\›ŽÂˆ]ØZ]\ÚÊ][\ÖÚ[™^K[™^
+NÂˆBˆJJNÂŸB‚™[˜Ý[ÛˆØÙ[™U^
+ØÙ[™NˆØÙ[™T™]šY]Ë‹‹šÙ^\ÎˆÝš[™Ö×JHÂˆ›Üˆ
+ÛÛœÝÙ^HÙˆÙ^\ÊHÂˆÛÛœÝ˜[YHHØÙ[™VÚÙ^WNÂˆYˆ
+\[Ùˆ˜[YHOOHœÝš[™Èˆ	‰ˆ˜[YKš[J
+JH™]\›ˆ˜[YKš[J
+NÂˆBˆ™]\›ˆˆŽÂŸB‚™[˜Ý[Ûˆ\Õ[™Y]YYØXÞQ\\ÛÙU[\]Q˜Y
+˜[YNˆÝš[™Ë\™Ù]ˆÈYˆÝš[™ÎÈØÙ[™TÝ\ˆ[X™\ŽÈØÙ[™Q[™ˆ[X™\ˆJHÂˆžHÂˆÛÛœÝ^[ØYH”ÓÓ‹œ\œÙJ˜[YJH\È™XÛÜ™Ýš[™Ë[šÛ›ÝÛŽÂˆYˆ
+^[ØYœØÚ[XHOOHœØÙ[™K\ØÜš\ŒHˆÝš[™Ê^[ØY˜Ú[š×ÚYˆŠKÕ\\Ø\ÙJ
+HOOH\™Ù]šYÕ\\Ø\ÙJ
+JH™]\›ˆ˜[ÙNÂˆYˆ
+\[Ùˆ^[ØY˜Ø[Y\˜WØÛÛX›×ÙÝZY[˜ÙHOOHœÝš[™Èˆ\^[ØY˜Ø[Y\˜WØÛÛX›×ÙÝZY[˜ÙKš[˜ÛY\ÊÐSQTHÓÓP“ÈP”T–HŠJH™]\›ˆ˜[ÙNÂˆYˆ
+Z\Õ[\]Q[]S˜[YJ^[ØY™\\ÛÙWÝ]JHZ\Õ[\]Q[]S˜[YJ^[ØY˜Ú[š×ÜÝ[[X\žJJH™]\›ˆ˜[ÙNÂ‚ˆÛÛœÝÛÚÜÈH^[ØY™\\ÛÙWÚÛÚÜÈ	‰ˆ\[Ùˆ^[ØY™\\ÛÙWÚÛÚÜÈOOH›Øš™XÝˆ	‰ˆP\œ˜^Kš\Ð\œ˜^J^[ØY™\\ÛÙWÚÛÚÜÊBˆÈ^[ØY™\\ÛÙWÚÛÚÜÈ\È™XÛÜ™Ýš[™Ë[šÛ›ÝÛ‚ˆˆßNÂˆYˆ
+VÚÛÚÜË›Ü[š[™×ÚÛÚËÛÚÜË\›š[™×ÜÚ[ÛÚÜË™[™ÚÛÚ×K™]™\žJ\Õ[\]Q[]S˜[YJJH™]\›ˆ˜[ÙNÂ‚ˆÛÛœÝšX›\Ð\™U[™Y]YH
+˜[YNˆ[šÛ›ÝÛŠHOˆ\œ˜^Kš\Ð\œ˜^J˜[YJH	‰ˆ˜[YK™]™\žJ
+][JHOˆÂˆYˆ
+Z][H\[Ùˆ][HOOH›Øš™XÝˆ\œ˜^Kš\Ð\œ˜^J][JJH™]\›ˆ˜[ÙNÂˆÛÛœÝ›Ùš[HH][H\È™XÛÜ™Ýš[™Ë[šÛ›ÝÛŽÂˆ™]\›ˆ\Õ[\]Q[]S˜[YJ›Ùš[K›˜[YJBˆ	‰ˆ\Õ[\]Q[]S˜[YJ›Ùš[K™\ØÜš\[ÛŠBˆ	‰ˆ\Õ[\]Q[]S˜[YJ›Ùš[Kš[XYÙWÜ›Û\ÏÈ›Ùš[Kš[XYÙT›Û\
+NÂˆJNÂˆYˆ
+XšX›\Ð\™U[™Y]Y
+^[ØY˜Ú\˜XÝ\—ØšX›JHXšX›\Ð\™U[™Y]Y
+^[ØY›ØØ][Û—ØšX›JJH™]\›ˆ˜[ÙNÂ‚ˆÛÛœÝØÙ[™\ÈH\œ˜^Kš\Ð\œ˜^J^[ØYœØÙ[™\ÊHÈ^[ØYœØÙ[™\Èˆ×NÂˆÛÛœÝ^XÝYÛÝ[H\™Ù]œØÙ[™Q[™H\™Ù]œØÙ[™TÝ\
+ÈNÂˆYˆ
+ØÙ[™\Ë›[™ÝOOH^XÝYÛÝ[^XÝYÛÝ[JH™]\›ˆ˜[ÙNÂˆ™]\›ˆØÙ[™\Ë™]™\žJ
+˜[YK[™^
+HOˆÂˆYˆ
+]˜[YH\[Ùˆ˜[YHOOH›Øš™XÝˆ\œ˜^Kš\Ð\œ˜^J˜[YJJH™]\›ˆ˜[ÙNÂˆÛÛœÝØÙ[™HH˜[YH\È™XÛÜ™Ýš[™Ë[šÛ›ÝÛŽÂˆÛÛœÝ^XÝYYHÉÔÝš[™Ê\™Ù]œØÙ[™TÝ\
+È[™^
+KœYÝ\
+ËŒŠ_XÂˆÛÛœÝÚ\˜XÝ\œÈH\œ˜^Kš\Ð\œ˜^JØÙ[™K˜Ú\˜XÝ\œÊHÈØÙ[™K˜Ú\˜XÝ\œÈˆ×NÂˆÛÛœÝX[ÙÝYTÙYÛY[ÈH\œ˜^Kš\Ð\œ˜^JØÙ[™K™X[ÙÝYWÜÙYÛY[ÊHÈØÙ[™K™X[ÙÝYWÜÙYÛY[Èˆ×NÂˆÛÛœÝX[ÙÝYTÙYÛY[Ð\™U[\]HHX[ÙÝYTÙYÛY[Ë™]™\žJ
+][JHOˆÂˆYˆ
+Z][H\[Ùˆ][HOOH›Øš™XÝˆ\œ˜^Kš\Ð\œ˜^J][JJH™]\›ˆ˜[ÙNÂˆÛÛœÝÙYÛY[H][H\È™XÛÜ™Ýš[™Ë[šÛ›ÝÛŽÂˆ™]\›ˆ\Õ[\]Q[]S˜[YJÙYÛY[œÜXZÙ\—ØÚ\˜XÝ\ˆÏÈÙYÛY[œÜXZÙ\“˜[YJBˆ	‰ˆ\Õ[\]QX[ÙÝYU^
+ÙYÛY[^
+NÂˆJNÂˆ™]\›ˆÝš[™ÊØÙ[™KšYˆŠKÕ\\Ø\ÙJ
+HOOH^XÝYYˆ	‰ˆ\Õ[\]Q[]S˜[YJØÙ[™Kœ\œÜÙJBˆ	‰ˆ\Õ[\]Q[]S˜[YJØÙ[™K˜™X]ÜÝ[[X\žJBˆ	‰ˆ\Õ[\]QX[ÙÝYU^
+ØÙ[™K™X[ÙÝYWÛÜ—Ý›ÚXÙ[Ý™\ŠBˆ	‰ˆ\Õ[\]Q[]S˜[YJØÙ[™Kš[XYÙWÜ›Û\
+Bˆ	‰ˆ\Õ[\]Q[]S˜[YJØÙ[™K›ØØ][Û—Û˜[YJBˆ	‰ˆ\Õ[\]Q[]S˜[YJØÙ[™K›ØØ][Û—Ù\ØÜš\[ÛŠBˆ	‰ˆÚ\˜XÝ\œË›[™Ýˆˆ	‰ˆÚ\˜XÝ\œË™]™\žJ\Õ[\]Q[]S˜[YJBˆ	‰ˆX[ÙÝYTÙYÛY[Ð\™U[\]NÂˆJNÂˆHØ]ÚÂˆ™]\›ˆ˜[ÙNÂˆBŸB‚™[˜Ý[ÛˆØÙ[™SØØ][Û“˜[YJØÙ[™NˆØÙ[™T™]šY]ÊHÂˆÛÛœÝ^XÚ]HØÙ[™U^
+ØÙ[™K›ØØ][Û—Û˜[YH‹›ØØ][Û“˜[YH‹›ØØ][Ûˆ‹™[š\›Û›Y[Û˜[YH‹™[š\›Û›Y[˜[YHŠNÂˆYˆ
+^XÚ]
+H™]\›ˆ\Õ[\]Q[]S˜[YJ^XÚ]
+HÈˆˆˆ^XÚ]ÂˆÛÛœÝ›Û\HØÙ[™U^
+ØÙ[™Kš[XYÙWÜ›Û\‹š[XYÙT›Û\ŠNÂˆÛÛœÝX]ÚH›Û\›X]Ú
+×—ÊŠÎ›Û™__[ŠWÊÊÎ–×ËWJ×ÊÊ^ÌßJÎ™œ˜[Y_ÚÝ[XYÙJWÊÊÎš[Ÿ]ÛŸ[œÚY_X›Ø\™
+WÊÊ×ŽŽÈO×JÊKÚJNÂˆYˆ
+[X]Ú
+H™]\›ˆˆŽÂˆÛÛœÝ[™™\œ™YHX]ÚÌWBˆœ™\XÙJ×ÊÊÎ˜\ßÚ[_Ú\™_Ú[Ÿ\š[™ß™Y›Ü™_Y\Ÿ]H[ÛY[
+W–×××J‰ÚKˆŠBˆœ™\XÙJ×ŠÎ__[ŠWÊËÚKˆŠBˆœ™\XÙJÖø &I×\ÊÏWß	
+KÙËˆŠBˆš[J
+Bˆœ™\XÙJÖË‹ÎˆO×JÉËˆŠHˆŽÂˆ™]\›ˆ×—
+ÊÎ——
+ÊO×ÊŠÎœßÙXßÙXÜßÙXÛÛ™ÙXÛÛ™ÊOÉÚK\Ý
+[™™\œ™Y
+HÈˆˆˆ[™™\œ™YÂŸB‚™[˜Ý[ÛˆØÙ[™PÚ\˜XÝ\’YÊØÙ[™NˆØÙ[™T™]šY]ÊHÂˆÛÛœÝ˜]ÈHØÙ[™K˜Ú\˜XÝ\’YÈØÙ[™K˜Ú\˜XÝ\—ÚYÎÂˆ™]\›ˆ\œ˜^Kš\Ð\œ˜^J˜]ÊHÈË‹‹›™]ÈÙ]
+˜]Ë›X\
+
+Y
+HOˆÝš[™ÊY
+JJWHˆ×NÂŸB‚™[˜Ý[ÛˆØÙ[™TÜXZÙ\Ú\˜XÝ\’Y
+ØÙ[™NˆØÙ[™T™]šY]È[™Yš[™YÚ\˜XÝ\œÎˆ›Ú™XÝÚ\˜XÝ\–×JHÂˆYˆ
+\ØÙ[™JH™]\›ˆˆŽÂˆÛÛœÝ\Ñ^XÚ]YHØš™XÝœ›ÝÝ\Kš\ÓÝÛ”›Ü\K˜Ø[
+ØÙ[™KœÜXZÙ\Ú\˜XÝ\’YŠHØš™XÝœ›ÝÝ\Kš\ÓÝÛ”›Ü\K˜Ø[
+ØÙ[™KœÜXZÙ\—ØÚ\˜XÝ\—ÚYŠNÂˆYˆ
+\Ñ^XÚ]Y
+HÂˆÛÛœÝ^XÚ]YHÝš[™ÊØÙ[™KœÜXZÙ\Ú\˜XÝ\’YØÙ[™KœÜXZÙ\—ØÚ\˜XÝ\—ÚYˆŠKš[J
+NÂˆ™]\›ˆÚ\˜XÝ\œËœÛÛYJ
+Ú\˜XÝ\ŠHOˆÚ\˜XÝ\‹šYOOH^XÚ]Y
+HÈ^XÚ]YˆˆŽÂˆBˆÛÛœÝÜXZÙ\ˆHØÙ[™U^
+ØÙ[™KœÜXZÙ\—ØÚ\˜XÝ\ˆ‹œÜXZÙ\Ú\˜XÝ\ˆ‹œÜXZÙ\—Û˜[YH‹œÜXZÙ\“˜[YH‹œÜXZÙ\ˆŠNÂˆÛÛœÝ›Ü›X[^™YÜXZÙ\ˆH›Ü›X[^™Q[]S˜[YJÜXZÙ\ŠNÂˆYˆ
+ÜXZÙ\ˆ	‰ˆVÈ›˜\œ˜]Üˆ‹›ÚXÙ[Ý™\ˆ‹››Û™H‹›ˆH—Kš[˜ÛY\Ê›Ü›X[^™YÜXZÙ\ŠJHÂˆÛÛœÝX]ÚYH›Ü›X[^™YÜXZÙ\ˆÈÚ\˜XÝ\œË™š[™
+
+Ú\˜XÝ\ŠHOˆ›Ü›X[^™Q[]S˜[YJÚ\˜XÝ\‹›˜[YJHOOH›Ü›X[^™YÜXZÙ\ŠHˆ[™Yš[™YÂˆYˆ
+X]ÚY
+H™]\›ˆX]ÚYšYÂˆBˆÛÛœÝ\ÜÚYÛ™YHØÙ[™PÚ\˜XÝ\’YÊØÙ[™JNÂˆ™]\›ˆ\ÜÚYÛ™Y›[™ÝOOHH	‰ˆÚ\˜XÝ\œËœÛÛYJ
+Ú\˜XÝ\ŠHOˆÚ\˜XÝ\‹šYOOH\ÜÚYÛ™YÌJHÈ\ÜÚYÛ™YÌHˆˆŽÂŸB‚™[˜Ý[ÛˆØÙ[™SØØ][Û’Y
+ØÙ[™OÎˆØÙ[™T™]šY]ÊHÂˆÛÛœÝ˜[YHHØÙ[™OË›ØØ][Û’YØÙ[™OË›ØØ][Û—ÚYØÙ[™OË™[š\›Û›Y[ÚYØÙ[™OË™[š\›Û›Y[YÂˆ™]\›ˆ\[Ùˆ˜[YHOOHœÝš[™ÈˆÈ˜[YHˆˆŽÂŸB‚™[˜Ý[ÛˆØÙ[™T™Y™\™[˜ÙSYYXJØÙ[™OÎˆØÙ[™T™]šY]ÊHÂˆÛÛœÝØ]™YHØÙ[™OËšY[Ô™Y™\™[˜ÙR[XYÙHØÙ[™OËšY[×Ü™Y™\™[˜ÙWÚ[XYÙNÂˆÛÛœÝØ]™Y™XÛÜ™HØ]™Y	‰ˆ\[ÙˆØ]™YOOH›Øš™XÝˆ	‰ˆP\œ˜^Kš\Ð\œ˜^JØ]™Y
+HÈØ]™Y\ÈØÙ[™SYYXT™]šY]Èˆ[™Yš[™YÂˆÛÛœÝYYXHHØÙ[™OË›YYXOËšÚ[™OOHš[XYÙHˆÈØÙ[™K›YYXHˆ[™Yš[™YÂˆÛÛœÝØ[™Y]\ÈHÜØ]™Y™XÛÜ™YYXWK™š[\Š
+Ø[™Y]JNˆØ[™Y]H\ÈØÙ[™SYYXT™]šY]ÈOˆ›ÛÛX[ŠØ[™Y]H	‰ˆØ[™Y]KšÚ[™OOHš[XYÙHˆ	‰ˆØ[™Y]KœÝ]\ÈOOHœ™XYHŠJNÂˆ™]\›ˆØ[™Y]\Ë™š[™
+
+Ø[™Y]JHOˆXØ[™Y]KœÝ[JHØ[™Y]\ÖÌHØ]™Y™XÛÜ™YYXNÂŸB‚˜\Þ[˜È[˜Ý[ÛˆÛ\›Ø\™™Ð›ØŠ›ØŽˆ›ØŠNˆ›ÛZ\ÙO›ØˆÂˆYˆ
+›Ø‹\KÓÝÙ\Ø\ÙJ
+HOOHš[XYÙKÜ™ÈŠH™]\›ˆ›ØŽÂˆYˆ
+\[ÙˆÜ™X]R[XYÙPš]X\OOH™[˜Ý[ÛˆŠH›ÝÈ™]È\œ›ÜŠ•°ëš^xnáÝÚ0í™ÈÚ^xnàÛˆ1$q¬8nèØÈ8n¨Ûš[HÚxn¯ÝHØ[™È‘È1$xnàÈÛÜKˆŠNÂˆÛÛœÝš]X\H]ØZ]Ü™X]R[XYÙPš]X\
+›ØŠNÂˆžHÂˆÛÛœÝØ[˜\ÈHØÝ[Y[˜Ü™X]Q[[Y[
+˜Ø[˜\ÈŠNÂˆØ[˜\ËÚYHš]X\ÚYÂˆØ[˜\ËšZYÚHš]X\šZYÚÂˆÛÛœÝÛÛ^HØ[˜\Ë™Ù]ÛÛ^
+Œ™ŠNÂˆYˆ
+XÛÛ^
+H›ÝÈ™]È\œ›ÜŠ’Ú0í™È8nàÈÚxnª[ˆ¸nâÈ8n¨Ûš[HÚxn¯ÝH1$xnàÈÛÜKˆŠNÂˆÛÛ^™˜]Ò[XYÙJš]X\
+NÂˆ™]\›ˆ]ØZ]™]È›ÛZ\ÙO›ØŠ
+™\ÛÛ™K™Z™XÝ
+HOˆÂˆØ[˜\ËÐ›ØŠ
+™ÊHOˆ™ÈÈ™\ÛÛ™J™ÊHˆ™Z™XÝ
+™]È\œ›ÜŠ’Ú0í™È8nàÈpèÈ0ìØH8n¨Ûš[HÚxn¯ÝH0èš‘ËˆŠJKš[XYÙKÜ™ÈŠNÂˆJNÂˆHš[˜[HÂˆš]X\˜ÛÜÙJ
+NÂˆBŸB‚™[˜Ý[ÛˆØÙ[™P]Y[Ô™XÛÜ™
+ØÙ[™OÎˆØÙ[™T™]šY]ÊHÂˆ™]\›ˆØÙ[™OË˜]Y[È	‰ˆ\[ÙˆØÙ[™K˜]Y[ÈOOH›Øš™XÝˆ	‰ˆP\œ˜^Kš\Ð\œ˜^JØÙ[™K˜]Y[ÊBˆÈØÙ[™K˜]Y[È\È™XÛÜ™Ýš[™Ë[šÛ›ÝÛ‚ˆˆßNÂŸB‚™[˜Ý[ÛˆØÙ[™QX[ÙÝYTÙYÛY[ÊØÙ[™NˆØÙ[™T™]šY]ËÚ\˜XÝ\œÎˆ›Ú™XÝÚ\˜XÝ\–×JHÂˆ™]\›ˆ™XYX[ÙÝYTÙYÛY[ÊØÙ[™KÚ\˜XÝ\œÊNÂŸB‚\HØÙ[™U[Y[[™T›ÝÈHÂˆÚ[™ˆ™X[ÙÝYHˆ™Ø\ŽÂˆÝ\ÙXÎˆ[X™\ŽÂˆ[™ÙXÎˆ[X™\ŽÂˆÙYÛY[ÎˆX[ÙÝYTÙYÛY[ÂŸNÂ‚™[˜Ý[ÛˆØÙ[™U[Y[[™T›ÝÜÊØÙ[™NˆØÙ[™T™]šY]ËÙYÛY[ÎˆX[ÙÝYTÙYÛY[×JNˆØÙ[™U[Y[[™T›ÝÖ×HÂˆÛÛœÝ\˜][Û”ÙXÈHØÙ[™Q\˜][Û”ÙXÛÛ™ÊØÙ[™JNÂˆÛÛœÝ›ÝÜÎˆØÙ[™U[Y[[™T›ÝÖ×HH×NÂˆ]Ý\œÛÜˆHÂˆ›Üˆ
+ÛÛœÝÙYÛY[ÙˆÙYÛY[ÊHÂˆÛÛœÝÝ\ÙXÈHX]›X^
+X]›Z[Š\˜][Û”ÙXËÙYÛY[œÝ\\ÈÈL
+JNÂˆÛÛœÝ[™™\œ™Y[™H
+ÙYÛY[™[™\ÈÏÈÙYÛY[œÝ\\È
+È\Ý[X]QX[ÙÝYQ\˜][Û“\ÊÙYÛY[^
+JHÈLÂˆÛÛœÝ[™ÙXÈHX]›X^
+Ý\ÙXËX]›Z[Š\˜][Û”ÙXË[™™\œ™Y[™
+JNÂˆYˆ
+Ý\ÙXÈˆÝ\œÛÜˆ
+ÈŒJH›ÝÜËœ\Ú
+ÈÚ[™ˆ™Ø\‹Ý\ÙXÎˆÝ\œÛÜ‹[™ÙXÎˆÝ\ÙXÈJNÂˆYˆ
+[™ÙXÈˆÝ\ÙXÊH›ÝÜËœ\Ú
+ÈÚ[™ˆ™X[ÙÝYH‹Ý\ÙXË[™ÙXËÙYÛY[JNÂˆÝ\œÛÜˆHX]›X^
+Ý\œÛÜ‹[™ÙXÊNÂˆBˆYˆ
+Ý\œÛÜˆ\˜][Û”ÙXÈHŒJH›ÝÜËœ\Ú
+ÈÚ[™ˆ™Ø\‹Ý\ÙXÎˆÝ\œÛÜ‹[™ÙXÎˆ\˜][Û”ÙXÈJNÂˆYˆ
+\›ÝÜË›[™Ý
+H›ÝÜËœ\Ú
+ÈÚ[™ˆ™Ø\‹Ý\ÙXÎˆ[™ÙXÎˆ\˜][Û”ÙXÈJNÂˆ™]\›ˆ›ÝÜÎÂŸB‚™[˜Ý[Ûˆ›Ùš[R[XYÙT›Û\
+›Ùš[NˆÈ˜[YNˆÝš[™ÎÈ[XYÙT›Û\ÎˆÝš[™ÎÈ\ØÜš\[ÛÎˆÝš[™ÈKÚ[™ˆ˜Ú\˜XÝ\œÈˆ›ØØ][ÛœÈŠHÂˆÛÛœÝ›Û\H›Ùš[Kš[XYÙT›Û\Ëš[J
+H›Ùš[K™\ØÜš\[ÛËš[J
+HˆŽÂˆ™]\›ˆÚ[™OOH˜Ú\˜XÝ\œÈ‚ˆÈÚ\˜XÝ\”™Y™\™[˜ÙT›Û\
+›Ùš[K›˜[YK›Û\“Ñ’SWÔ‘Q‘T‘SÑWÐTÔPÕÔUSÊBˆˆØØ][Û”™Y™\™[˜ÙT›Û\
+›Ùš[K›˜[YK›Û\“Ñ’SWÔ‘Q‘T‘SÑWÐTÔPÕÔUSÊNÂŸB‚™[˜Ý[ÛˆØÙ[™S™YYÑX[ÙÝYQ^˜XÝ[ÛŠØÙ[™NˆØÙ[™T™]šY]ÊHÂˆ™]\›ˆZ\Ñ^XÚ]X[ÙÝYTÙYÛY[ÊØÙ[™JH	‰ˆ›ÛÛX[ŠØÙ[™U^
+ØÙ[™K™X[ÙÝYWÛÜ—Ý›ÚXÙ[Ý™\ˆ‹™X[ÙÝYSÜ•›ÚXÙ[Ý™\ˆ‹›ÚXÙU^‹›ÚXÙ[Ý™\ˆ‹Õ›ÚXÙH‹×Ý›ÚXÙHŠJNÂŸB‚™[˜Ý[ÛˆØÙ[™TØÜš\Ú\˜XÝ\“˜[Y\ÊØÙ[™NˆØÙ[™T™]šY]ÊHÂˆÛÛœÝ˜]ÈHØÙ[™K˜Ú\˜XÝ\œÈØÙ[™K˜Ú\˜XÝ\—Û˜[Y\ÈØÙ[™K˜Ú\˜XÝ\“˜[Y\ÎÂˆÛÛœÝ˜[Y\ÈH\œ˜^Kš\Ð\œ˜^J˜]ÊHÈ˜]Ë›X\
+
+˜[YJHOˆÂˆYˆ
+\[Ùˆ˜[YHOOHœÝš[™ÈŠH™]\›ˆ˜[YKš[J
+NÂˆYˆ
+]˜[YH\[Ùˆ˜[YHOOH›Øš™XÝˆ\œ˜^Kš\Ð\œ˜^J˜[YJJH™]\›ˆˆŽÂˆÛÛœÝ™XÛÜ™H˜[YH\È™XÛÜ™Ýš[™Ë[šÛ›ÝÛŽÂˆ™]\›ˆÝš[™Ê™XÛÜ™›˜[YH™XÛÜ™˜Ú\˜XÝ\—Û˜[YH™XÛÜ™˜Ú\˜XÝ\“˜[YHˆŠKš[J
+NÂˆJHˆ×NÂˆÛÛœÝÜXZÙ\ˆHØÙ[™U^
+ØÙ[™KœÜXZÙ\—ØÚ\˜XÝ\ˆ‹œÜXZÙ\Ú\˜XÝ\ˆ‹œÜXZÙ\—Û˜[YH‹œÜXZÙ\“˜[YH‹œÜXZÙ\ˆŠNÂˆ™]\›ˆË‹‹›™]ÈÙ]
+Ë‹‹›˜[Y\ËÜXZÙ\—K™š[\Š
+˜[YJHOˆ˜[YH	‰ˆZ\Õ[\]Q[]S˜[YJ˜[YJH	‰ˆVÈ›˜\œ˜]Üˆ‹›ÚXÙ[Ý™\ˆ‹››Û™H‹›ˆH—Kš[˜ÛY\Ê›Ü›X[^™Q[]S˜[YJ˜[YJJJJWNÂŸB‚™[˜Ý[ÛˆØÙ[™QšY[˜[YJØÙ[™NˆØÙ[™T™]šY]Ë‹‹šÙ^\ÎˆÝš[™Ö×JHÂˆ›Üˆ
+ÛÛœÝÙ^HÙˆÙ^\ÊHÂˆÛÛœÝ˜[YHHØÙ[™VÚÙ^WNÂˆYˆ
+\[Ùˆ˜[YHOOHœÝš[™Èˆ	‰ˆ˜[YKš[J
+JH™]\›ˆ˜[YKš[J
+NÂˆYˆ
+\[Ùˆ˜[YHOOH›[X™\ˆŠH™]\›ˆÝš[™Ê˜[YJNÂˆYˆ
+\œ˜^Kš\Ð\œ˜^J˜[YJH	‰ˆ˜[YK›[™Ý
+H™]\›ˆ˜[YK›X\
+
+][JHOˆ\[Ùˆ][HOOHœÝš[™ÈˆÈ][Hˆ”ÓÓ‹œÝš[™ÚYžJ][JJKš›Ú[Šˆ0­ÈŠNÂˆBˆ™]\›ˆˆŽÂŸB‚™[˜Ý[Ûˆ›Ü›X[^™T›Û\›ÜÛÛ\\š\ÛÛŠ˜[YNˆÝš[™ÊHÂˆ™]\›ˆ˜[YKœ™\XÙJ×ÊËÙËˆŠKš[J
+NÂŸB‚™[˜Ý[ÛˆX[ÙÝYU[YXÛÙS\Ê˜[YNˆÝš[™ÊHÂˆÛÛœÝX]ÚH˜[YKš[J
+K›X]Ú
+×ŠÎŠÌKŸJNŠOÊÌKŸJNŠÌŸJVË—JÌKßJIÊNÂˆYˆ
+[X]Ú
+H™]\›ˆ[™Yš[™YÂˆÛÛœÝÝ\œÈH[X™\ŠX]ÚÌWH
+NÂˆÛÛœÝZ[]\ÈH[X™\ŠX]ÚÌ—JNÂˆÛÛœÝÙXÛÛ™ÈH[X™\ŠX]ÚÌ×JNÂˆÛÛœÝZ[\ÙXÛÛ™ÈH[X™\ŠX]ÚÍKœY[™
+ËŒŠJNÂˆ™]\›ˆ
+
+
+Ý\œÈ
+ˆŒ
+ÈZ[]\ÊH
+ˆŒ
+ÈÙXÛÛ™ÊH
+ˆL
+H
+ÈZ[\ÙXÛÛ™ÎÂŸB‚™[˜Ý[Ûˆ\œÙQX[ÙÝYTÜ
+˜[YNˆÝš[™ËÚ\˜XÝ\œÎˆ›Ú™XÝÚ\˜XÝ\–×JNˆX[ÙÝYTÙYÛY[×HÂˆÛÛœÝ›ØÚÜÈH˜[YKœ™\XÙJ×‹ÙËˆŠKš[J
+KœÜ]
+×—Ê—‹ÊK™š[\Š›ÛÛX[ŠNÂˆÛÛœÝÝ]]ˆX[ÙÝYTÙYÛY[×HH×NÂˆ›Üˆ
+ÛÛœÝ›ØÚÈÙˆ›ØÚÜÊHÂˆÛÛœÝ[™\ÈH›ØÚËœÜ]
+—ˆŠK›X\
+
+[™JHOˆ[™Kš[J
+JK™š[\Š›ÛÛX[ŠNÂˆÛÛœÝ[YR[™^H[™\Ë™š[™[™^
+
+[™JHOˆ[™Kš[˜ÛY\Ê‹KOˆŠJNÂˆYˆ
+[YR[™^
+HÛÛ[YNÂˆÛÛœÝ[Z[™ÈH[™\ÖÝ[YR[™^KœÜ]
+‹KOˆŠK›X\
+
+\
+HOˆ\š[J
+JNÂˆÛÛœÝÝ\\ÈHX[ÙÝYU[YXÛÙS\Ê[Z[™ÖÌHˆŠNÂˆÛÛœÝ[™\ÈHX[ÙÝYU[YXÛÙS\Ê[Z[™ÖÌWHˆŠNÂˆYˆ
+Ý\\ÈOOH[™Yš[™Y[™\ÈOOH[™Yš[™Y[™\ÈHÝ\\È[™\ÈˆMWÌ
+HÛÛ[YNÂˆ]^H[™\ËœÛXÙJ[YR[™^
+ÈJKš›Ú[ŠˆŠKš[J
+NÂˆYˆ
+]^
+HÛÛ[YNÂˆÛÛœÝ™Yš^H^›X]Ú
+×—Ê×—WJÊWWÊŠŠŠIÊH^›X]Ú
+×Š×Ž—^ÌKŒJN—ÊŠŠÊIÊNÂˆÛÛœÝÜXZÙ\“˜[YHH™Yš^Ë–ÌWOËš[J
+NÂˆÛÛœÝ›Ü›X[^™YH›Ü›X[^™Q[]S˜[YJÜXZÙ\“˜[YHˆŠNÂˆÛÛœÝÜXZÙ\ˆHÚ\˜XÝ\œË™š[™
+
+Ú\˜XÝ\ŠHOˆ›Ü›X[^™Q[]S˜[YJÚ\˜XÝ\‹›˜[YJHOOH›Ü›X[^™Y
+NÂˆYˆ
+
+ÜXZÙ\ˆ›Ü›X[^™YOOH›˜\œ˜]ÜˆŠH	‰ˆ™Yš^Ë–Ì—OËš[J
+JH^H™Yš^Ì—Kš[J
+NÂˆÝ]]œ\Ú
+ÂˆYˆ[™KIÑ]K››ÝÊ
+_KIÛÝ]]›[™Ý
+È_XˆÜXZÙ\Ú\˜XÝ\’YˆÜXZÙ\ËšY[™Yš[™YˆÜXZÙ\“˜[YNˆÜXZÙ\Ë›˜[YH
+›Ü›X[^™YOOH›˜\œ˜]ÜˆˆÈ“T”UÔˆˆˆ[™Yš[™Y
+Kˆ^ˆÝ\\Ëˆ[™\ËˆJNÂˆBˆ™]\›ˆÝ]]ÂŸB‚™[˜Ý[ÛˆÙXÛÛ™Ò[œ]
+Z[\ÙXÛÛ™Îˆ[X™\ˆ[™Yš[™Y
+HÂˆ™]\›ˆZ[\ÙXÛÛ™ÈOOH[™Yš[™YÈˆˆˆ
+Z[\ÙXÛÛ™ÈÈL
+KÑš^Y
+JNÂŸB‚™[˜Ý[ÛˆYYXTÙ][™ÜÑ›Ü”ØÙ[™JØÙ[™NˆØÙ[™T™]šY]È[™Yš[™Y›Ú™XÝˆÝÜžT›Ú™XÝ
+NˆYYXQÙ[™\˜][Û”Ù][™ÜÈÂˆÛÛœÝØÙ[™TÙ][™ÜÈHØÙ[™OË›YYXQÙ[™\˜][ÛˆØÙ[™OË›YYXWÙÙ[™\˜][ÛŽÂˆÛÛœÝÝ™\œšY\ÈHØÙ[™TÙ][™ÜÈ	‰ˆ\[ÙˆØÙ[™TÙ][™ÜÈOOH›Øš™XÝˆ	‰ˆP\œ˜^Kš\Ð\œ˜^JØÙ[™TÙ][™ÜÊBˆÈØÙ[™TÙ][™ÜÈ\È\X[YYXQÙ[™\˜][Û”Ù][™ÜÏ‚ˆˆßNÂˆ™]\›ˆ™\ÛÛ™SYYXQÙ[™\˜][Û”Ù][™ÜÊÂˆ‹‹œ›Ú™XÝ›YYXQÙ[™\˜][Û‹ˆ‹‹›Ý™\œšY\Ëˆ‹‹Š›Ú™XÝœ™\Ù]YOOH˜ZKY˜[XHˆÈÈšY[Ñ\˜][Û“[ÙNˆœØÙ[™HˆHˆßJKˆ‹‹Š\Ñ›ÝÔÝÜžSÛ›T™\Ù]
+›Ú™XÝœ™\Ù]Y
+HÈÈ›ÝÔ™Y™\™[˜ÙS[ÙNˆš[™Ü™YY[Èˆ\ÈÛÛœÝHˆßJKˆJNÂŸB‚™[˜Ý[ÛˆØÙ[™UšY[Ñ\˜][Û“[Z]
+[Ù[ˆšY[ÑÙ[™\˜][Û“[Ù[Ü[Ûˆ[™Yš[™Y]X[]NˆÝš[™ÊHÂˆ™]\›ˆšY[Ñ\˜][Û›Ý[™Ñ›Ü“[Ù[
+[Ù[]X[]JK›X^ÂŸB‚™[˜Ý[ÛˆØÙ[™Q\˜][Û”ÙXÛÛ™ÊØÙ[™NˆØÙ[™T™]šY]Ë˜[˜XÚÈHMJHÂˆÛÛœÝÝ\H[X™\ŠØÙ[™KœÝ\ÜÙXÈÏÈØÙ[™KœÝ\ÙXÊNÂˆÛÛœÝ[™H[X™\ŠØÙ[™K™[™ÜÙXÈÏÈØÙ[™K™[™ÙXÊNÂˆÛÛœÝ^XÝH[X™\‹š\Ñš[š]JÝ\
+H	‰ˆ[X™\‹š\Ñš[š]J[™
+H	‰ˆ[™ˆÝ\È[™HÝ\ˆ[X™\ŠØÙ[™K™\˜][Û—ÜÙXÈÏÈØÙ[™K™\˜][Û”ÙXÈÏÈØÙ[™K›ÚXÙ[Ý™\—Ý\™Ù]ÜÙXÈÏÈØÙ[™K›ÚXÙ[Ý™\•\™Ù]ÙXÊNÂˆ™]\›ˆ[X™\‹š\Ñš[š]J^XÝ
+H	‰ˆ^XÝˆÈX]›Z[ŠMKX]›X^
+K^XÝ
+JHˆX]›Z[ŠMKX]›X^
+K˜[˜XÚÈMJJNÂŸB‚™[˜Ý[ÛˆØÙ[™U[YT˜[™ÙJØÙ[™NˆØÙ[™T™]šY]ÊHÂˆÛÛœÝÝ\H[X™\ŠØÙ[™KœÝ\ÜÙXÈÏÈØÙ[™KœÝ\ÙXÊNÂˆÛÛœÝ[™H[X™\ŠØÙ[™K™[™ÜÙXÈÏÈØÙ[™K™[™ÙXÊNÂˆYˆ
+S[X™\‹š\Ñš[š]JÝ\
+HS[X™\‹š\Ñš[š]J[™
+JH™]\›ˆŒ8 $ÌM\ÈŽÂˆ™]\›ˆ	ÜÝ\Ñš^Y
+
+_x $ÉÙ[™Ñš^Y
+
+_\ØÂŸB‚™[˜Ý[ÛˆšY[Ñ˜Z[\™TÝYÙSX™[
+ÝYÙOÎˆÝš[™Ë›ÝšY\ÎˆÝš[™ÊHÂˆÛÛœÝX™[H›ÝšY\ˆOOH™›ÝÈˆÈ‘›ÝÈˆˆ›ÝšY\ˆOOH›]\ÙHˆÈ“]\ÙK˜ZHˆˆ”ÙYY[˜ÙHŽÂˆYˆ
+ÝYÙHOOH™›Ý×ØÜ™X]HŠH™]\›ˆ8n¨[È›Øˆ	ÛX™[XÂˆYˆ
+ÝYÙHOOH™›Ý×ÜÛŠH™]\›ˆ[È0íZH›Øˆ	ÛX™[XÂˆYˆ
+ÝYÙHOOH™›Ý×ÙÝÛ›ØYŠH™]\›ˆ8n¨ÚHšY[È	ÛX™[XÂˆYˆ
+ÝYÙHOOH™›Ý×ØÚXÚÜÚ[ŠH™]\›ˆ1¬H›Øˆ	ÛX™[XÂˆYˆ
+ÝYÙHOOHœÙYY[˜ÙWØÜ™X]HŠH™]\›ˆ8n¨[È\ÚÈ	ÛX™[XÂˆYˆ
+ÝYÙHOOHœÙYY[˜ÙWÜÛŠH™]\›ˆ[È0íZH\ÚÈ	ÛX™[XÂˆYˆ
+ÝYÙHOOHœÙYY[˜ÙWÙÝÛ›ØYŠH™]\›ˆ8n¨ÚHšY[È	ÛX™[XÂˆYˆ
+ÝYÙHOOHœÙYY[˜ÙWØÚXÚÜÚ[ŠH™]\›ˆ1¬H\ÚÈ	ÛX™[XÂˆ™]\›ˆ“8nåÚH8nëH0ïHšY[ÈŽÂŸB‚™[˜Ý[ÛˆšY[Ô›ÝšY\‘\Ü^S˜[YJ›ÝšY\ÎˆÝš[™ÊHÂˆ™]\›ˆ›ÝšY\ˆOOH™›ÝÈˆÈ‘›ÝÈˆˆ›ÝšY\ˆOOH›]\ÙHˆÈ“]\ÙK˜ZHˆˆ›ÝšY\ˆOOHšYÙÜÙšY[ˆÈ’YÙÜÙšY[ˆˆ›ÝšY\ˆOOHœÙYY[˜ÙHˆÈ”ÙYY[˜ÙHˆˆ“XZUšY[ÈŽÂŸB‚™[˜Ý[ÛˆØÙ[™S™YYÒ[XYÙJØÙ[™NˆØÙ[™T™]šY]Ë›Ú™XÝˆÝÜžT›Ú™XÝ
+HÂˆÛÛœÝ™Y™\™[˜ÙHHØÙ[™T™Y™\™[˜ÙSYYXJØÙ[™JNÂˆYˆ
+™Y™\™[˜ÙOËœÝ]\ÈOOHœ™XYHˆ	‰ˆ\™Y™\™[˜ÙKœÝ[H	‰ˆ™Y™\™[˜ÙKœ›ÝšY\ˆOOH\ØYŠH™]\›ˆ˜[ÙNÂˆYˆ
+J™Y™\™[˜ÙOËœÝ]\ÈOOHœ™XYHˆ	‰ˆ\™Y™\™[˜ÙKœÝ[H	‰ˆ
+Ýš[™Ê™Y™\™[˜ÙKœ›ÝšY\ˆˆŠKœÝ\ÕÚ]
+›XZ]šY[ËZ[XYÙHŠHÝš[™Ê™Y™\™[˜ÙKœ›ÝšY\ˆˆŠKœÝ\ÕÚ]
+›]\ÙKZ[XYÙHŠHÝš[™Ê™Y™\™[˜ÙKœ›ÝšY\ˆˆŠKœÝ\ÕÚ]
+™›ÝËZ[XYÙHŠJJJH™]\›ˆYNÂˆÛÛœÝÙ][™ÜÈHYYXTÙ][™ÜÑ›Ü”ØÙ[™JØÙ[™K›Ú™XÝ
+NÂˆYˆ
+™Y™\™[˜ÙK›[Ù[	‰ˆ™Y™\™[˜ÙK›[Ù[OOHÙ][™ÜËš[XYÙS[Ù[
+H™]\›ˆYNÂˆÛÛœÝ^XÝYÚ\˜XÝ\œÈHÙ][™ÜËš[XYÙU\ÙPÚ\˜XÝ\”™Y™\™[˜Ù\ÈÈØÙ[™T™Y™\™[˜ÙPÚ\˜XÝ\’YÊØÙ[™Kš[XYÙHŠHˆ×NÂˆÛÛœÝØ]™YÚ\˜XÝ\œÈH\œ˜^Kš\Ð\œ˜^J™Y™\™[˜ÙKœ™Y™\™[˜ÙPÚ\˜XÝ\’YÊHÈ™Y™\™[˜ÙKœ™Y™\™[˜ÙPÚ\˜XÝ\’YË›X\
+Ýš[™ÊHˆ×NÂˆ™]\›ˆ”ÓÓ‹œÝš[™ÚYžJË‹‹™^XÝYÚ\˜XÝ\œ×KœÛÜ
+
+JHOOH”ÓÓ‹œÝš[™ÚYžJË‹‹œØ]™YÚ\˜XÝ\œ×KœÛÜ
+
+JHÝš[™Ê™Y™\™[˜ÙKœ™Y™\™[˜ÙSØØ][Û’YˆŠHOOHØÙ[™T™Y™\™[˜ÙSØØ][Û’Y
+ØÙ[™Kš[XYÙHŠNÂŸB‚™[˜Ý[ÛˆØÙ[™S™YYÐZUšY[ÊØÙ[™NˆØÙ[™T™]šY]ÊHÂˆ™]\›ˆJØÙ[™K›YYXOËœÝ]\ÈOOHœ™XYHˆ	‰ˆØÙ[™K›YYXKšÚ[™OOHšY[Èˆ	‰ˆ\ØÙ[™K›YYXKœÝ[H	‰ˆÈ›XZ]šY[Ë]šY[È‹œÙYY[˜ÙH‹™›ÝË]šY[È‹\ØY—KœÛÛYJ
+›ÝšY\ŠHOˆÝš[™ÊØÙ[™K›YYXOËœ›ÝšY\ˆˆŠKœÝ\ÕÚ]
+›ÝšY\ŠJJNÂŸB‚™[˜Ý[ÛˆØÙ[™R\Ñ^\Ý[™ÐZUšY[ÊØÙ[™NˆØÙ[™T™]šY]ÊHÂˆÛÛœÝYYXHHØÙ[™K›YYXNÂˆÛÛœÝ›ÝšY\ˆHÝš[™ÊYYXOËœ›ÝšY\ˆˆŠNÂˆ™]\›ˆYYXOËœÝ]\ÈOOHœ™XYH‚ˆ	‰ˆYYXKšÚ[™OOHšY[È‚ˆ	‰ˆ[YYXKœÝ[Bˆ	‰ˆ
+›ÝšY\‹œÝ\ÕÚ]
+›XZ]šY[Ë]šY[ÈŠH›ÝšY\‹œÝ\ÕÚ]
+œÙYY[˜ÙHŠH›ÝšY\‹œÝ\ÕÚ]
+™›ÝË]šY[ÈŠJNÂŸB‚™[˜Ý[ÛˆØÙ[™R\ÐXÝ]™SYYXR›ØŠØÙ[™NˆØÙ[™T™]šY]ÊHÂˆ™]\›ˆØÙ[™K›YYXR›ØËœÝ]\ÈOOHœ]Y]YYˆØÙ[™K›YYXR›ØËœÝ]\ÈOOHœ[›š[™ÈŽÂŸB‚™[˜Ý[ÛˆØÙ[™S[X™\“X™[
+ØÙ[™NˆØÙ[™T™]šY]ÊHÂˆÛÛœÝ[X™\ˆH[X™\ŠØÙ[™KœØÙ[™S[X™\ˆÝš[™ÊØÙ[™KšY
+Kœ™\XÙJ×ÙËˆŠJNÂˆ™]\›ˆ[X™\‹š\Ñš[š]J[X™\ŠH	‰ˆ[X™\ˆˆÈÉÔÝš[™Ê[X™\ŠKœYÝ\
+ËŒŠ_XˆØÙ[™KšYÂŸB‚™[˜Ý[ÛˆÛÛ\XÝØÙ[™U^
+˜[YNˆÝš[™ËX^HLÌ
+HÂˆ™]\›ˆ˜[YK›[™ÝˆX^È	Ý˜[YKœÛXÙJX^HJKš[Q[™
+
+_x )˜ˆ˜[YNÂŸB‚™[˜Ý[ÛˆØÙ[™T™]šY]ÔÝ]\ÊØÙ[™NˆØÙ[™T™]šY]ÊNˆØÙ[™T™]šY]ÔÝ]\ÈÂˆÛÛœÝ˜[YHHÝš[™ÊØÙ[™Kœ™]šY]ÔÝ]\ÈØÙ[™Kœ™]šY]×ÜÝ]\È[œ™]šY]ÙYŠNÂˆ™]\›ˆ˜[YHOOH˜\›Ý™Yˆ˜[YHOOH›™YY×ØÚ[™Ù\ÈˆÈ˜[YHˆ[œ™]šY]ÙYŽÂŸB‚™[˜Ý[ÛˆØÙ[™T™]šY]ÓX™[
+Ý]\ÎˆØÙ[™T™]šY]ÔÝ]\ÊHÂˆ™]\›ˆÝ]\ÈOOH˜\›Ý™YˆÈ±$0èÈ^xnáÝˆˆÝ]\ÈOOH›™YY×ØÚ[™Ù\ÈˆÈøn©ÛˆønëXHˆˆÚ8nçH™ñ¬8nçZH0î[™ÈŽÂŸB‚™[˜Ý[ÛˆØÙ[™T™]šY]ÕÛ™JÝ]\ÎˆØÙ[™T™]šY]ÔÝ]\ÊHÂˆ™]\›ˆÝ]\ÈOOH˜\›Ý™YˆÈ˜\›Ý™YˆˆÝ]\ÈOOH›™YY×ØÚ[™Ù\ÈˆÈ›™YYËXÚ[™Ù\Èˆˆ[œ™]šY]ÙYŽÂŸB‚™[˜Ý[ÛˆØÙ[™PZT™]šY]ÊØÙ[™NˆØÙ[™T™]šY]ÊNˆØÙ[™PZT™]šY]ÈÂˆÛÛœÝ˜]ÈHØÙ[™K˜ZT™]šY]È
+ØÙ[™K˜ZWÜ™]šY]È\È\X[ØÙ[™PZT™]šY]Ïˆ[™Yš[™Y
+HßNÂˆÛÛœÝÝ]\ÈHÝš[™Ê˜]ËœÝ]\Èœ[™[™ÈŠNÂˆ™]\›ˆÂˆÝ]\ÎˆÈœ\ÜÙY‹›™YY×ØÚ[™Ù\È‹™\œ›Üˆ—Kš[˜ÛY\ÊÝ]\ÊHÈÝ]\È\ÈØÙ[™PZT™]šY]ÔÝ]\Èˆœ[™[™È‹ˆØÛÜ™Nˆ[X™\‹š\Ñš[š]J[X™\Š˜]ËœØÛÜ™JJHÈX]›X^
+X]›Z[ŠL[X™\Š˜]ËœØÛÜ™JJJHˆˆÝ[[X\žNˆÝš[™Ê˜]ËœÝ[[X\žHRHÚ1¬H1$pè[šÚpèHøn¨Ûš°èKˆŠKˆ\ÜÝY\Îˆ\œ˜^Kš\Ð\œ˜^J˜]Ëš\ÜÝY\ÊHÈ˜]Ëš\ÜÝY\Ë›X\
+
+\ÜÝYJHOˆÝš[™Ê\ÜÝYJJK™š[\Š›ÛÛX[ŠHˆ×KˆÚXÚÜÎˆ˜]Ë˜ÚXÚÜÈ	‰ˆ\[Ùˆ˜]Ë˜ÚXÚÜÈOOH›Øš™XÝˆÈ˜]Ë˜ÚXÚÜÈˆßKˆ[Ù[ˆ˜]Ë›[Ù[ˆÜ™X]Y]ˆ˜]Ë˜Ü™X]Y]ˆ\œ›ÜŽˆ˜]Ë™\œ›Ü‹ˆNÂŸB‚™[˜Ý[ÛˆØÙ[™PZT™]šY]ÓX™[
+Ý]\ÎˆØÙ[™PZT™]šY]ÔÝ]\ÊHÂˆ™]\›ˆÝ]\ÈOOHœ\ÜÙYˆÈRH1$xn¨]ˆˆÝ]\ÈOOH›™YY×ØÚ[™Ù\ÈˆÈRHøn©ÛˆønëXHˆˆÝ]\ÈOOH™\œ›ÜˆˆÈRH8nåÚHˆˆÚ8nçHRHŽÂŸB‚™[˜Ý[ÛˆØÙ[™PZT™]šY]ÕÛ™JÝ]\ÎˆØÙ[™PZT™]šY]ÔÝ]\ÊHÂˆ™]\›ˆÝ]\ÈOOHœ\ÜÙYˆÈ˜ZK\\ÜÙYˆˆÝ]\ÈOOH›™YY×ØÚ[™Ù\ÈˆÈ˜ZK[™YYËXÚ[™Ù\ÈˆˆÝ]\ÈOOH™\œ›ÜˆˆÈ˜ZKY\œ›Üˆˆˆ˜ZK\[™[™ÈŽÂŸB‚™[˜Ý[ÛˆØÙ[™SX]Ú\ÐZT™]šY]Ñš[\ŠØÙ[™NˆØÙ[™T™]šY]Ëš[\ŽˆØÙ[™PZT™]šY]Ñš[\ŠHÂˆ™]\›ˆš[\ˆOOH˜[ˆØÙ[™PZT™]šY]ÊØÙ[™JKœÝ]\ÈOOHš[\ŽÂŸB‚™[˜Ý[ÛˆØÙ[™SYYXT™XYJYYXOÎˆØÙ[™SYYXT™]šY]ËZQ˜[XHH˜[ÙJHÂˆ™]\›ˆ›ÛÛX[ŠYYXH	‰ˆYYXKœÝ]\ÈOOHœ™XYHˆ	‰ˆ[YYXKœÝ[H	‰ˆ
+XZQ˜[XHYYXKšÚ[™OOHšY[ÈŠJNÂŸB‚™[˜Ý[ÛˆØÙ[™SYYXRÚ[™X™[
+YYXOÎˆØÙ[™SYYXT™]šY]ËZQ˜[XHH˜[ÙJHÂˆYˆ
+YYXOËœÝ[JH™]\›ˆøn©Ûˆ8n¨[È8n¨ZHŽÂˆYˆ
+[YYXHYYXKœÝ]\ÈOOHœ™XYHŠH™]\›ˆ•xn¯ÝHYYXHŽÂˆYˆ
+ZQ˜[XH	‰ˆYYXKšÚ[™OOHšY[ÈŠH™]\›ˆ”ØZHøn¨ZHYYXHŽÂˆYˆ
+YYXKœ›ÝšY\Ëš[˜ÛY\Ê›]\ÙHŠJH™]\›ˆ“]\ÙK˜ZHŽÂˆYˆ
+YYXKœ›ÝšY\Ëš[˜ÛY\ÊšYÙÜÙšY[ŠJH™]\›ˆ”ÙYY[˜ÙH‹Œ0­ÈYÙÜÙšY[ŽÂˆYˆ
+YYXK›[Ù[OOHœÙYY[˜ÙKL‹ŒY˜\ÝŠH™]\›ˆ”ÙYY[˜ÙH‹Œ0­È^™\œÙHŽÂˆYˆ
+YYXKœ›ÝšY\Ëš[˜ÛY\ÊœÙYY[˜ÙHŠJH™]\›ˆ”ÙYY[˜ÙHRHŽÂˆ™]\›ˆYYXKœ›ÝšY\ËœÝ\ÕÚ]
+›XZ]šY[ÈŠHÈ“XZUšY[ÈRHˆˆYYXKœ›ÝšY\ËœÝ\ÕÚ]
+œ^[ÈŠHÈ”ÝØÚÈˆˆðìÈYYXHŽÂŸB‚™[˜Ý[ÛˆØÙ[™SX]Ú\ÓYYXQš[\ŠØÙ[™NˆØÙ[™T™]šY]Ëš[\ŽˆØÙ[™SYYXQš[\‹ZQ˜[XHH˜[ÙJHÂˆÛÛœÝYYXHHØÙ[™K›YYXNÂˆYˆ
+š[\ˆOOH˜[ŠH™]\›ˆYNÂˆÛÛœÝ™XYHHØÙ[™SYYXT™XYJYYXKZQ˜[XJNÂˆYˆ
+š[\ˆOOH›Z\ÜÚ[™ÈŠH™]\›ˆ\™XYNÂˆYˆ
+š[\ˆOOHœ™XYHŠH™]\›ˆ™XYNÂˆYˆ
+š[\ˆOOH˜ZHŠH™]\›ˆ™XYH	‰ˆYYXOËšÚ[™OOHšY[Èˆ	‰ˆ›ÛÛX[ŠYYXKœ›ÝšY\ËœÝ\ÕÚ]
+›XZ]šY[ÈŠJNÂˆ™]\›ˆ™XYH	‰ˆ›ÛÛX[ŠYYXOËœ›ÝšY\ËœÝ\ÕÚ]
+œ^[ÈŠJNÂŸB‚™[˜Ý[ÛˆÝ]\Ô[
+ÈÛ™KÚ[™[ˆNˆÈÛ™NˆÝš[™ÎÈÚ[™[Žˆ™XXÝ”™XXÝ›ÙHJHÂˆ™]\›ˆÜ[ˆÛ\ÜÓ˜[YO^ØÝ]\Ë\[	ÝÛ™_XOÜ[ˆÛ\ÜÓ˜[YOHœÝ]\ËYÝˆÏžØÚ[™[ŸOÜÜ[ŽÂŸB‚™[˜Ý[Ûˆ›Ú™XÝ›ÙÜ™\ÜÊ›Ú™XÝˆÝÜžT›Ú™XÝ
+HÂˆ™]\›ˆX]›Z[ŠLX]œ›Ý[™
+
+›Ú™XÝ˜ÛÛ\]YØÙ[™\ÈÈX]›X^
+K›Ú™XÝÝ[ØÙ[™\ÊJH
+ˆL
+JNÂŸB‚™[˜Ý[ÛˆYYXTÛÝ\˜ÙSX™[
+ÛÝ\˜ÙNˆÝÜžT›Ú™XÝÈ›YYXTÛÝ\˜ÙH—JHÂˆ™]\›ˆÛÝ\˜ÙHOOHœÝØÚËZ[XYÙHˆÈ”ÝØÚÈ8n¨ÛšˆˆÛÝ\˜ÙHOOHœÝØÚË]šY[ÈˆÈ”ÝØÚÈšY[ÈˆˆÛÝ\˜ÙHOOH›XZ]šY[ËZ[XYÙHˆÈ“XZUšY[ÈRH8n¨ÛšˆˆÛÝ\˜ÙHOOH›XZ]šY[Ë]šY[ÈˆÈRHšY[È0­È8náÈ8nä[™È1$pèÈÚ8nã[ˆˆˆ”ÝØÚÈZ^0­ÈXZUšY[È˜[˜XÚÈŽÂŸB‚™[˜Ý[Ûˆ›Ú™XÝ™[™\”Ù][™ÜÊ›Ú™XÝˆÝÜžT›Ú™XÝØ]™YÙ][™ÜÏÎˆ\X[™[™\”Ù][™ÜÏˆ[
+Nˆ™[™\”Ù][™ÜÈÂˆÛÛœÝY˜][ÈH›Ú™XÝœ™\Ù]YOOH˜ZKY˜[XH‚ˆÈÈ‹‹‘QUSÔ‘S‘T—ÔÑUS‘ÔË[˜X›T˜[™ÛT[–›ÛÛNˆ˜[ÙHBˆˆQUSÔ‘S‘T—ÔÑUS‘ÔÎÂˆ™]\›ˆ›Ü›X[^™T™[™\”Ù][™ÜÊÈ‹‹™Y˜][Ë‹‹œØ]™YÙ][™ÜÈJNÂŸB‚™^Ü[˜Ý[Ûˆ\Ú›Ø\™šY]ÊÈ›Ú™XÝÛYÈNˆÈ›Ú™XÝÛYÏÎˆÝš[™ÈJHÂˆÛÛœÝÈ›Ú™XÝË™XYHHH\ÙT›Ú™XÝÊ
+NÂˆÛÛœÝ›Ú™XÝH›Ú™XÝÛYÈÈ›Ú™XÝË™š[™
+
+][JHOˆ][KœÛYÈOOH›Ú™XÝÛYÊHˆ›Ú™XÝÖÌNÂ‚ˆYˆ
+\™XYJH™]\›ˆ]ˆÛ\ÜÓ˜[YOH›ØY[™Ë\Ý]H±$[™È8n¨ÚHÛÜšÜÜXÙx )Ù]ŽÂˆYˆ
+\›Ú™XÝ
+H™]\›ˆ]ˆÛ\ÜÓ˜[YOH™[\K\YÙH]ˆÛ\ÜÓ˜[YOH™[\KZXÛÛˆXÛÛˆ˜[YOH™›Û\ˆˆÚ^™O^ÌŒŸHÏÙ]OÚ1¬HðìÈ8nìH0è[ÚO•8n¨[È8nìH0è[ˆ1$xn©ÝHpê›ˆ1$xnàÈ¸n«Ý1$xn©ÝH\[[™HønâØÚ¸n¨Û‹Ü[šÈÛ\ÜÓ˜[YOHœš[X\žKX]Ûˆˆ™YH‹Ü›Ú™XÝËÛ™]ÈXÛÛˆ˜[YOHœ\ÈˆÚ^™O^ÌMŸHÏ•8n¨[È8nìH0è[Ó[šÏÙ]ŽÂ‚ˆ™]\›ˆ\Ú›Ø\™›Ú™XÝÛÛ[Ù^O^Ü›Ú™XÝœÛYßH›Ú™XÝ^Ü›Ú™XÝHÏŽÂŸB‚™[˜Ý[Ûˆ\Ú›Ø\™›Ú™XÝÛÛ[
+È›Ú™XÝNˆÈ›Ú™XÝˆÝÜžT›Ú™XÝJHÂˆÛÛœÝÈXÝ]š]Y\Ë\]T›Ú™XÝ™Yœ™\ÚHH\ÙT›Ú™XÝÊ
+NÂˆÛÛœÝÈXØÛÝ[ÎˆÙYY[˜ÙPXØÛÝ[ËY˜][XØÛÝ[YˆY˜][ÙYY[˜ÙPXØÛÝ[YHH\ÙTÙYY[˜ÙPXØÛÝ[Ê
+NÂˆÛÛœÝØXÝ]™Qš[\‹Ù]XÝ]™Qš[\—HH\ÙTÝ]J•8n©]øn¨ÈŠNÂˆÛÛœÝÚ\Ô[›š[™ËÙ]\Ô[›š[™×HH\ÙTÝ]J˜[ÙJNÂˆÛÛœÝÜÚÝÑ^[™\\ÛÙ\ËÙ]ÚÝÑ^[™\\ÛÙ\×HH\ÙTÝ]J˜[ÙJNÂˆÛÛœÝÙ^[™\\ÛÙPÛÝ[Ù]^[™\\ÛÙPÛÝ[HH\ÙTÝ]JJNÂˆÛÛœÝÙ^[™[™Ñ\\ÛÙ\ËÙ]^[™[™Ñ\\ÛÙ\×HH\ÙTÝ]J˜[ÙJNÂˆÛÛœÝÜ[›š[™ÔØÜš\Ú[šÒYÙ][›š[™ÔØÜš\Ú[šÒYHH\ÙTÝ]JˆŠNÂˆÛÛœÝÝšY]Ú[™ÔØÜš\Ú[šÒYÙ]šY]Ú[™ÔØÜš\Ú[šÒYHH\ÙTÝ]JˆŠNÂˆÛÛœÝÜÛÝ\˜ÙU\›Ù]ÛÝ\˜ÙU\›HH\ÙTÝ]J›Ú™XÝËœÛÝ\˜ÙU\›ˆŠNÂˆÛÛœÝÜÛÝ\˜ÙU^Ù]ÛÝ\˜ÙU^HH\ÙTÝ]J›Ú™XÝËœÛÝ\˜ÙU^ˆŠNÂˆÛÛœÝÜ[“Y\ÜØYÙKÙ][“Y\ÜØYÙWHH\ÙTÝ]OÈÛ™NˆœÝXØÙ\ÜÈˆ™\œ›ÜˆŽÈ^ˆÝš[™ÈH[Š[
+NÂˆÛÛœÝÜX›\Ú[™ÔØÛÜKÙ]X›\Ú[™ÔØÛÜWHH\ÙTÝ]JœÙ\šY\ÈŠNÂˆÛÛœÝÜX›\Ú[™Ð\ÞKÙ]X›\Ú[™Ð\ÞWHH\ÙTÝ]J˜[ÙJNÂˆÛÛœÝÜX›\Ú[™Ñ\œ›Ü‹Ù]X›\Ú[™Ñ\œ›Ü—HH\ÙTÝ]JˆŠNÂˆÛÛœÝÜX›\Ú[™Ó›ÝXÙKÙ]X›\Ú[™Ó›ÝXÙWHH\ÙTÝ]JˆŠNÂˆÛÛœÝÜØÙ[™\ËÙ]ØÙ[™\×HH\ÙTÝ]OØÙ[™T™]šY]Ö×OŠ×JNÂˆÛÛœÝÜØÙ[™\ÓØY[™ËÙ]ØÙ[™\ÓØY[™×HH\ÙTÝ]J˜[ÙJNÂˆÛÛœÝÜØÙ[™UšY[Ô›Û\™]šY]ÜËÙ]ØÙ[™UšY[Ô›Û\™]šY]Ü×HH\ÙTÝ]O™XÛÜ™Ýš[™ËØÙ[™UšY[Ô›Û\™]šY]ÔÝ]OŠßJNÂˆÛÛœÝØÙ[™UšY[Ô›Û\™]šY]Ô™\]Y\ÝYÈH\ÙT™Y™XÛÜ™Ýš[™Ë[X™\ŠßJNÂˆÛÛœÝØÛÜZ[™ÔØÙ[™UšY[Ô›Û\YÙ]ÛÜZ[™ÔØÙ[™UšY[Ô›Û\YHH\ÙTÝ]JˆŠNÂˆÛÛœÝØÛÜYYØÙ[™UšY[Ô›Û\YÙ]ÛÜYYØÙ[™UšY[Ô›Û\YHH\ÙTÝ]JˆŠNõÛ^÷îÚ$z{-®éÜj×šðèˆ8nìH0è[ˆ0­È	ÓX]œ›Ý[™
+
+›Ú™XÝœ™[™\‹™\˜][Û”ÙXÈ
+HÈŒ
+_H0î0­È	Ü›Ú™XÝœ™[™\‹˜]Y[Ô™XYHÈ±$pèÈðìÈxn¯Û™ÈÈøn­ØÈxn¯Û™ÈønäXÈˆˆ˜Ú1¬HðìÈxn¯Û™ÈŸXˆ‘Ú0ê\ðèˆ¸næH8n«\0èšT
+ÈÔ•ˆŸOÜ‚ˆ]ˆÛ\ÜÓ˜[YOHœ›ÙXÝ[Û‹]ÛÛXXÝ[ÛœÈ]ÛˆÛ\ÜÓ˜[YOHœš[X\žKX]ÛˆÛÛ\XÝˆ\OH˜]ÛˆˆÛÛXÚÏ^Ê
+HOˆ›ÚY™[™\”›Ú™XÝšY[Ê
+_H\ØX›Y^Ü™[™\”[›š[™È\Ô[›š[™È›ÛÛX[Š[›š[™ÔØÜš\Ú[šÒY
+_OXÛÛˆ˜[YOHœ^HˆÚ^™O^ÌMHÏžÜ™[™\”[›š[™ÈÈ™[™\š[™ÐÚ[šÒYÈ1$[™ÈÚ0ê\8n«\	ÔÝš[™ÊÚ[šÜË™š[™
+
+Ú[šÊHOˆÚ[šËšYOOH™[™\š[™ÐÚ[šÒY
+OË™\\ÛÙS[X™\ˆˆŠKœYÝ\
+‹ŒŠ_x )˜ˆ™[™\”Ù][™ÜËœ™[™\™\ˆOOH˜›[™\ˆˆÈ±$[™È™[™\ˆ¸n¬[™È›[™\¸ )ˆˆˆ±$[™È™[™\ˆðèˆ8nìH0è[¸ )ˆˆˆ›Ú™XÝœ™[™\ËœÝ]\ÈOOH™˜Z[YˆÈ•8nëH™[™\ˆ8n¨ZHðèˆ8nìH0è[ˆˆˆ›Ú™XÝœ™[™\ËœÝ[HÈ”™[™\ˆ8n¨ZH1$xnéÈðèXÈ8n«\ˆˆ™[™\”Ù][™ÜËœ™[™\™\ˆOOH˜›[™\ˆˆÈ”™[™\ˆ[š[X][Ûˆ¸n¬[™È›[™\ˆˆˆ”™[™\ˆðèˆ8nìH0è[ˆŸOØ]ÛžÜ›Ú™XÝœ™[™\Ë›Ý]]]	‰ˆHÛ\ÜÓ˜[YOH^X]Ûˆˆ™Y^ØØ\KÜ›Ú™XÝËÉÙ[˜ÛÙUT’PÛÛ\Û™[
+›Ú™XÝœÛYÊ_KÜ™[™\‹Ùš[OÚÚ[™]šY[ØH\™Ù]H—Ø›[šÈˆ™[H››Ü™Y™\œ™\ˆžÜ›Ú™XÝœ™[™\‹œÝ[HÈ“xnçÈT¸n¨ÛˆñjHˆˆ“xnçÈTŸHXÛÛˆ˜[YOH˜\œ›ÝÈˆÚ^™O^ÌLßHÏØOHÛ\ÜÓ˜[YOH^X]Ûˆˆ™Y^ØØ\KÜ›Ú™XÝËÉÙ[˜ÛÙUT’PÛÛ\Û™[
+›Ú™XÝœÛYÊ_KÜ™[™\‹Ùš[OÚÚ[™]šY[É™ÝÛ›ØYLXHÝÛ›ØY^Ø	Ü›Ú™XÝœÛYßK›\OžÜ›Ú™XÝœ™[™\‹œÝ[HÈ•8n¨ÚHT¸n¨ÛˆñjHˆˆ•8n¨ÚHTŸHXÛÛˆ˜[YOH™ÝÛ›ØYˆÚ^™O^ÌLßHÏØOHÛ\ÜÓ˜[YOH^X]Ûˆˆ™Y^ØØ\KÜ›Ú™XÝËÉÙ[˜ÛÙUT’PÛÛ\Û™[
+›Ú™XÝœÛYÊ_KÜ™[™\‹Ùš[OÚÚ[™\ÝX]XH\™Ù]H—Ø›[šÈˆ™[H››Ü™Y™\œ™\ˆžÜ›Ú™XÝœ™[™\‹œÝ[HÈ”Ô•¸n¨ÛˆñjHˆˆ”Ô•ŸOØOžÜ›Ú™XÝœ™[™\‹˜›[™\”›Ú™XÝ]	‰ˆHÛ\ÜÓ˜[YOH^X]Ûˆˆ™Y^ØØ\KÜ›Ú™XÝËÉÙ[˜ÛÙUT’PÛÛ\Û™[
+›Ú™XÝœÛYÊ_KÜ™[™\‹Ùš[OÚÚ[™X›[™	™ÝÛ›ØYLXHÝÛ›ØY^Ø	Ü›Ú™XÝœÛYßK˜›[™O•8n¨ÚH˜›[™XÛÛˆ˜[YOH™ÝÛ›ØYˆÚ^™O^ÌLßHÏØOŸOÏŸOÙ]‚ˆØ\XÛO‚ˆÜÙXÝ[Û‚‚ˆÙXÝ[ÛˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ÜË\[™[[™[XØ\™‚ˆ]ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ÜËZXY[™È‚ˆ]]ˆÛ\ÜÓ˜[YOHœÙXÝ[Û‹ZÚXÚÙ\ˆ”‘S‘TˆÐÐSÙ]Ú8nã[ˆðèXÚ8nì[™ÈšY[ÏÚÚ8nã[ˆ‘›\YÈ1$xnàÈÚ0ê\YYXHðìÈøn­[ˆøn­ØÈ›[™\ˆ1$xnàÈ8nì[™Èøn¨ÛšÑØØ[8nêÈØÜš\ønéØHÛÙ[™ÈYÙ[ÜÙ]‚ˆÜ[ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ÜË\Ø]™K\Ý]\ÈÜ[ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ÜË\Ø]™KYÝˆÏ“1¬Hðî[™È8n©Ûˆ™[™\ÜÜ[‚ˆÙ]‚ˆ]Z[ÈÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ÜËY]Z[È‚ˆÝ[[X\žO‚ˆÜ[ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ÜË\Ý[[X\žK[XZ[ˆÜ[ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ÜË\Ý[[X\žKZXÛÛˆXÛÛˆ˜[YOHœÜ\šÈˆÚ^™O^ÌMHÏÜÜ[Ü[Ý›Û™Ï•0î^HÚ8nâ[š8n«]HønìÏÜÝ›Û™ÏÛX[Ú^xnàÛˆ1$xnæ[™È0­ÈÚ8nëÈ0­ÈØ]\›X\šÈ0­ÈÙÛÏÜÛX[ÜÜ[ÜÜ[‚ˆÜ[ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ÜË\Ý[[X\žKXXÝ[Ûˆ“xnçÈÈHønã[ÜÜ[‚ˆÜÝ[[X\žO‚ˆ]ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ÜËYÜ›Ý\È‚ˆÙXÝ[ÛˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYÜ›Ý\‚ˆ]ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYÜ›Ý\ZXY[™ÈÜ[ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYÜ›Ý\[[X™\ˆŒÜÜ[]Ý›Û™Ï‘[™Ú[™H™[™\ÜÝ›Û™ÏÛX[Ú8nã[ˆðí™ÈønéH8n¨[ÈTÝxnäZHðî[™È°ê›ˆpè^H°èOÜÛX[Ù]Ù]‚ˆ]ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYÜ›Ý\YÜšY™[™\‹\Ù][™ËYÜ›Ý\YÜšY[[Ý[Ûˆ‚ˆX™[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYšY[™[™\‹\Ù][™ËYšY[]ÚYHÜ[”™[™\ˆ¸n¬[™ÏÜÜ[Ù[XÝ\šXK[X™[H‘[™Ú[™H™[™\ˆ8nìH0è[ˆˆ˜[YO^Ü™[™\”Ù][™ÜËœ™[™\™\ŸHÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™Êœ™[™\™\ˆ‹]™[\™Ù]˜[YH\È™[™\”Ù][™ÜÖÈœ™[™\™\ˆ—J_OÜ[Ûˆ˜[YOH™™›\YÈ‘‘›\YÈ0­ÈÚ0ê\YYXHxnáÛˆðìÏÛÜ[ÛÜ[Ûˆ˜[YOH˜›[™\ˆ›[™\ˆ0­È8nì[™Èøn¨]øn¨ÛšÑØØ[ÛÜ[ÛÜÙ[XÝÛX[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËZ[›[™\ˆøn©ÛˆÛÙ[™ÈYÙ[8n¨[ÈÛÙO™]KÛÝ]]ËÞÜ›Ú™XÝœÛYßKØ›[™\‹ÜØÙ[™KœOØÛÙO‹ˆÝÜžPRH^xnà[ˆønâØÚ¸n¨Ûˆøn¨ÛšÚÈ›[™\‹1¬HT°èš[H˜›[™ÈÚ0í™ÈønãZH8nâØÚ¸néH8n¨[ÈšY[ÈÛÝYˆ¸n¨Ûˆ›[™\ˆxnáÛˆÚ1¬HÚ0ê\›ÚXÙKÕÈøn­ØÈ0è›H[šønäXËÜÛX[ÛX™[‚ˆÙ]‚ˆÜÙXÝ[Û‚ˆÙXÝ[ÛˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYÜ›Ý\‚ˆ]ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYÜ›Ý\ZXY[™ÈÜ[ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYÜ›Ý\[[X™\ˆŒOÜÜ[]Ý›Û™Ï“š8nâÜ	ˆÚ^xnàÛˆ1$xnæ[™ÏÜÝ›Û™ÏÛX[’ÚxnàÛHÛðè]ðèXÚØ[Y\˜HHÚ^xnàÛˆ°ê›ˆðèˆ[Y[[™OÜÛX[Ù]Ù]‚ˆ]ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYÜ›Ý\YÜšY™[™\‹\Ù][™ËYÜ›Ý\YÜšY[[Ý[Ûˆ‚ˆX™[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYšY[™[™\‹\Ù][™ËYšY[]ÚYHÜ[Ü[•8näXÈ1$xnæHšY[ÏÜÜ[Ý›Û™ÏžÜ™[™\”Ù][™ÜËœÜYYÑš^Y
+Š_påÏÜÝ›Û™ÏÜÜ[[œ]\OHœ˜[™ÙHˆZ[HŒHˆX^HŒÈˆÝ\HŒŒHˆ˜[YO^Ü™[™\”Ù][™ÜËœÜYYHÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™ÊœÜYY‹[X™\Š]™[\™Ù]˜[YJJ_HÏÛX[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËZ[“xn­ØÈ1$xnâÛšKŒ0åÈ0­ÈpåÈÚ8n«[H0­ÈðåÈš[šÜÛX[ÛX™[‚ˆX™[Û\ÜÓ˜[YO^Ø™[™\‹\Ù][™ËXÚXÚÈ™[™\‹\Ù][™ËXÚXÚËXØ\™	Ü™[™\”Ù][™ÜË™[˜X›T˜[™ÛT[–›ÛÛHÈš\ËXXÝ]™HˆˆˆŸXO[œ]\OH˜ÚXÚØ›ÞˆÚXÚÙY^Ü™[™\”Ù][™ÜË™[˜X›T˜[™ÛT[–›ÛÛ_HÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™Ê™[˜X›T˜[™ÛT[–›ÛÛH‹]™[\™Ù]˜ÚXÚÙY
+_HÏÜ[ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ËXÚXÚËXÛÜHÝ›Û™Ï¸n«]ÈHÈ›ÛÛH™ønªÝHšpê›ÜÝ›Û™ÏÛX[žÜ›Ú™XÝœ™\Ù]YOOH˜ZKY˜[XHˆÈ“xn­ØÈ1$xnâÛš8n«ÝÚÈ[HRNÈÚxnëÈ™Ý^pê›ˆ[Y[[™KÚ0í™Èøn«Ýøn¨Ûšˆˆ“xn­ØÈ1$xnâÛš¸n«]š1¬˜\ÝY]ÈÚxnëÈ™Ý^pê›ˆ[Y[[™KÚ0í™Èøn«Ýøn¨ÛšŸOÜÛX[ÜÜ[ÛX™[‚ˆX™[Û\ÜÓ˜[YO^Ø™[™\‹\Ù][™ËXÚXÚÈ™[™\‹\Ù][™ËXÚXÚËXØ\™	Ü™[™\”Ù][™ÜË\ÙT˜[™ÛR[\˜[Èš\ËXXÝ]™HˆˆˆŸXO[œ]\OH˜ÚXÚØ›ÞˆÚXÚÙY^Ü™[™\”Ù][™ÜË\ÙT˜[™ÛR[\˜[H\ØX›Y^È\™[™\”Ù][™ÜË™[˜X›T˜[™ÛT[–›ÛÛ_HÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™Ê\ÙT˜[™ÛR[\˜[‹]™[\™Ù]˜ÚXÚÙY
+_HÏÜ[ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ËXÚXÚËXÛÜHÝ›Û™Ï±$8nåZHš8nâÜÚ^xnàÛˆ1$xnæ[™ÏÜÝ›Û™ÏÛX[‘˜\ÝY]Ú8nã[ˆxnæ]š8nâÜ›Û™ÈÚøn¨Û™ÈZ[¸ $ÛX^ÚÈðèˆ[Y[[™OÜÛX[ÜÜ[ÛX™[‚ˆ]ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™Ë\ÝX™ÜšY™[™\‹\Ù][™Ë\ÝX™ÜšY]™YH™[™\‹\Ù][™ËYšY[]ÚYH‚ˆX™[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYšY[Ü[“š8nâÜZ[ˆ
+ÊOÜÜ[[œ]\OH›[X™\ˆˆZ[HŒHˆX^HŒÌˆÝ\HŒŒHˆ˜[YO^Ü™[™\”Ù][™ÜË›Z[’[\˜[H\ØX›Y^È\™[™\”Ù][™ÜË™[˜X›T˜[™ÛT[–›ÛÛH\™[™\”Ù][™ÜË\ÙT˜[™ÛR[\˜[HÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™Ê›Z[’[\˜[‹[X™\Š]™[\™Ù]˜[YJJ_HÏÛX™[‚ˆX™[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYšY[Ü[“š8nâÜX^
+ÊOÜÜ[[œ]\OH›[X™\ˆˆZ[HŒÈˆX^HŒÌˆÝ\HŒŒHˆ˜[YO^Ü™[™\”Ù][™ÜË›X^[\˜[H\ØX›Y^È\™[™\”Ù][™ÜË™[˜X›T˜[™ÛT[–›ÛÛH\™[™\”Ù][™ÜË\ÙT˜[™ÛR[\˜[HÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™Ê›X^[\˜[‹[X™\Š]™[\™Ù]˜[YJJ_HÏÛX™[‚ˆX™[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYšY[Ü[“š8nâÜønäH1$xnâÛš
+ÊOÜÜ[[œ]\OH›[X™\ˆˆZ[HŒHˆX^HŒÌˆÝ\HŒŒHˆ˜[YO^Ü™[™\”Ù][™ÜËš[\˜[H\ØX›Y^È\™[™\”Ù][™ÜË™[˜X›T˜[™ÛT[–›ÛÛH™[™\”Ù][™ÜË\ÙT˜[™ÛR[\˜[HÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™Êš[\˜[‹[X™\Š]™[\™Ù]˜[YJJ_HÏÛX™[‚ˆÙ]‚ˆX™[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYšY[Ü[Ü[”[ˆ8näZH1$XOÜÜ[Ý›Û™Ï°¬^Ü™[™\”Ù][™ÜË›X^[–IOÜÝ›Û™ÏÜÜ[[œ]\OHœ˜[™ÙHˆZ[HŒHˆX^HŒÌˆÝ\HŒHˆ˜[YO^Ü™[™\”Ù][™ÜË›X^[–H\ØX›Y^È\™[™\”Ù][™ÜË™[˜X›T˜[™ÛT[–›ÛÛ_HÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™Ê›X^[–‹[X™\Š]™[\™Ù]˜[YJJ_HÏÛX™[‚ˆX™[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYšY[Ü[Ü[”[ˆH8näZH1$XOÜÜ[Ý›Û™Ï°¬^Ü™[™\”Ù][™ÜË›X^[–_IOÜÝ›Û™ÏÜÜ[[œ]\OHœ˜[™ÙHˆZ[HŒHˆX^HŒÌˆÝ\HŒHˆ˜[YO^Ü™[™\”Ù][™ÜË›X^[–_H\ØX›Y^È\™[™\”Ù][™ÜË™[˜X›T˜[™ÛT[–›ÛÛ_HÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™Ê›X^[–H‹[X™\Š]™[\™Ù]˜[YJJ_HÏÛX™[‚ˆX™[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYšY[Ü[Ü[–›ÛÛHZ[ÜÜ[Ý›Û™ÏžÜ™[™\”Ù][™ÜË›Z[”ØØ[KÑš^Y
+Š_påÏÜÝ›Û™ÏÜÜ[[œ]\OHœ˜[™ÙHˆZ[HŒKŒMHˆX^HŒKŒHˆÝ\HŒŒHˆ˜[YO^ÓX]›Z[ŠKŒK™[™\”Ù][™ÜË›Z[”ØØ[J_H\ØX›Y^È\™[™\”Ù][™ÜË™[˜X›T˜[™ÛT[–›ÛÛ_HÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™Ê›Z[”ØØ[H‹[X™\Š]™[\™Ù]˜[YJJ_HÏÛX™[‚ˆX™[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYšY[Ü[Ü[–›ÛÛHX^ÜÜ[Ý›Û™ÏžÜ™[™\”Ù][™ÜË›X^ØØ[KÑš^Y
+Š_påÏÜÝ›Û™ÏÜÜ[[œ]\OHœ˜[™ÙHˆZ[HŒKŒMHˆX^HŒKŒHˆÝ\HŒŒHˆ˜[YO^ÓX]›Z[ŠKŒK™[™\”Ù][™ÜË›X^ØØ[J_H\ØX›Y^È\™[™\”Ù][™ÜË™[˜X›T˜[™ÛT[–›ÛÛ_HÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™Ê›X^ØØ[H‹[X™\Š]™[\™Ù]˜[YJJ_HÏÛX™[‚ˆÙ]‚ˆÜÙXÝ[Û‚‚ˆÙXÝ[ÛˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYÜ›Ý\‚ˆ]ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYÜ›Ý\ZXY[™ÈÜ[ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYÜ›Ý\[[X™\ˆŒÜÜ[]Ý›Û™Ï’0ëš8n¨Ûš	ˆ0è]8n¨ZOÜÝ›Û™ÏÛX[•0ê›HxnáÝH8nê[™È¸nà[ˆ°è^H1$xnåZH1¬8næÛ™È0è]ÜÛX[Ù]Ù]‚ˆ]ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYÜ›Ý\YÜšY™[™\‹\Ù][™ËYÜ›Ý\YÜšY[YYXH‚ˆX™[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYšY[Ü[’xnáÝH8nê[™È8néÏÜÜ[Ù[XÝ˜[YO^Ü™[™\”Ù][™ÜËš\ÝX[Y™™XÝHÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™Êš\ÝX[Y™™XÝ‹]™[\™Ù]˜[YH\È™[™\”Ù][™ÜÖÈš\ÝX[Y™™XÝ—J_OÜ[Ûˆ˜[YOH››Û™H’Ú0í™ÈxnáÝH8nê[™ÏÛÜ[ÛÜ[Ûˆ˜[YOH™›ÙÈ”ñ¬1¨[™ÈpîOÛÜ[ÛÜ[Ûˆ˜[YOH™š\™Y›Y\È±$ÛH1$pìÛOÛÜ[ÛÜ[Ûˆ˜[YOH™š\™H“8nëXOÛÜ[ÛÜ[Ûˆ˜[YOHœ˜Z[ˆ“q¬OÛÜ[ÛÜ[Ûˆ˜[YOHœÛ›ÝÈ•^xn¯Ý±¨ZOÛÜ[ÛÜÙ[XÝÛX™[‚ˆX™[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYšY[Ü[¸næH8nãXÈpèOÜÜ[Ù[XÝ˜[YO^Ü™[™\”Ù][™ÜË˜ÛÛÜ‘š[\ŸHÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™Ê˜ÛÛÜ‘š[\ˆ‹]™[\™Ù]˜[YH\È™[™\”Ù][™ÜÖÈ˜ÛÛÜ‘š[\ˆ—J_OÜ[Ûˆ˜[YOH“›Û™H‘ønäXÏÛÜ[ÛÜ[Ûˆ˜[YOH•Ø\›H¸n©OÛÜ[ÛÜ[Ûˆ˜[YOHÛÛÛ“8n¨[šÛÜ[ÛÜ[Ûˆ˜[YOH•š[YÙH•š[YÙOÛÜ[ÛÜ[Ûˆ˜[YOH‰•È±$[ˆ¸n«Û™ÏÛÜ[ÛÜÙ[XÝÛX™[‚ˆX™[Û\ÜÓ˜[YO^Ø™[™\‹\Ù][™ËXÚXÚÈ™[™\‹\Ù][™ËXÚXÚËXØ\™	Ü™[™\”Ù][™ÜË›Z\œ›ÜˆÈš\ËXXÝ]™HˆˆˆŸXO[œ]\OH˜ÚXÚØ›ÞˆÚXÚÙY^Ü™[™\”Ù][™ÜË›Z\œ›ÜŸHÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™Ê›Z\œ›Üˆ‹]™[\™Ù]˜ÚXÚÙY
+_HÏÜ[ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ËXÚXÚËXÛÜHÝ›Û™Ï“8n«]™Ø[™ÈšY[ÏÜÝ›Û™ÏÛX[±$8n¨ÛÈ0ëš°èZH8¡¥8n¨ÚOÜÛX[ÜÜ[ÛX™[‚ˆX™[Û\ÜÓ˜[YO^Ø™[™\‹\Ù][™ËXÚXÚÈ™[™\‹\Ù][™ËXÚXÚËXØ\™	Ü™[™\”Ù][™ÜËœ™]™\œÙHÈš\ËXXÝ]™HˆˆˆŸXO[œ]\OH˜ÚXÚØ›ÞˆÚXÚÙY^Ü™[™\”Ù][™ÜËœ™]™\œÙ_HÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™Êœ™]™\œÙH‹]™[\™Ù]˜ÚXÚÙY
+_HÏÜ[ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ËXÚXÚËXÛÜHÝ›Û™Ï±$8n¨ÛÈÚxnà]H0è]ÜÝ›Û™ÏÛX[”0è]øn¨Ûš°è]Y[È[ÈÚxnà]H™ñ¬8nèØÏÜÛX[ÜÜ[ÛX™[‚ˆ]ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™Ë\ÝX™ÜšY™[™\‹\Ù][™Ë\ÝX™ÜšY]™YH™[™\‹\Ù][™ËYšY[]ÚYHX™[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYšY[Ü[øn«Ý1$xn©ÝH
+ÊOÜÜ[[œ]\OH›[X™\ˆˆZ[HŒˆX^HŽˆÝ\HŒŒHˆ˜[YO^Ü™[™\”Ù][™ÜËš[TÝ\HÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™Êš[TÝ\‹[X™\Š]™[\™Ù]˜[YJJ_HÏÛX™[X™[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYšY[Ü[øn«ÝÝxnäZH
+ÊOÜÜ[[œ]\OH›[X™\ˆˆZ[HŒˆX^HŽˆÝ\HŒŒHˆ˜[YO^Ü™[™\”Ù][™ÜËš[Q[™ÏÈˆŸHXÙZÛ\HÝxnäZHšY[ÈˆÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™Êš[Q[™‹]™[\™Ù]˜[YHOOHˆˆÈ[ˆ[X™\Š]™[\™Ù]˜[YJJ_HÏÛX™[]ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ËZ[™[™\‹\Ù][™ËYšY[Ü[‘˜\ÝY]8nêH8nìOÜÜ[ÛX[’xnáÝH8nê[™ÈpèKØøn«Ý1$q¬8nèØÈ0è\8né[™ÈØ]H[‹Þ›ÛÛH°è±¬8næØÈÚHxn©]TÜÛX[Ù]Ù]‚ˆÙ]‚ˆÜÙXÝ[Û‚‚ˆÙXÝ[ÛˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYÜ›Ý\‚ˆ]ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYÜ›Ý\ZXY[™ÈÜ[ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYÜ›Ý\[[X™\ˆŒÏÜÜ[]Ý›Û™ÏÚ8nëÈ	ˆš8n«[ˆxnáÛÜÝ›Û™ÏÛX[•xn¯Ý8n«\]KØ]\›X\šÈ°èÙÛÈ°ê›ˆšY[ÏÜÛX[Ù]Ù]‚ˆ]ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYÜ›Ý\YÜšY™[™\‹\Ù][™ËYÜ›Ý\YÜšYZY[]H‚ˆX™[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYšY[™[™\‹\Ù][™ËYšY[]]HÜ[•pêH1$xnàH1$xn©ÝHšY[ÏÜÜ[[œ]˜[YO^Ü™[™\”Ù][™ÜË]U^HXÙZÛ\H•°ëH8néNˆMÚ[[™ÈYHÝÜšY\ÈˆÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™Ê]U^‹]™[\™Ù]˜[YJ_HÏÛX™[‚ˆX™[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYšY[Ü[•¸nâÈ°ëHpêH1$xnàOÜÜ[Ù[XÝ˜[YO^Ü™[™\”Ù][™ÜË]TÜÚ][ÛŸHÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™Ê]TÜÚ][Ûˆ‹]™[\™Ù]˜[YH\È™[™\”Ù][™ÜÖÈ]TÜÚ][Ûˆ—J_OÜ[Ûˆ˜[YOHÜ•°ê›ÛÜ[ÛÜ[Ûˆ˜[YOH˜Ù[\ˆ‘ÚxnëØOÛÜ[ÛÜ[Ûˆ˜[YOH˜›ÝÛH‘1¬8næÚOÛÜ[ÛÜÙ[XÝÛX™[‚ˆX™[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYšY[Ü[Ü[ønèHÚ8nëÈ]OÜÜ[Ý›Û™ÏžÜ™[™\”Ù][™ÜË]Q›ÛÚ^™_\ÜÝ›Û™ÏÜÜ[[œ]\OHœ˜[™ÙHˆZ[HŒNˆX^HŒMˆÝ\HŒˆˆ˜[YO^Ü™[™\”Ù][™ÜË]Q›ÛÚ^™_HÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™Ê]Q›ÛÚ^™H‹[X™\Š]™[\™Ù]˜[YJJ_HÏÛX™[‚ˆX™[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYšY[Ü[“pèH]OÜÜ[Ù[XÝ˜[YO^Ü™[™\”Ù][™ÜË]PÛÛÜŸHÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™Ê]PÛÛÜˆ‹]™[\™Ù]˜[YH\È™[™\”Ù][™ÜÖÈ]PÛÛÜˆ—J_OÜ[Ûˆ˜[YOHÚ]H•¸n«Û™ÏÛÜ[ÛÜ[Ûˆ˜[YOHžY[ÝÈ•°è™ÏÛÜ[ÛÜ[Ûˆ˜[YOH˜ÞX[ˆÞX[ÛÜ[ÛÜ[Ûˆ˜[YOH˜›XÚÈ±$[ÛÜ[ÛÜÙ[XÝÛX™[‚ˆX™[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYšY[™[™\‹\Ù][™ËYšY[]Ø]\›X\šÈÜ[•Ø]\›X\šÈÚ8n¨^H™ønªÝHšpê›ÜÜ[[œ]˜[YO^Ü™[™\”Ù][™ÜËØ]\›X\šÕ^HXÙZÛ\H[šÙ[šˆÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™ÊØ]\›X\šÕ^‹]™[\™Ù]˜[YJ_HÏÛX™[‚ˆX™[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYšY[Ü[Ü[•8näXÈ1$xnæHØ]\›X\šÏÜÜ[Ý›Û™ÏžÜ™[™\”Ù][™ÜËØ]\›X\šÔÜYYOÜÝ›Û™ÏÜÜ[[œ]\OHœ˜[™ÙHˆZ[HŒŒˆX^HˆÝ\HHˆ˜[YO^Ü™[™\”Ù][™ÜËØ]\›X\šÔÜYYHÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™ÊØ]\›X\šÔÜYY‹[X™\Š]™[\™Ù]˜[YJJ_HÏÛX™[‚ˆ]ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYšY[™[™\‹\Ù][™Ë[ÙÛËYšY[Ü[“ÙÛÏÜÜ[]ˆÛ\ÜÓ˜[YOHœ™[™\‹\Ù][™Ë[ÙÛËXÛÛ›ÛÈÙ[XÝ˜[YO^Ü™[™\”Ù][™ÜË›ÙÛßHÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™Ê›ÙÛÈ‹]™[\™Ù]˜[YH\È™[™\”Ù][™ÜÖÈ›ÙÛÈ—J_OÜ[Ûˆ˜[YOH››Û™H’Ú0í™ÈÙÛÏÛÜ[ÛÜ[Ûˆ˜[YOH›XZ]šY[È“ÙÛÈXZUšY[ÏÛÜ[ÛÜ[Ûˆ˜[YOH˜Ý\ÝÛHˆ\ØX›Y^È\™[™\”Ù][™ÜË›ÙÛÔ]O“ÙÛÈ8n¨ÚH0ê›ÛÜ[ÛÜÙ[XÝX™[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYš[K\XÚÙ\ˆˆ[›Ü^Ø™[™\‹[ÙÛË]\ØYIÜ›Ú™XÝœÛYßXOÜ[žÛÙÛÕ\ØY[™ÈÈ±$[™È8n¨Úx )ˆˆˆ•8n¨ÚHÙÛÈŸOÜÜ[[œ]Y^Ø™[™\‹[ÙÛË]\ØYIÜ›Ú™XÝœÛYßXH\OH™š[HˆXØÙ\Hš[XYÙKÜ™Ë[XYÙKÚœYË[XYÙKÝÙXœˆÛÚ[™ÙO^Ý\ØY™[™\“ÙÛßH\ØX›Y^ÛÙÛÕ\ØY[™ßHÏÛX™[Ù]ÛX[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËZ[žÜ™[™\”Ù][™ÜË›ÙÛÔ]È1$0èÈðìÎˆ	Ü™[™\”Ù][™ÜË›ÙÛÔ]œÜ]
+‹ÈŠKœÜ
+
+_Xˆ”‘ÈÈ”ÈÈÙX”0­È8näZH1$XHLPˆŸOÜÛX[Ù]‚ˆX™[Û\ÜÓ˜[YOHœ™[™\‹\Ù][™ËYšY[Ü[•¸nâÈ°ëHÙÛÏÜÜ[Ù[XÝ˜[YO^Ü™[™\”Ù][™ÜË›ÙÛÔÜÚ][ÛŸHÛÚ[™ÙO^Ê]™[
+HOˆ\]T™[™\”Ù][™Ê›ÙÛÔÜÚ][Ûˆ‹]™[\™Ù]˜[YH\È™[™\”Ù][™ÜÖÈ›ÙÛÔÜÚ][Ûˆ—J_OÜ[Ûˆ˜[YOHÜ[Y•°ê›ˆ°èZOÛÜ[ÛÜ[Ûˆ˜[YOHÜ\šYÚ•°ê›ˆ8n¨ÚOÛÜ[ÛÜ[Ûˆ˜[YOH˜Ù[\ˆ‘ÚxnëØOÛÜ[ÛÜ[Ûˆ˜[YOH˜›ÝÛK[Y‘1¬8næÚH°èZOÛÜ[ÛÜ[Ûˆ˜[YOH˜›ÝÛK\šYÚ‘1¬8næÚH8n¨ÚOÛÜ[ÛÜÙ[XÝÛX™[‚ˆÙ]‚ˆÜÙXÝ[Û‚‚ˆÙ]‚ˆÙ]Z[Ï‚ˆÜÙXÝ[Û‚‚]Z[ÈÛ\ÜÓ˜[YOHœ›Ú™XÝXXÝ]š]K\[™[[™[XØ\™‚ˆÝ[[X\žOÝ›Û™Ï•xn¯Ûˆ°ëš	ˆøn¨]1$xnæ[™ÏÜÝ›Û™ÏÜ[žÜ›Ú™XÝXÝ]š]Y\Ë›[™ÝHønìHÚxnáÛˆ0­ÈxnçÏÜÜ[ÜÝ[[X\žO‚ˆ]ˆÛ\ÜÓ˜[YOH˜ÛÛ[YÜšY]ˆÛ\ÜÓ˜[YOHœ\[[™KXØ\™[™[XØ\™]ˆÛ\ÜÓ˜[YOH˜Ø\™ZXY[™È]]ˆÛ\ÜÓ˜[YOHœÙXÝ[Û‹ZÚXÚÙ\ˆ”TSS‘OÙ]”]^H°ëšøn¨Ûˆxn©]ÚÙ][šÈ™YH‹Ý\ÚÜÈˆÛ\ÜÓ˜[YOH^X]Ûˆ“š8n«]ðïHXÛÛˆ˜[YOH˜\œ›ÝÈˆÚ^™O^ÌLßHÏÓ[šÏÙ]]ˆÛ\ÜÓ˜[YOHœ\[[™K[\Ý]ˆÛ\ÜÓ˜[YOHœ\[[™KZ][HÛ™H]ˆÛ\ÜÓ˜[YOHœ\[[™K[X\šÙ\ˆXÛÛˆ˜[YOH˜ÚXÚÈˆÚ^™O^ÌM_HÏÙ]]ˆÛ\ÜÓ˜[YOHœ\[[™KX›ÙH]ˆÛ\ÜÓ˜[YOHœ\[[™K]]K\›ÝÈÝ›Û™Ï“X\Ý\ˆ\ÜÏÜÝ›Û™ÏÝ]\Ô[Û™OH™Ü™Y[ˆ±$0èÈÛ™ÏÔÝ]\Ô[Ù]žÜ›Ú™XÝœÛÝ\˜ÙTÝ]\ÈOOHœ™XYHˆÈ“™ÝxnäÛˆ1$pèÈðìÈ˜[œØÜš\ØœšYYˆˆˆÚ8nçH˜[œØÜš\ØœšYYˆ8nêÈ™ñ¬8nçZH0î[™ÈŸOÜÙ]]ˆÛ\ÜÓ˜[YOHœ\[[™K[[™HˆÏÙ]]ˆÛ\ÜÓ˜[YO^Ø\[[™KZ][H	Ü›Ú™XÝ˜ÛÛ\]YØÙ[™\ÈˆÈ™Û™Hˆˆœ[™[™ÈŸXO]ˆÛ\ÜÓ˜[YOHœ\[[™K[X\šÙ\ˆžÜ›Ú™XÝ˜ÛÛ\]YØÙ[™\ÈˆÈXÛÛˆ˜[YOH˜ÚXÚÈˆÚ^™O^ÌM_HÏˆˆÜ[ŒÜÜ[ŸOÙ]]ˆÛ\ÜÓ˜[YOHœ\[[™KX›ÙH]ˆÛ\ÜÓ˜[YOHœ\[[™K]]K\›ÝÈÝ›Û™Ï“š8n«\”ÓÓˆ8nêÛ™È8n«\ÜÝ›Û™ÏÙ]žÜ›Ú™XÝÝ[Ú[šÜßH8n«\0­ÈxnåÚH8n©Ûˆš8n«\xnæ]ØÙ[™K\ØÜš\ŒOÜÙ]]ˆÛ\ÜÓ˜[YOHœ\[[™K[[™HˆÏÙ]]ˆÛ\ÜÓ˜[YO^Ø\[[™KZ][H	Ü›Ú™XÝ˜ÛÛ\]YØÙ[™\ÈH›Ú™XÝÝ[ØÙ[™\ÈÈ™Û™Hˆˆœ[™[™ÈŸXO]ˆÛ\ÜÓ˜[YOHœ\[[™K[X\šÙ\ˆžÜ›Ú™XÝ˜ÛÛ\]YØÙ[™\ÈH›Ú™XÝÝ[ØÙ[™\ÈÈXÛÛˆ˜[YOH˜ÚXÚÈˆÚ^™O^ÌM_HÏˆˆÜ[ŒÏÜÜ[ŸOÙ]]ˆÛ\ÜÓ˜[YOHœ\[[™KX›ÙH]ˆÛ\ÜÓ˜[YOHœ\[[™K]]K\›ÝÈÝ›Û™ÏRH™KXÚXÚÈ	ˆ[X[ˆÚXÚÏÜÝ›Û™ÏÙ]RH1$pè[šÚpèH8nêÛ™È8n«\Ø]HÚHš8n«\Ø]H1$pìÈ™ñ¬8nçZH0î[™È0èXÈš8n«[ÜÙ]]ˆÛ\ÜÓ˜[YOHœ\[[™K[[™HˆÏÙ]]ˆÛ\ÜÓ˜[YOHœ\[[™KZ][H[™[™È]ˆÛ\ÜÓ˜[YOHœ\[[™K[X\šÙ\ˆÜ[ŒÜÜ[Ù]]ˆÛ\ÜÓ˜[YOHœ\[[™KX›ÙH]ˆÛ\ÜÓ˜[YOHœ\[[™K]]K\›ÝÈÝ›Û™Ï–xn©]›Ú™XÝÜÝ›Û™ÏÙ]’”ÓÓ‹›Û\Ë]Y[È[Z[™È°è°è[Èðè[È8nåÚOÜÙ]Ù]Ù]Ù]]ˆÛ\ÜÓ˜[YOH˜XÝ]š]KXØ\™[™[XØ\™]ˆÛ\ÜÓ˜[YOH˜Ø\™ZXY[™È]]ˆÛ\ÜÓ˜[YOHœÙXÝ[Û‹ZÚXÚÙ\ˆPÕU’UOÙ]’øn¨]1$xnæ[™È8n«]ÚÙ]Ü[ˆÛ\ÜÓ˜[YOH›]™K[X™[Ü[ˆÛ\ÜÓ˜[YOH›]™KYÝˆÏ”Ù\™\ÜÜ[Ù]]ˆÛ\ÜÓ˜[YOH˜XÝ]š]K[\ÝžÜ›Ú™XÝXÝ]š]Y\Ë›[™ÝÈ›Ú™XÝXÝ]š]Y\Ë›X\
+
+XÝ]š]JHOˆ]ˆÛ\ÜÓ˜[YOH˜XÝ]š]KZ][HˆÙ^O^ØXÝ]š]KšYO]ˆÛ\ÜÓ˜[YO^ØXÝ]š]KZXÛÛˆ	ØXÝ]š]KœÝ]\ÈOOHœÝXØÙ\ÜÈˆÈ™Ü™Y[ˆˆˆXÝ]š]KœÝ]\ÈOOH™\œ›ÜˆˆÈ›Ü˜[™ÙHˆˆœ\œHŸXOXÛÛˆ˜[YO^ØXÝ]š]KœÝ]\ÈOOHœÝXØÙ\ÜÈˆÈ˜ÚXÚÈˆˆXÝ]š]KœÝ]\ÈOOH™\œ›ÜˆˆÈ˜[\ˆˆœÜ\šÈŸHÚ^™O^ÌM_HÏÙ]]Ý›Û™ÏžØXÝ]š]K]_OÜÝ›Û™ÏžØXÝ]š]K™]Z[OÜÙ]Ü[ˆÛ\ÜÓ˜[YOH˜XÝ]š]K][YHžÛ™]È]JXÝ]š]K˜Ü™X]Y]
+KÓØØ[U[YTÝš[™ÊšKU“ˆ‹ÈÝ\ŽˆŒ‹YYÚ]‹Z[]NˆŒ‹YYÚ]ˆJ_OÜÜ[Ù]ŠHˆ]ˆÛ\ÜÓ˜[YOH™[\K\Ý]HÝ›Û™ÏÚ1¬HðìÈøn¨]1$xnæ[™ÏÜÝ›Û™ÏÜ[’øn¨]1$xnæ[™Èøn¯Hxn©]xnáÛˆØ]HÚH1¬H™ÝxnäÛˆøn­ØÈš8n«\”ÓÓ‹ÜÜ[Ù]ŸOÙ][šÈÛ\ÜÓ˜[YOH˜XÝ]š]KY›ÛÝ\ˆˆ™YH‹Ý\ÚÜÈ–[H0è™È1$xnèÚHXÛÛˆ˜[YOH˜\œ›ÝÈˆÚ^™O^ÌMHÏÓ[šÏÙ]Ù]‚‚‚ˆÙ]Z[Ï‚ˆ›ÛÝ\ˆÛ\ÜÓ˜[YOHœYÙKY›ÛÝ\ˆÜ[”ÝÜžPRH0­ÈÜ›Ú™XÝœÛYßOÜÜ[Ü[]]ÜØ]™Y0­ÈØÙ[™K\ØÜš\ŒOÜÜ[Ù›ÛÝ\‚ˆÏ‚ˆÜØÙ[™R[XYÙT™]šY]È	‰ˆØÙ[™R[XYÙT™]šY]Õ\›	‰ˆ]ˆÛ\ÜÓ˜[YOH˜ZKY˜[XKZ[XYÙK[YÚ›Þˆ›ÛOHœ™\Ù[][ÛˆˆÛ“[Ý\ÙQÝÛ^Ê]™[
+HOˆÈYˆ
+]™[\™Ù]OOH]™[˜Ý\œ™[\™Ù]
+HÙ]ØÙ[™R[XYÙT™]šY]Ê[
+NÈ_HÛ’Ù^QÝÛ^Ê]™[
+HOˆÈYˆ
+]™[šÙ^HOOH‘\ØØ\HŠHÙ]ØÙ[™R[XYÙT™]šY]Ê[
+NÈ_O‚ˆšYÝ\™HÛ\ÜÓ˜[YOH˜ZKY˜[XKZ[XYÙK[YÚ›ÞXÛÛ[ˆ›ÛOH™X[ÙÈˆ\šXK[[Ù[HYHˆ\šXK[X™[^Ø8n¨›šøn¨Ûš	ÜØÙ[™S[X™\“X™[
+ØÙ[™R[XYÙT™]šY]Ê_XO‚ˆ]ÛˆÛ\ÜÓ˜[YOH˜ZKY˜[XKZ[XYÙK[YÚ›ÞXÛÜÙHˆ\OH˜]Ûˆˆ]]Ñ›ØÝ\ÈÛÛXÚÏ^Ê
+HOˆÙ]ØÙ[™R[XYÙT™]šY]Ê[
+_H\šXK[X™[H±$0ìÛ™È8n¨Ûš°åÏØ]Û‚ˆ[YÈÜ˜Ï^ÜØÙ[™R[XYÙT™]šY]Õ\›H[^Ø8n¨›šøn¨Ûš	ÜØÙ[™S[X™\“X™[
+ØÙ[™R[XYÙT™]šY]Ê_XHÏ‚ˆšYØØ\[ÛžÜØÙ[™S[X™\“X™[
+ØÙ[™R[XYÙT™]šY]Ê_H0­ÈÜØÙ[™R[XYÙT™]šY]Ë˜Ú[šÒYOÙšYØØ\[Û‚ˆÙšYÝ\™O‚ˆÙ]ŸBˆÙ\\ÛÙTØÜš\Y]Ü“Ü[ˆ	‰ˆ]ˆÛ\ÜÓ˜[YOH™^[™Y\\ÛÙ\ËX˜XÚÙ›Ü\\ÛÙK\ØÜš\Z[\ÜX˜XÚÙ›Üˆ›ÛOHœ™\Ù[][ÛˆˆÛ“[Ý\ÙQÝÛ^Ê]™[
+HOˆÈYˆ
+]™[\™Ù]OOH]™[˜Ý\œ™[\™Ù]	‰ˆZ[\Ü[™ÔØÜš\ÊHÙ]\\ÛÙTØÜš\Y]Ü“Ü[Š˜[ÙJNÈ_O‚ˆÙXÝ[ÛˆÛ\ÜÓ˜[YOH™\\ÛÙK\ØÜš\Z[\ÜYX[ÙÈˆ›ÛOH™X[ÙÈˆ\šXK[[Ù[HYHˆ\šXK[X™[YžOH™\\ÛÙK\ØÜš\Z[\Ü]]H‚ˆ]ˆÛ\ÜÓ˜[YOH™\\ÛÙK\ØÜš\Z[\ÜZXY[™È]]ˆÛ\ÜÓ˜[YOHœÙXÝ[Û‹ZÚXÚÙ\ˆ“’8n«”ÓÓÙ]ˆYH™\\ÛÙK\ØÜš\Z[\Ü]]H“š8n«\”ÓÓˆxnæ]8n«\ÚÚ8nã[ˆxnæ]8n«\0è[ˆøn­ØÈÚ8nâ[š”ÓÓˆØÙ[™K\ØÜš\ŒH¸näÚHš8n«\°èÈ›Ú™XÝˆxnåÚH8n©ÛˆÚ8nâHš8n«\xnæ]8n«\ÜÙ]]ÛˆÛ\ÜÓ˜[YOH^X]Ûˆˆ\OH˜]ÛˆˆÛÛXÚÏ^Ê
+HOˆÙ]\\ÛÙTØÜš\Y]Ü“Ü[Š˜[ÙJ_H\ØX›Y^Ú[\Ü[™ÔØÜš\ßO±$0ìÛ™ÏØ]ÛÙ]‚ˆ]ˆÛ\ÜÓ˜[YOH™\\ÛÙK\ØÜš\Z[\ÜXÛÛ›ÛÈ‚ˆX™[Û\ÜÓ˜[YOH™^[™Y\\ÛÙ\ËYšY[Ü[•8n«\øn©Ûˆš8n«\ÜÜ[Ù[XÝ˜[YO^Ù\\ÛÙTØÜš\Ú[šÒYHÛÚ[™ÙO^Ê]™[
+HOˆÙ[XÝ\\ÛÙTØÜš\Ú[šÊ]™[\™Ù]˜[YJ_H\ØX›Y^Ú[\Ü[™ÔØÜš\ßOžÜ›Ú™XÝ˜Ú[šÜË›X\
+
+Ú[šË[™^
+HOˆÜ[ÛˆÙ^O^ØÚ[šËšYH˜[YO^ØÚ[šËšYOžÈ•8n«\ˆ
+ÈÝš[™Ê[™^
+ÈJKœYÝ\
+‹ŒŠH
+Èˆ0­Èˆ
+ÈÚ[šËšY
+Èˆ0­ÈÈˆ
+ÈÝš[™ÊÚ[šËœØÙ[™TÝ\
+KœYÝ\
+ËŒŠH
+È¸ $ÔÈˆ
+ÈÝš[™ÊÚ[šËœØÙ[™Q[™
+KœYÝ\
+ËŒŠH
+È
+Ú[šË›Ý]]]Èˆ0­È1$pèÈðìÈønâØÚ¸n¨Ûˆˆˆˆ0­ÈÚ1¬HðìÈønâØÚ¸n¨ÛˆŠ_OÛÜ[ÛŠ_OÜÙ[XÝÛX™[‚ˆ]ÛˆÛ\ÜÓ˜[YOHœÙXÛÛ™\žKX]ÛˆÛÛ\XÝˆ\OH˜]ÛˆˆÛÛXÚÏ^Ê
+HOˆ›ÚYÛÜQ\\ÛÙTØÜš\˜Y
+
+_H\ØX›Y^Ú[\Ü[™ÔØÜš\È\\ÛÙTØÜš\ØY[™ÈY\\ÛÙTØÜš\Ú[šÒYH]O^Ù\\ÛÙTØÜš\˜Yš[J
+HÈ”Ø[ÈÚ0ê\”ÓÓˆxnáÛˆðìÈ›Û™È°ëšÛøn¨[ˆ8n¨ÛÈˆˆ”Ø[ÈÚ0ê\”ÓÓˆxnªÝHÚÈ8n«\1$X[™ÈÚ8nã[ˆŸOXÛÛˆ˜[YOH˜ÛÜHˆÚ^™O^ÌMHÏžÙ\\ÛÙTØÜš\˜Yš[J
+HÈÛÜH”ÓÓˆˆˆÛÜH”ÓÓˆxnªÝHŸOØ]Û‚ˆ]ÛˆÛ\ÜÓ˜[YOHœÙXÛÛ™\žKX]ÛˆÛÛ\XÝˆ\OH˜]Ûˆˆ\ØX›Y^Ú[\Ü[™ÔØÜš\È\\ÛÙTØÜš\ØY[™ÈY\\ÛÙTØÜš\Ú[šÒYHÛÛXÚÏ^Ê
+HOˆÂˆÛÛœÝ\™Ù]H›Ú™XÝ˜Ú[šÜË™š[™
+
+Ú[šÊHOˆÚ[šËšYOOH\\ÛÙTØÜš\Ú[šÒY
+NÂˆYˆ
+]\™Ù]
+H™]\›ŽÂˆÛÛœÝÝ\œ™[[\]HH\\ÛÙTØÜš\[\]J\™Ù]šY
+NÂˆYˆ
+\\ÛÙTØÜš\˜Yš[J
+H	‰ˆ\\ÛÙTØÜš\˜YOOHÝ\œ™[[\]Bˆ	‰ˆZ\Õ[™Y]YYØXÞQ\\ÛÙU[\]Q˜Y
+\\ÛÙTØÜš\˜Y\™Ù]
+Bˆ	‰ˆ]Ú[™ÝË˜ÛÛ™š\›J•^H8n©Ûˆ”ÓÓˆ1$X[™ÈÛøn¨[ˆ¸n¬[™ÈxnªÝHxnæÚHÚÈ8n«\°èOÈŠJH™]\›ŽÂˆ\]Q\\ÛÙTØÜš\˜Y
+Ý\œ™[[\]JNÂˆ_OXÛÛˆ˜[YOH™š[HˆÚ^™O^ÌMHÏÚ0êˆxnªÝH”ÓÓØ]Û‚ˆÙ]‚ˆ]ˆÛ\ÜÓ˜[YOH™\\ÛÙK\ØÜš\Z[\Ü[›ÝHXÛÛˆ˜[YOHš[ˆÚ^™O^ÌM_HÏ]ˆÛ\ÜÓ˜[YOH™\\ÛÙK\ØÜš\Z[\ÜYÝZYH‚ˆÝ›Û™Ï•øn¨ZHðìÈ^pê›ŽÜÝ›Û™Ïˆ1«ÝHpê›ˆðèH¸nã[ˆ¸n®[ˆL¸ $ÌN8nêÎÈðìÈ8nàÈ0èH1¨[ˆÚH8n©]H8nª^Høn­ØÈøn¨XÚ™Ø[™È™øn«Ýš8nâÜ8nìHšpê›‹ˆ1$[ˆ[ˆðìÈÚ8néÈ1$pëXÚðèH™øn«Ûˆ¸nã[ˆ¸n®[ˆø $ÍÈ8nêÎÈðèH1¬8næÚHLˆ8nêÈÚ8nâH0î[™È1$xnàÈš8n©[‹°î[™È¸nåK˜H8náÛšøn­ØÈ8nêÈÚ8näZKˆøn©[Høn«Ýøné]Ø± ÛH0ïH^H0èšxnª]H8 $ÍÈ8nêËˆ8nçˆ8näXÈ1$xnæHÈ‹x $ÌÈ8nêËÙÚpèžKðèHL¸ $ÌN8nêÈxn©]Úøn¨Û™È8 $ÍËˆÚpèžNÈñ ÛˆÝYH1$xnàÈpè›ˆ8néÈÚxnæÚH8n¨[ˆÚøn¨Û™È8n­Û™ÈønéØHX[ÙÝYWÛYøn­ØÈ0î[™Èš\ÝX[ÛYÚH0èš1$xnæ[™Èðè[š™X]Ü‚ˆÝ›Û™Ï•øn¨ZH0è0èš1$xnæ[™ÎÜÝ›Û™ÏˆÚ0í™ÈønàÈ8nàÈønìH¸néH^HÚxn¨ÚH0ëXÚÚÈÚ0è[ˆÚxn¨ËˆxnåÚHðèH]X[ˆ¸nã[™ÈðìÈ1$xnéÈ^
+8nçZH°ìÚJKÝX^
+¸nåÚHønèËÛ™ÚH™ønçKÝØ[ˆ0ë[š
+H°èXÝ[Ûˆ
+8n©[ˆðí™Ë1 ÛH0ì‹0ì›™È8néË8n©\xn¯ÛHøn­ØÈðèžH0è\8nìXÊKˆ0èXÚÚ8nª]HÚ0ëHxn®HÚ8näÛ™Ë°è™È0èK™ñ¬8nçZHÚ8näÛ™È°è™ñ¬8nçZHÚ[šØ[šÙ[HðèZKÜ‚ˆÝ›Û™Ï‘ÚxnëÈÚ0è›ˆšHpíÜÝ›Û™ÏˆxnçÈ8n«\˜HÚ8n¨[H™Ø^NÈÛÚÈðìÈ8nàÈ°íH›Û™ÈÈÚpèžHøn­ØÈ0î[™È8næÚHHÚpèžH¸n¯ÝHøn©Ûˆ1$xnàÈpèHxnªÛˆ1$q¬8nèØÈxnàÝH¸nã[ˆ¸n®[‹Ú0í™Èðê[È0èHÚÈ1$xnéÈxnäXËˆxnåÚHøn¨ÛšLÚpèžHøn©ÛˆðìÈ0ë]š8n©]xnæ]™]™X[
+xn¯Ý8næJK\ØØ[]H
+[È[™ÊHøn­ØÈ\›ˆ
+¸n®È0èZJKÜ‚ˆÝ›Û™ÏÛY™š[™Ù\ˆÝxnäZH8n«\ÜÝ›Û™ÏˆÚ8nã[ˆxnæ]ÚxnàÝH8nèÜ0ëšxn¯ÝˆÛ›ÝÛYÙHØ\
+°ëHxn«]8næH˜HÚ1¬HønâÜ[šZ[š
+K[[X][H
+8näZH8n«]H1¬
+KÝY[ˆ[\Ú[Ûˆ
+™ñ¬8nçZKØšxn¯ÛˆønäH¸n©]™ønçHxn©]xnáÛŠKøn­ØÈ[˜[œÝÙ\™YXØÝ\Ø][Ûˆ
+ðèH8nãÚH8näÛˆÚ0è›ˆ1¬8nç[™ÈÚxn¯Ûˆ1$xnäZH1¬1¨[™Èðè›H8n­Û™ÊKÜ‚ˆÝ›Û™Ï’”ÓÓˆ	˜[\Èš8nâÜøn¨ÛšÜÝ›Û™Ïˆðèˆ¸næHÚ8nâH8nªÛˆÚÈRH¸n¬[H›Û™ÈÛÙOœ›Û\ÙÝZY[˜ÙOØÛÙO‹ˆ^H¸næZH[™È›Û™È8n©]HÈNÈ8nçZH1¬8nèÛ™ÈMHÚpèžH0èxnªÝK0èÞHÚ8nã[ˆKÌLÌMHÚpèžH°è0ë[š8n¨ZHÛÙOœÝ\ÜÙXËÙ[™ÜÙXÏØÛÙOˆpê›ˆ8néXËˆš8nâÜ[È0èš1$xnæ[™È°è8n¨Ûˆ8nê[™ËÚ0í™ÈÚXH1$xnà]Kñ$xn­ÝxnäXÈ™ønªÝHšpê›ŽÈÚxnëÈØ[Y\˜KÕ‘–øn©Ûˆxn¯Ý°è‘Q‘T‘SÑH•STËˆQðìÈ8nàÈ8nçÈÛÙOšYØÛÙO‹ÏÛÙOœØÙ[™WÚYØÛÙOˆ
+°ëH8néHÛÙO”ÌOØÛÙO‹ÛÙOLËTÌOØÛÙO‹ÛÙOŽOØÛÙOŠKˆøn¨Ûš[H8n­Û™È0î[™ÈÛÙO™X[ÙÝYWÛ[ÙNˆ	œ][ÝÝš\ÝX[ÛY	œ][ÝÏØÛÙO‹ÛÙO™X[ÙÝYWÛÜ—Ý›ÚXÙ[Ý™\Žˆ	œ][ÝÉœ][ÝÏØÛÙO‹ÛÙO™X[ÙÝYWÜÙYÛY[Îˆ×OØÛÙOŽÈÚ0í™È1$xn­Ý1¬8næÛ™È8nªÛˆ›Û™È±¬8nç[™Èøn¨ZKˆ¸næÚHX[ÙÝYWÛY8näXÈ1$xnæH8näZH1$XHÈ8nêËÙÚpèžH°èðèXÈxnäXÈLÌŒÌÌ8nêÈÚÈøn¨ÛšKÌLÌMHÚpèžHÚ8nâH0èøn¨Ûš°è[È[HÚ8n¨ÛËÚ0í™È8n¨ÚH¸n©Ûˆøn¨ZKˆxnåÚHÚøn¨Û™È™Ú8nâHpê›ˆ8néXÈ8näZH1$XHÈÚpèžNÈ8nå[™È™Ú8nâH8näZH1$XHÚpèžKØøn¨ÛšLÚpèžHøn­ØÈHÚpèžKØøn¨ÛšMHÚpèžK0ë[šøn¨È1$xn©ÝKÙÚxnëØKØÝxnäZKˆZHøn¨ÛšX[ÙÝYWÛYxnà[ˆš]HðìÈ8nå[™È1$]píHøn¨Ûš±¬8næØÈ
+ÈÚøn¨Û™È¸nä[™È[Y[[™H
+È1$xn©ÝHøn¨ÛšØ]H8näZH1$XHÈÚpèžKˆÝYH0ë[š8nêÈ1$xn©ÝHøn¨ÛšÈš\ÝX[ÛYÚ[H8n­Û™ÈðìÈÚ8néÈ1$pëXÚ1$q¬8nèØÈZxná[ˆÚxnàÛH˜H™Ú8nâKˆÛÚÈøn¯Ý8n«\8n¨ÚH1$xnàÈ8n¨ZH8náÈ]xn¨È¸näZHØ[™È8n«\Ø]KÜ‚ˆÙ]Ù]‚ˆX™[Û\ÜÓ˜[YOH™\\ÛÙK\ØÜš\ZœÛÛ‹YšY[Ü[žÙ\\ÛÙTØÜš\ØY[™ÈÈ±$[™È8n¨ÚH”ÓÓˆ1$pèÈš8n«\8 )ˆˆˆ›Ú™XÝ˜Ú[šÜË™š[™
+
+Ú[šÊHOˆÚ[šËšYOOH\\ÛÙTØÜš\Ú[šÒY
+OË›Ý]]]È’”ÓÓˆØÙ[™K\ØÜš\ŒH0­È1$pèÈš8n«\ˆˆ’”ÓÓˆØÙ[™K\ØÜš\ŒH0­Èxnæ]8n«\ŸOÜÜ[^\™XHÜ[ÚXÚÏ^Ù˜[Ù_H\šXK[X™[H’”ÓÓˆønâØÚ¸n¨ÛˆønéØHxnæ]8n«\ˆXÙZÛ\H‘0è[ˆ”ÓÓˆØÙ[™K\ØÜš\ŒH°èÈ1$pèžKøn­ØÈÚ8nã[ˆ8 'Ú0êˆxnªÝH”ÓÓ¸ 'H1$xnàÈ[HxnªÝKˆˆ˜[YO^Ù\\ÛÙTØÜš\˜YHÛÚ[™ÙO^Ê]™[
+HOˆ\]Q\\ÛÙTØÜš\˜Y
+]™[\™Ù]˜[YJ_H\ØX›Y^Ú[\Ü[™ÔØÜš\È\\ÛÙTØÜš\ØY[™ßHÏÛX™[‚ˆÜ[“Y\ÜØYÙH	‰ˆ]ˆÛ\ÜÓ˜[YO^Èœ[‹[Y\ÜØYÙHˆ
+È[“Y\ÜØYÙKÛ™_H›ÛO^Ü[“Y\ÜØYÙKÛ™HOOH™\œ›ÜˆˆÈ˜[\ˆˆœÝ]\ÈŸOÜ[XÛÛˆ˜[YO^Ü[“Y\ÜØYÙKÛ™HOOHœÝXØÙ\ÜÈˆÈ˜ÚXÚÈˆˆ˜[\ŸHÚ^™O^ÌLßHÏÜÜ[žÜ[“Y\ÜØYÙK^OÙ]ŸBˆ]ˆÛ\ÜÓ˜[YOH˜Ú\˜XÝ\‹\Ù]\XXÝ[ÛœÈ]ÛˆÛ\ÜÓ˜[YOHœÙXÛÛ™\žKX]Ûˆˆ\OH˜]ÛˆˆÛÛXÚÏ^Ê
+HOˆÙ]\\ÛÙTØÜš\Y]Ü“Ü[Š˜[ÙJ_H\ØX›Y^Ú[\Ü[™ÔØÜš\ßO±$8nàÈØ]OØ]Û]ÛˆÛ\ÜÓ˜[YOHœš[X\žKX]Ûˆˆ\OH˜]ÛˆˆÛÛXÚÏ^Ê
+HOˆ›ÚY[\Ü\\ÛÙTØÜš\˜Y
+
+_H\ØX›Y^Ú[\Ü[™ÔØÜš\È\\ÛÙTØÜš\ØY[™ÈY\\ÛÙTØÜš\˜Yš[J
+_OXÛÛˆ˜[YO^Ú[\Ü[™ÔØÜš\ÈÈ˜ÛØÚÈˆˆ™š[HŸHÚ^™O^ÌM_HÏžÚ[\Ü[™ÔØÜš\ÈÈ±$[™Èš8n«\8n«\8 )ˆˆˆ“š8n«\ønâØÚ¸n¨Ûˆ8n«\°èHŸOØ]ÛÙ]‚ˆÜÙXÝ[Û‚ˆÙ]ŸBˆÜÚÝÑ^[™\\ÛÙ\È	‰ˆ]ˆÛ\ÜÓ˜[YOH™^[™Y\\ÛÙ\ËX˜XÚÙ›Üˆ›ÛOHœ™\Ù[][ÛˆˆÛÛXÚÏ^Ê]™[
+HOˆÈYˆ
+]™[\™Ù]OOH]™[˜Ý\œ™[\™Ù]	‰ˆY^[™[™Ñ\\ÛÙ\ÊHÙ]ÚÝÑ^[™\\ÛÙ\Ê˜[ÙJNÈ_O‚ˆÙXÝ[ÛˆÛ\ÜÓ˜[YOH™^[™Y\\ÛÙ\ËYX[ÙÈˆ›ÛOH™X[ÙÈˆ\šXK[[Ù[HYHˆ\šXK[X™[YžOH™^[™Y\\ÛÙ\Ë]]H‚ˆ]ˆÛ\ÜÓ˜[YOH™^[™Y\\ÛÙ\ËZXÛÛˆXÛÛˆ˜[YOHœ\ÈˆÚ^™O^ÌŒHÏÙ]‚ˆ]ˆÛ\ÜÓ˜[YOHœÙXÝ[Û‹ZÚXÚÙ\ˆ•8n¨ÈÒS‘È8n«Ù]‚ˆˆYH™^[™Y\\ÛÙ\Ë]]H•0ê›H8n«\°èÈ8 'Ü›Ú™XÝ]_x 'OÚ‚ˆðèXÈ8n«\xnáÛˆ8n¨ZKšY[È1$pèÈÚ0ê\°è8näÈñ¨Hš0è›ˆ¸n«]øn¯H1$q¬8nèØÈÚxnëÈ™Ý^pê›‹ˆ8n«\xnæÚHÚ8nâH8n¨[ÈÚ[™È¸nä[™È1$xnàÈ¸n¨[ˆš8n«\”ÓÓˆ8nêÛ™È8n«\Ü‚ˆX™[Û\ÜÓ˜[YOH™^[™Y\\ÛÙ\ËYšY[Ü[”ønäH8n«\]xnä[ˆ0ê›OÜÜ[][œ]\OH›[X™\ˆˆZ[^Ì_HX^^ÌLHÝ\^Ì_H˜[YO^Ù^[™\\ÛÙPÛÝ[H\ØX›Y^Ù^[™[™Ñ\\ÛÙ\ßHÛÚ[™ÙO^Ê]™[
+HOˆÙ]^[™\\ÛÙPÛÝ[
+X]›Z[ŠLX]›X^
+KX]™›ÛÜŠ[X™\Š]™[\™Ù]˜[YJHJJJJ_HÏÛX[Œx $ÌL8n«\xnåÚH8n©ÛÜÛX[Ù]ÛX™[‚ˆ]ˆÛ\ÜÓ˜[YOH™^[™Y\\ÛÙ\Ë\Ý[[X\žHÜ[XÛÛˆ˜[YOHœØÙ[™HˆÚ^™O^ÌM_HÏžÙ^[™\\ÛÙPÛÝ[
+ˆ›Ú™XÝ˜Ú[šÔÚ^™_Høn¨ÛšÜÜ[Ü[XÛÛˆ˜[YOH˜ÛØÚÈˆÚ^™O^ÌM_HÏšÚøn¨Û™ÈÓX]œ›Ý[™
+
+^[™\\ÛÙPÛÝ[
+ˆ›Ú™XÝ˜Ú[šÔÚ^™H
+ˆ
+›Ú™XÝœØÙ[™Q\˜][Û”ÙXÈMJJHÈŒ
+_H0îÜÜ[Ü[XÛÛˆ˜[YOHœÝXÚÈˆÚ^™O^ÌM_HÏ•8n«\ÔÝš[™Ê›Ú™XÝ˜Ú[šÜË›[™Ý
+ÈJKœYÝ\
+‹ŒŠ_x $ÞÔÝš[™Ê›Ú™XÝ˜Ú[šÜË›[™Ý
+È^[™\\ÛÙPÛÝ[
+KœYÝ\
+‹ŒŠ_OÜÜ[Ù]‚ˆ]ˆÛ\ÜÓ˜[YOH™^[™Y\\ÛÙ\Ë[›ÝHXÛÛˆ˜[YOH\Ù\œÈˆÚ^™O^ÌM_HÏÜ[’8näÈñ¨Hš0è›ˆ¸n«]ñjH¸nªÛˆ0î[™È1$q¬8nèØËˆØ]HÚH8n¨[ÈÚ[™Ëš8n«\”ÓÓˆšpê›™ÈÚÈxnåÚH8n«\ÜÜ[Ù]‚ˆ]ˆÛ\ÜÓ˜[YOH˜Ú\˜XÝ\‹\Ù]\XXÝ[ÛœÈ]ÛˆÛ\ÜÓ˜[YOHœÙXÛÛ™\žKX]Ûˆˆ\OH˜]ÛˆˆÛÛXÚÏ^Ê
+HOˆÙ]ÚÝÑ^[™\\ÛÙ\Ê˜[ÙJ_H\ØX›Y^Ù^[™[™Ñ\\ÛÙ\ßO±$8nàÈØ]OØ]Û]ÛˆÛ\ÜÓ˜[YOHœš[X\žKX]Ûˆˆ\OH˜]ÛˆˆÛÛXÚÏ^Ê
+HOˆ›ÚY\[™\\ÛÙ\Ê
+_H\ØX›Y^Ù^[™[™Ñ\\ÛÙ\ßOXÛÛˆ˜[YO^Ù^[™[™Ñ\\ÛÙ\ÈÈ˜ÛØÚÈˆˆœ\ÈŸHÚ^™O^ÌM_HÏžÙ^[™[™Ñ\\ÛÙ\ÈÈ±$[™È0ê›H8n«\8 )ˆˆˆ0ê›H	Ù^[™\\ÛÙPÛÝ[H8n«\¸nä[™ØOØ]ÛÙ]‚ˆÜÙXÝ[Û‚ˆÙ]ŸBˆÙ]‚ˆ
+NÂŸB

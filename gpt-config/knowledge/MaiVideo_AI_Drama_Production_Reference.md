@@ -55,8 +55,16 @@ Khi người dùng muốn “kiểu Disney”, gợi ý **Family 3D animation** 
 
 Kịch bản JSON nên có `series_bible` và dùng `characters`, `location_name` với đúng tên canonical ở từng cảnh. StoryAI đồng bộ hồ sơ từ Bible hoặc cảnh sau khi import; mô tả bối cảnh được gắn vào prompt tạo ảnh của từng cảnh. Ảnh tham chiếu bối cảnh được gửi kèm nếu đã có sẵn, không cần tạo trước. Voice, audio và video vẫn được cấu hình riêng trong project.
 
-## Thoại, scene và voice
+## Thoại, kịch tính scene và voice
 
+- **Quy tắc giữ chân người xem (Audience Retention):**
+  - Cảnh mở đầu tập (Scene 1): Bắt buộc nhảy thẳng vào xung đột (*In Media Res*), không mở đầu bằng phong cảnh tĩnh hay lời chào hỏi xã giao vô nghĩa.
+  - Mỗi cảnh (10–15 giây) phải có một **Turn (chuyển dịch tình thế)**: cuối cảnh nhân vật phải rơi vào một nhận thức mới, phát hiện mới hoặc hiểm họa mới so với đầu cảnh.
+  - Cảnh cuối tập (Final scene of chunk): Luôn gài một **Cliffhanger nghẹt thở** hoặc một câu thoại lật ngược tình thế để giữ chân người xem bấm ngay sang tập sau.
+- **Kỹ thuật viết lời thoại cuốn hút (High-Retention Dialogue):**
+  - Lời thoại phải có **Subtext** (lời ngoài mặt, ý bên trong): nhân vật thăm dò, che giấu hoặc tấn công đối phương, không nói huỵch toẹt cảm xúc bên trong hay đọc bài giảng giải thích cho khán giả.
+  - **Ngữ điệu tiếng Việt tự nhiên:** Câu từ giàu hình ảnh, nhịp thở đời thường; ưu tiên câu trọn vẹn, biểu cảm 12–18 từ, có thể dài hơn khi nhịp tự nhiên. Đan xen có chủ đích câu ngắn trọn vẹn 3–7 từ để nhấn hoặc bùng nổ; câu dưới 12 từ chỉ dùng khi có dụng ý. Cấm băm nhỏ ý hay thành mẩu 4–7 từ.
+  - Tránh tuyệt đối văn mẫu dịch máy tiếng Anh ("Ồ thật sao?", "Tôi e rằng...", "Điều đó là không thể!").
 - Mỗi cảnh có thể có nhiều lượt thoại. Không tách cảnh chỉ vì đổi speaker.
 - `dialogue_segments` là timeline phân speaker: mỗi lượt có `speaker_character`, `text`, `start_sec`, `end_sec`. Speaker phải là tên canonical hoặc `NARRATOR`; cue theo thứ tự và nằm trong duration cảnh.
 - `dialogue_or_voiceover` nối chính xác các câu theo thứ tự, không kèm nhãn speaker. `speaker_character` cấp scene ghi người nói đầu tiên. Cảnh im lặng dùng `NONE`, chuỗi thoại rỗng và `dialogue_segments: []`.

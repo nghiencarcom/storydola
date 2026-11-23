@@ -38,10 +38,11 @@ Before cloning, confirm `node --version` reports v22 or newer, then check `npm -
 - [PhimUS](plugins/PhimUS.zip)
 - [PhimViet](plugins/PhimViet.zip)
 
-Cả hai plugin mặc định viết hook gợi tò mò cho từng tập và yêu cầu đạt ít nhất 13/15; khi có cửa sổ thời gian, chấm hình ảnh và lời thoại riêng trong đúng khoảng đó. Plugin cũng rà thoại liên tục, giới hạn tốc độ khoảng 3 từ/giây; nếu bạn yêu cầu duyệt thoại trước JSON, plugin chỉ đưa bản chữ và ghi chú im lặng rồi chờ bạn phản hồi.
+Cả hai plugin mặc định viết hook gợi tò mò cho từng tập và yêu cầu đạt ít nhất 13/15; khi có cửa sổ thời gian, chấm hình ảnh và lời thoại riêng trong đúng khoảng đó. Lời thoại ưu tiên câu trọn vẹn 12–18 từ, đan xen có chủ đích câu ngắn 3–7 từ; cấm băm nhỏ câu mất duyên; từng cảnh 10 giây đều có động lực giữ chân vi mô (tiết lộ/leo thang/bẻ lái) và kết tập có cliffhanger sắc bén. Plugin cũng rà thoại liên tục, giới hạn tốc độ khoảng 3 từ/giây; nếu bạn yêu cầu duyệt thoại trước JSON, plugin chỉ đưa bản chữ và ghi chú im lặng rồi chờ bạn phản hồi.
 
 - [Trend bank (2005–2026)](plugins/drama-viet/references/trend-bank-2005-2026.md)
 - [Trend vocabulary](plugins/drama-viet/references/trend-vocabulary.md)
+- [Dialogue & retention playbook](plugins/drama-viet/references/dialogue-and-retention-playbook.md)
 
 ## Local data
 
