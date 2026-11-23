@@ -166,29 +166,67 @@ Chọn cách xưng hô phù hợp với tệp khách hàng của ngành hàng đ
 
 ---
 
-## 9. Nhịp hình ảnh, Reference Lock, Text Overlay & SFX Timeline
+## 9. Nhịp hình ảnh, Phân vai từng Clip (1 → n) & Chuẩn Prompt Video AI
 
-Mỗi prompt video trong mảng `segments` phải được viết độc lập bằng tiếng Anh, tuân thủ đúng thời lượng được giao:
+Mỗi prompt video trong mảng `segments` phải được viết độc lập bằng tiếng Anh, tuân thủ đúng thời lượng được giao và có **vai trò kịch bản thị giác riêng biệt** tùy theo vị trí của clip trong chuỗi video:
 
-### Nhịp hình ảnh & Cắt dựng (Pattern Interrupt 3–5s):
-- Cứ khoảng **3–5 giây**, tạo một thay đổi nhỏ về thị giác: thay đổi góc máy, phản ứng cử chỉ, thao tác tay, lia máy hoặc đổi cỡ cảnh (từ Medium Shot sang Close-Up).
-- Trong mỗi clip 15 giây chỉ dùng tối đa **2–3 bố cục đơn giản**; không cắt dồn dập hoặc chèn hiệu ứng gây rối mắt.
+Mọi mốc giây dưới đây là ví dụ cho clip 15 giây. Luôn tính lại theo `duration` thực của từng clip, dùng thời gian tương đối từ đầu clip và không tạo hành động, overlay hoặc SFX vượt quá thời lượng đó.
 
-### Khóa ảnh tham chiếu (Reference Lock):
-- `@Image1` là người dẫn duy nhất; giữ nguyên khuôn mặt, tóc, vóc dáng và trang phục.
-- `@Image2` là sản phẩm chính tham chiếu duy nhất trên tay nhân vật; giữ nguyên kiểu dáng, màu sắc, logo, nhãn mác nhìn thấy trong ảnh. Không đoán mò cổng sạc, nút bấm hay mặt sau bị khuất.
-- `@Image3` trở đi chỉ dùng cho cảnh cận chi tiết/phụ kiện thật sự xuất hiện trong ảnh; tuyệt đối không thay thế hoặc làm biến dạng sản phẩm chính.
+### 9.1 Phân vai thị giác theo vị trí clip (Narrative & Visual Arc):
 
-### Dòng chữ chạy màn hình (VIDEO OVERLAY TIMELINE):
-- Trong mỗi prompt clip, bắt buộc ghi một dòng:
-  `VIDEO OVERLAY TIMELINE: 00:01–00:04 | TEXT: "..." | EMOJI: ...`
-- Thời gian tính từ đầu clip, nằm gọn trong thời lượng clip và khớp với ý đang nói.
-- Cụm chữ ngắn từ **2–5 từ in hoa**, viết đúng ngôn ngữ của video, mang tính giật tít/đối trọng với thoại kèm 1–2 emoji liên quan. Chữ lớn, tương phản, đặt ở vùng an toàn (không che mặt/sản phẩm).
+1. **Clip đầu tiên — The Thumb-Stop Hook & Problem Setup:**
+   - **00:00–00:03 (Thumb-stop / In Medias Res):** Bắt đầu ngay giữa một hành động dở dang hoặc biểu cảm giật mình / bực mình với vấn đề cũ. Tuyệt đối không mở đầu bằng cảnh nhân vật đứng im mỉm cười nhìn vào ống kính.
+   - **Góc máy & Cỡ cảnh:** Eye-level Medium Shot (ống kính tương đương 35mm), rung nhẹ tự nhiên kiểu quay điện thoại cầm tay (steady handheld) kết hợp một cú đẩy chậm nhẹ nhàng (subtle push-in).
+   - **Tương tác sản phẩm:** Ở giây thứ 4–8, nhân vật đưa sản phẩm chính `@Image2` vào khung hình bằng tay cầm tự nhiên, giới thiệu trực quan giải pháp.
+   - **Điểm kết chuẩn bị chuyển cảnh (Match-cut preparation):** Trong giây cuối của clip, nhân vật hướng nhẹ sản phẩm về phía máy quay hoặc chuẩn bị chạm tay thao tác để nối sang clip kế tiếp.
 
-### Dòng âm thanh hiệu ứng (SFX TIMELINE):
-- Khi model tạo video hỗ trợ âm thanh, ghi tối đa 1–2 hiệu ứng không lời trong dòng:
-  `SFX TIMELINE: 00:02–00:03 | [mô tả tiếng động tự nhiên: subtle soft button click, crisp package tearing, fabric rustle, water sizzle]`
-- SFX phải khớp chính xác với hành động nhìn thấy trên khung hình; chỉ làm nền nhẹ, không lấn át lời thoại. Không tự ý thêm nhạc nền nếu không được yêu cầu.
+2. **Clip 2..n-1 (15–30s+) — Deep-Dive Hands-On Demo & Sensory Proof:**
+   - **Góc máy & Cỡ cảnh:** Cắt chuyển dứt khoát sang góc siêu cận (Macro Close-up), góc 45 độ trên mặt bàn (Tabletop 45°) hoặc góc nhìn thứ nhất (First-person POV) với ống kính 50mm, độ sâu trường ảnh vừa phải (shallow depth of field).
+   - **Thao tác xúc giác thực tế (Tactile Demonstration):** Tập trung vào một thao tác chân thực và có căn cứ với `@Image2`, chọn theo chi tiết nhìn thấy hoặc dữ kiện đã xác minh. Không tự bịa thao tác, micro-test hay claim về độ bền/chống nước.
+   - **Khử mùi quảng cáo (Honest Flaw):** Chỉ nêu nhược điểm nhỏ do người dùng cung cấp hoặc có nguồn kiểm chứng; đặt vào giữa clip theo thời lượng thực. Không bịa điểm trừ.
+   - **Bảo toàn trục máy:** Giữ cùng hướng ánh sáng cửa sổ và cách cầm sản phẩm để tránh giật góc.
+
+3. **Clip cuối (Clip n) — Demo Payoff & Soft CTA:**
+   - **Góc máy & Cỡ cảnh:** Lùi máy quay hoặc reframing mượt mà trở lại góc trung (Medium Shot) ấm áp, bố cục thoáng đãng và dễ thở.
+   - **Hành động & Cảm xúc:** Nối tiếp thao tác đã minh họa; biểu cảm phù hợp với hình ảnh, không giả nhận đã sử dụng hoặc tạo kết quả trải nghiệm chưa được cung cấp. Giơ sản phẩm hoặc đặt đứng vững chắc trên bàn.
+   - **Kêu gọi hành động áp lực thấp:** Kết thúc bằng nụ cười thân thiện, tư thế tự nhiên, tuyệt đối không tạo cảm giác nài ép mua hàng rẻ tiền.
+
+### 9.2 Cấu trúc 5 khối chuẩn của một Prompt Video AI (Clean Prompt Architecture):
+
+Mỗi prompt trong `segments` phải viết bằng tiếng Anh hoàn chỉnh theo chuẩn 5 khối sau:
+
+Các mốc trong mẫu dưới đây minh họa clip 15 giây; co giãn theo `duration` thực và luôn giữ toàn bộ cue trong clip.
+```text
+REFERENCE LOCK:
+- @Image1 is the sole presenter (consistent facial structure, skin tone, hair, and clothing).
+- @Image2 is the single primary hero product (preserve exact silhouette, materials, branding, colors, and finish).
+- @Image3 onward (if provided) only for an optional separate cutaway of a visible detail or accessory.
+
+CAMERA & FRAMING:
+- (Cỡ cảnh cụ thể: Eye-level Medium Shot / Tabletop 45° Macro Close-Up / Casual Handheld POV).
+- (Chuyển động máy: Subtle push-in / Slow tracking follow / Stable lock-off).
+- (Tỷ lệ khung hình: Vertical 9:16 vertical composition, upper-third eye line, clear central safe area for product).
+
+ACTION & CHOREOGRAPHY (Timecoded):
+- 00:00–00:05: [Hành động mở đầu, tư thế bắt đầu, biểu cảm gương mặt]
+- 00:05–00:10: [Thao tác tay cụ thể với sản phẩm @Image2, chi tiết vật lý nhìn thấy được]
+- 00:10–00:15: [Biểu cảm phản ứng, trạng thái kết thúc, tư thế chuẩn bị chuyển cảnh]
+
+ENVIRONMENT & LIGHTING:
+- Authentic domestic indoor space (kitchen/living room/desk). Soft diffused daylight from window, natural specular highlights on product surface, authentic skin texture, zero plastic CGI smoothing.
+
+TIMELINE OVERLAYS & SFX:
+- VIDEO OVERLAY TIMELINE: 00:01–00:04 | TEXT: "..." | EMOJI: ✨
+- SFX TIMELINE: 00:02–00:04 | [subtle nonverbal tactile sound: click, soft rustle, metallic tap]
+```
+
+### 9.3 Thư viện hành động tương tác sản phẩm (UGC Action Playbook) theo ngành:
+
+- **Mỹ phẩm & Chăm sóc cá nhân (`beauty`):** Thoa mỏng lớp gel/kem trên mu bàn tay (swatch), texture tan mịn bóng nhẹ tự nhiên dưới ánh sáng ban ngày; ngón tay chạm nhẹ kiểm tra độ ráo; tránh hiệu ứng cà da láng mịn giả tạo.
+- **Gia dụng & Đời sống (`home`):** Thao tác tháo/lắp nắp một chạm dứt khoát, nghe tiếng khớp nối "tách", rót nước không rỉ mép, bọt tẩy rửa tan cặn bẩn, cầm đầm tay chắc chắn.
+- **Đồ công nghệ & Phụ kiện (`tech`):** Cầm trọn trong lòng bàn tay khoe kích thước nhỏ gọn, cắm dây sạc khít chặt, gõ phím cơ nảy êm, soi các góc cạnh hoàn thiện kim loại mờ (matte metal finish).
+- **Thời trang & Giày dép (`fashion` / `footwear`):** Bẻ gập mũi giày chứng minh độ dẻo đàn hồi của đế cao su; kéo căng nhẹ cạp quần/đường chỉ may; vuốt nếp vải cotton không nhăn dưới ánh sáng tự nhiên.
+- **Đồ ăn vặt & Thực phẩm (`snacks`):** Tách đôi khoe nhân ngập tràn, cắn miếng giòn rụm (kèm SFX crunch giòn tan), lắc nhẹ túi/hũ khoe topping phủ đều.
 
 ---
 
@@ -309,7 +347,12 @@ Khi nhận task từ hệ thống StoryAI:
     {
       "start": 0,
       "duration": 15,
-      "prompt": "Eye-level medium shot of the presenter in @Image1 holding the hero product from @Image2 in a relaxed natural grip... VIDEO OVERLAY TIMELINE: 00:01–00:04 | TEXT: \"...\" | EMOJI: ✨ SFX TIMELINE: 00:02–00:03 | [subtle soft click]"
+      "prompt": "REFERENCE LOCK: @Image1 is the sole presenter. @Image2 is the single primary hero product...\nCAMERA & FRAMING: Eye-level Medium Shot (35mm lens), steady handheld with subtle organic push-in.\nACTION & CHOREOGRAPHY: 00:00–00:04 (Thumb-Stop Hook): In Medias Res. Presenter starts mid-speech with an expressive, skeptical gesture discussing the old annoying problem... 00:04–00:09: Presenter smoothly brings @Image2 into frame in a natural grip... 00:09–00:15: Rotates bottle slightly under window daylight... Sets up intentional match-cut close-up for Clip 2.\nENVIRONMENT & LIGHTING: Domestic room, soft natural window light.\nVIDEO OVERLAY TIMELINE: 00:01–00:04 | TEXT: \"TIÊU ĐỀ GIẬT TÍT 😱\" | EMOJI: ✨\nSFX TIMELINE: 00:06–00:08 | [subtle tactile handling click]"
+    },
+    {
+      "start": 15,
+      "duration": 15,
+      "prompt": "REFERENCE LOCK: @Image1 is the sole presenter. @Image2 is the exact hero product from Clip 1...\nCAMERA & FRAMING: Starts with a Tabletop 45° Macro Close-Up (50mm lens), then reframes to a warm Medium Shot.\nACTION & CHOREOGRAPHY: 00:00–00:05 (Hands-On Proof): Macro close-up of presenter's fingers interacting directly with @Image2's visible material and mechanism... 00:05–00:10 (Honest Flaw): Reframes to medium shot as presenter objectively points out a real, supplied packaging consideration... 00:10–00:15 (Demo Payoff & CTA): Presenter places product firmly on table and offers a gentle, low-pressure recommendation without claiming unprovided results.\nENVIRONMENT & LIGHTING: Same room continuity, natural daylight.\nVIDEO OVERLAY TIMELINE: 00:02–00:06 | TEXT: \"ĐIỂM ĂN TIỀN NÈ! 🏆\" | EMOJI: 🔥\nSFX TIMELINE: 00:01–00:03 | [gentle solid tactile sound]"
     }
   ],
   "script": "Lời thoại tự nhiên viết cho tai nghe theo nhịp văn nói đời thường, đọc hay và cuốn hút..."
@@ -323,3 +366,4 @@ Khi nhận task từ hệ thống StoryAI:
 - [ ] Chữ trong `VIDEO OVERLAY TIMELINE` có bị trùng nguyên văn với lời thoại không? (Nếu có -> Đổi thành tiêu đề giật tít 2–5 từ).
 - [ ] Ở giây thứ 8–12 có chi tiết bẻ lái (Micro-test / Khuyết điểm nhỏ có thật) để giữ chân người xem không?
 - [ ] Đã khóa đúng `@Image1` cho người dẫn và `@Image2` cho sản phẩm chưa?
+- [ ] Prompt hình ảnh của từng clip đã phân vai rõ ràng chưa? (Clip 1 là Hook/Problem, các clip giữa là Macro Close-up Demo có căn cứ, clip cuối là Demo Payoff/CTA). Các mốc thời gian có nằm trong duration và các clip có điểm nối hợp lý không?

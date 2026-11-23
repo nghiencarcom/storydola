@@ -940,11 +940,27 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
           dialogueLanguage: language,
           audio: supportsAudio,
           quality: videoQuality,
-          segments: segmentPlan.map((segmentDuration, index) => ({
-            start: segmentPlan.slice(0, index).reduce((sum, value) => sum + value, 0),
-            duration: segmentDuration,
-            prompt: "",
-          })),
+          segments: segmentPlan.map((segmentDuration, index) => {
+            const isFirst = index === 0;
+            const isLast = index === segmentPlan.length - 1;
+            const hookEnd = Math.min(3, Math.max(1, Math.round(segmentDuration * 0.2)));
+            const demoEnd = Math.max(hookEnd, Math.round(segmentDuration * 0.72));
+            const flawStart = Math.round(segmentDuration * 0.55);
+            const flawEnd = Math.max(flawStart, Math.round(segmentDuration * 0.8));
+            const role = segmentPlan.length === 1
+              ? `Standalone UGC arc: hook 0–${hookEnd}s, verified product demo ${hookEnd}–${demoEnd}s, soft CTA ${demoEnd}–${segmentDuration}s`
+              : isFirst
+                ? `The Thumb-Stop Hook & Problem Setup (In Medias Res, 35mm Medium Shot, reveal @Image2 ${hookEnd}–${demoEnd}s, prepare match-cut during final second of this ${segmentDuration}s clip)`
+                : isLast
+                  ? "Visible Demo Payoff & Soft CTA (warm settled Medium Shot, natural interaction with @Image2, approachable low-friction advice; do not imply unprovided usage/results)"
+                  : `Deep-Dive Hands-On Demo (45° Macro Close-Up / POV, tactile interaction with @Image2; if user supplied a real flaw, mention it around ${flawStart}–${flawEnd}s without inventing tests or claims)`;
+            return {
+              start: segmentPlan.slice(0, index).reduce((sum, value) => sum + value, 0),
+              duration: segmentDuration,
+              role,
+              prompt: "",
+            };
+          }),
         },
         attachments: {
           presenter: files.presenter?.name || null,
@@ -958,7 +974,7 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
         "ĐỌC HƯỚNG DẪN: áp dụng đầy đủ phần HƯỚNG DẪN UGC bên dưới và chọn module ngành hàng phù hợp.",
         "GIỮ NGUYÊN: schema, template, toàn bộ product, creative.claimCategory, model, thời lượng, tỷ lệ khung hình, ngôn ngữ, chất lượng và attachments.",
         "CHỈ ĐƯỢC ĐIỀN prompt cho từng clip trong video.segments và creative.script. Không thêm, xóa, sắp xếp lại clip hoặc thay start/duration đã cho.",
-        "Viết prompt hình ảnh từng clip bằng tiếng Anh; viết lời thoại bằng ngôn ngữ đã chọn cho một người dẫn duy nhất. Không tạo thoại hỏi đáp, người hỏi ngoài khung hình hoặc nhãn vai. Mỗi prompt phải bám đúng sản phẩm, đối tượng, kiểu mở đầu và thời lượng clip.",
+        "Viết prompt hình ảnh từng clip bằng tiếng Anh theo cấu trúc 5 khối: [REFERENCE LOCK] -> [CAMERA & FRAMING] -> [ACTION & CHOREOGRAPHY (timecoded)] -> [ENVIRONMENT & LIGHTING] -> [VIDEO OVERLAY TIMELINE & SFX TIMELINE]. Bám sát 'role' phân vai cho từng clip. Viết lời thoại bằng ngôn ngữ đã chọn cho một người dẫn duy nhất. Không tạo thoại hỏi đáp, người hỏi ngoài khung hình hoặc nhãn vai.",
         "Chỉ dùng thông tin xác minh và trải nghiệm người dùng có trong dữ liệu job; không bịa thông số, công dụng, giá, ưu đãi, chứng nhận hoặc trải nghiệm.",
         "Trả về duy nhất toàn bộ JSON job hợp lệ, không Markdown, không code fence, không giải thích. Ảnh tham chiếu được tải lên riêng trong StoryAI.",
       ].join("\n");
