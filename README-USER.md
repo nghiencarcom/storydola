@@ -88,33 +88,11 @@ StoryAI cung cấp MCP server chạy qua `stdio`. Coding agent dùng CLI/tài kh
 
 StoryAI ghi cấu hình user vào `~/.codex/config.toml` cho Codex, `~/.claude.json` cho Claude Code và `~/.gemini/config/mcp_config.json` cho Antigravity. Các MCP server khác trong file được giữ lại. Antigravity có thể tải lại cấu hình từ **Settings → Customizations → Installed MCP Servers**.
 
-### Dùng Code Agent CLI ở một máy tính khác
+### Cài Code Agent trên nhiều máy tính
 
-Nút **Kết nối** trong Cài đặt chỉ ghi cấu hình vào CLI trên chính máy đang chạy StoryAI. Để CLI trên máy khác kết nối, máy đó cần chạy script MCP cục bộ và gọi về địa chỉ mạng của máy StoryAI.
+Mỗi máy tính chạy StoryAI độc lập, có thư mục project, dữ liệu và token riêng. Để tự kết nối CLI trên một máy, cài CLI đó và chạy StoryAI bằng `npm start` ngay trên máy ấy. Sau đó mở `http://localhost:3012`, vào **Cài đặt → Kết nối coding agent qua MCP**, tạo token nếu được yêu cầu rồi nhấn **Kết nối** cho CLI đã cài trên máy. StoryAI tự ghi cấu hình MCP vào hồ sơ người dùng local và kiểm tra kết nối; không cần nhập IP LAN hay sửa `STORYAI_URL`.
 
-1. Trên máy chạy StoryAI, mở `.env`, đặt `STORYAI_BIND_HOST=0.0.0.0`, lưu rồi chạy lại `npm start`. Mặc định StoryAI chỉ lắng nghe trên máy local; bật địa chỉ này chỉ khi bạn cần máy khác truy cập.
-2. Tìm địa chỉ LAN của máy StoryAI. Trên macOS chạy `ipconfig getifaddr en0`; trên Windows chạy `ipconfig` và lấy dòng IPv4 Address của Wi-Fi/Ethernet. Ví dụ địa chỉ là `192.168.1.20`.
-3. Trên máy chạy Code Agent CLI, clone repo và cài thư viện MCP. Không chạy `npm start` ở máy này:
-
-   ```sh
-   git clone https://github.com/nghiencarcom/storydola.git StoryAI
-   cd StoryAI
-   npm ci
-   ```
-
-4. Trong cấu hình MCP của Codex, Claude Code hoặc Antigravity trên máy đó, thêm một server có các giá trị sau; thay đường dẫn bằng đường dẫn tuyệt đối của bản clone, IP bằng địa chỉ máy StoryAI, và token bằng token vừa tạo trong **Cài đặt**:
-
-   ```text
-   command: node
-   args: ["<đường-dẫn-tuyệt-đối>/StoryAI/scripts/storyai-mcp.mjs"]
-   env:
-     STORYAI_URL: http://192.168.1.20:3012
-     STORYAI_MCP_TOKEN: storyai_mcp_<token-của-bạn>
-   ```
-
-   Mỗi agent dùng định dạng file cấu hình riêng. Giữ nguyên các trường `command`, `args` và `env` ở trên, rồi đặt chúng vào mục MCP server `storyai` của agent tương ứng. Khởi động lại CLI/agent sau khi lưu.
-
-Máy chạy CLI và máy StoryAI cần truy cập cùng một mạng riêng, và firewall của máy StoryAI cần cho phép Node.js nhận kết nối riêng tư ở cổng `3012`. Nếu hai máy ở mạng khác nhau, cần VPN hoặc một reverse proxy/tunnel có HTTPS trỏ tới StoryAI; khi đó đặt `STORYAI_URL=https://<tên-miền-của-bạn>` trong cấu hình CLI. Không đưa token qua kết nối HTTP công khai. Token chỉ hiện một lần khi tạo; nếu mất, tạo token mới rồi cập nhật lại từng CLI đang dùng.
+Lặp lại các bước này trên từng máy tính. Nút **Kết nối** chỉ cấu hình CLI trên máy đang chạy StoryAI; vì vậy nếu mở một StoryAI từ xa trong trình duyệt, thao tác vẫn chạy ở máy chủ của ứng dụng. Token và project không tự đồng bộ giữa các máy.
 
 Sau khi kết nối, có thể yêu cầu agent **“Dùng StoryAI MCP, tự viết kịch bản nguồn AI Drama từ ý tưởng sau; tạo project và viết/import JSON từng tập theo đúng mẫu StoryAI. Làm lần lượt từng tập, nối continuity; chưa tạo ảnh, voice hoặc render.”** Agent dùng chính model/tài khoản đã đăng nhập của Codex, Claude Code hoặc Antigravity để viết nội dung; người dùng không cần cung cấp API key viết kịch bản. StoryAI lưu bible, synopsis và outline làm kịch bản nguồn, rồi `storyai_get_episode_script_context` cung cấp canon, scene range, continuity và JSON mẫu cho từng chunk. Agent tự viết rồi gọi `storyai_import_episode_script` một tập `scene-script.v1` mỗi lần.
 

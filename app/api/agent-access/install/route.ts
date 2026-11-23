@@ -63,7 +63,7 @@ export async function GET() {
   try {
     const ownerId = await getCurrentUserId();
     const credentials = await getAgentAccessCredentials(ownerId).catch(() => undefined);
-    return NextResponse.json({ agents: await getCodingAgentConfigStatuses(credentials?.token ?? null) }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({ agents: await getCodingAgentConfigStatuses(credentials?.token) }, { headers: { "Cache-Control": "no-store" } });
   } catch {
     return NextResponse.json({ message: "Vui lòng đăng nhập MaiVideo để kiểm tra cấu hình agent." }, { status: 401 });
   }

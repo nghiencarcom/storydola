@@ -214,10 +214,19 @@ export function SettingsView() {
   }
 
   async function installAgent(agent: CodingAgentId) {
-    if (agentAccessBusy || !agentAccessStatus?.configured) return;
+    if (agentAccessBusy || !agentAccessStatus?.encryptionReady) return;
     setAgentAccessBusy(true);
     setAgentAccessNotice(null);
+    let tokenCreated = false;
     try {
+      if (!agentAccessStatus.configured) {
+        const tokenResponse = await fetch("/api/agent-access", { method: "POST" });
+        const tokenPayload = await tokenResponse.json().catch(() => ({}));
+        if (!tokenResponse.ok || typeof tokenPayload.token !== "string") throw new Error(tokenPayload.message || "Không tạo được token kết nối.");
+        tokenCreated = true;
+        setGeneratedAgentToken(tokenPayload.token);
+        setAgentTokenCopied(false);
+      }
       const response = await fetch("/api/agent-access/install", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -226,8 +235,9 @@ export function SettingsView() {
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.message || "Không cài được cấu hình Code Agent.");
       await refreshAgentAccess();
-      setAgentAccessNotice({ tone: "success", text: `${codingAgents.find((item) => item.id === agent)?.label || agent} đã được cấu hình. Khởi động lại CLI để tải StoryAI MCP.` });
+      setAgentAccessNotice({ tone: "success", text: `${codingAgents.find((item) => item.id === agent)?.label || agent} đã được kết nối trên máy này. Khởi động lại CLI để tải StoryAI MCP.${tokenCreated ? " Token mới đã được tạo tự động." : ""}` });
     } catch (cause) {
+      if (tokenCreated) await refreshAgentAccess();
       setAgentAccessNotice({ tone: "error", text: cause instanceof Error ? cause.message : "Không cài được cấu hình Code Agent." });
     } finally {
       setAgentAccessBusy(false);
@@ -275,7 +285,7 @@ export function SettingsView() {
       <section className="settings-card settings-card-wide panel-card" id="agent-cli-connection">
         <div className="section-kicker">CODE AGENT CLI</div>
         <h2>Kết nối Codex, Claude Code hoặc Antigravity</h2>
-        <p>Tạo token MCP để cho CLI truy cập StoryAI, sau đó cài cấu hình vào agent cần dùng. StoryAI sẽ kiểm tra kết nối trước khi ghi cấu hình.</p>
+        <p>Chọn CLI đã cài trên máy này rồi nhấn Kết nối. Nếu chưa có token, StoryAI tự tạo token, ghi cấu hình MCP vào CLI và kiểm tra kết nối local.</p>
         {!agentAccessLoading && agentAccessStatus && !agentAccessStatus.encryptionReady && <div className="seedance-settings-alert">Máy chủ chưa cấu hình khóa mã hóa token. Cần STORYAI_CREDENTIALS_ENCRYPTION_KEY hoặc SEEDANCE_CREDENTIALS_ENCRYPTION_KEY dài ít nhất 32 ký tự.</div>}
         <div className="agent-access-actions">
           <button className="primary-button compact" type="button" onClick={() => void createAgentToken()} disabled={agentAccessLoading || agentAccessBusy || !agentAccessStatus?.encryptionReady}>
@@ -294,15 +304,17 @@ export function SettingsView() {
           {codingAgents.map((agent) => {
             const status = agentConfigStatuses[agent.id];
             const needsFix = status?.error === "INVALID_JSON";
-            const statusLabel = agentAccessLoading ? "Đang kiểm tra" : needsFix ? "Cần sửa cấu hình" : status?.needsUpdate ? "Cần cập nhật" : status?.installed ? "Đã cài" : "Chưa kết nối";
-            const statusClass = needsFix || status?.needsUpdate ? "needs-fix" : status?.installed ? "connected" : "disconnected";
+            const cliAvailable = codingAgentCliStatuses.find((item) => item.id === agent.id)?.available ?? false;
+            const cliMissing = !agentAccessLoading && codingAgentCliStatuses.length > 0 && !cliAvailable;
+            const statusLabel = agentAccessLoading ? "Đang kiểm tra" : needsFix ? "Cần sửa cấu hình" : cliMissing ? "CLI chưa cài" : status?.needsUpdate ? "Cần cập nhật" : status?.installed ? "Đã cài" : "Chưa kết nối";
+            const statusClass = needsFix || (!cliMissing && status?.needsUpdate) ? "needs-fix" : status?.installed && !cliMissing ? "connected" : "disconnected";
             return <article className="agent-connect-card" key={agent.id}>
               <div className="agent-connect-card-heading"><strong>{agent.label}</strong><span className={statusClass}>{statusLabel}</span></div>
-              <small>{needsFix ? "File cấu hình không hợp lệ. Sửa JSON trước khi kết nối lại." : status?.needsUpdate ? "Token trong CLI khác với token hiện lưu ở StoryAI." : status?.installed ? "Đã tìm thấy cấu hình StoryAI MCP trong CLI." : "Cài StoryAI MCP vào CLI này để truy cập dự án và công cụ StoryAI."}</small>
+              <small>{needsFix ? "File cấu hình không hợp lệ. Sửa JSON trước khi kết nối lại." : cliMissing ? "Cài CLI này trên máy chạy StoryAI rồi tải lại trạng thái." : status?.needsUpdate ? "Token trong CLI khác với token hiện lưu ở StoryAI." : status?.installed ? "Đã tìm thấy cấu hình StoryAI MCP trong CLI." : "Cài StoryAI MCP vào CLI này để truy cập dự án và công cụ StoryAI."}</small>
               <code className="agent-config-path">{status?.configPath || agent.configName}</code>
               <button className={status?.installed && !status?.needsUpdate ? "secondary-button compact" : "primary-button compact"} type="button"
-                onClick={() => void installAgent(agent.id)} disabled={!agentAccessStatus?.configured || agentAccessLoading || agentAccessBusy || needsFix}>
-                {status?.installed && !status?.needsUpdate ? "Cập nhật cấu hình" : status?.needsUpdate ? "Kết nối lại" : "Kết nối"}
+                onClick={() => void installAgent(agent.id)} disabled={!agentAccessStatus?.encryptionReady || agentAccessLoading || agentAccessBusy || needsFix || cliMissing}>
+                {cliMissing ? "Cài CLI trước" : !agentAccessStatus?.configured ? "Tạo token & kết nối" : status?.installed && !status?.needsUpdate ? "Cập nhật cấu hình" : status?.needsUpdate ? "Kết nối lại" : "Kết nối"}
               </button>
             </article>;
           })}
@@ -367,7 +379,7 @@ export function SettingsView() {
         {agentAccessLoading && <p role="status">Đang đọc trạng thái token và cấu hình CLI…</p>}
         {agentAccessNotice && <div className={`seedance-account-notice ${agentAccessNotice.tone}`} role="status">{agentAccessNotice.text}</div>}
         <small className="seedance-key-help">Cấu hình được ghi trên máy chạy StoryAI vào thư mục CLI tương ứng. Sau khi kết nối, hãy khởi động lại terminal/agent. Tạo token mới sẽ yêu cầu cập nhật lại các CLI đã cài.</small>
-        <small className="seedance-key-help">CLI trên máy khác cần cấu hình thủ công: trên máy chạy StoryAI đặt STORYAI_BIND_HOST=0.0.0.0 trong .env rồi chạy lại npm start; trên máy CLI, cài repo bằng npm ci và đặt STORYAI_URL=http://&lt;IP-máy-StoryAI&gt;:3012 cùng STORYAI_MCP_TOKEN vào cấu hình MCP, dùng đường dẫn scripts/storyai-mcp.mjs trong bản clone ở máy đó. Chỉ dùng HTTP trong mạng riêng; truy cập qua Internet cần HTTPS. Token chỉ hiện một lần khi tạo.</small>
+        <small className="seedance-key-help">Mỗi máy tính cần chạy StoryAI riêng bằng npm start. Mở Cài đặt trên đúng máy đó rồi nhấn Kết nối; StoryAI sẽ ghi cấu hình MCP vào CLI đã cài trên chính máy, dùng localhost.</small>
       </section>
       <section className="settings-card settings-card-wide panel-card" id="maivideo-api-keys">
         <div className="section-kicker">MAIVIDEO</div>

@@ -23,6 +23,13 @@ function commandNames(agent: CodingAgent) {
   return ["agy"];
 }
 
+function commandFileNames(agent: CodingAgent) {
+  const names = commandNames(agent);
+  return process.platform === "win32"
+    ? names.flatMap((name) => [name, `${name}.exe`, `${name}.cmd`, `${name}.bat`])
+    : names;
+}
+
 function commandSearchPaths(agent: CodingAgent) {
   const pathEntries = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
   const home = homedir();
@@ -35,10 +42,10 @@ function commandSearchPaths(agent: CodingAgent) {
 
 async function resolveAgentCommand(agent: CodingAgent): Promise<AgentCommand | undefined> {
   const override = process.env[`STORYAI_${agent.toUpperCase()}_CLI_PATH`]?.trim();
-  const candidates = override ? [override] : commandSearchPaths(agent).flatMap((directory) => commandNames(agent).map((name) => path.join(directory, name)));
+  const candidates = override ? [override] : commandSearchPaths(agent).flatMap((directory) => commandFileNames(agent).map((name) => path.join(directory, name)));
   for (const executable of candidates) {
     try {
-      await access(executable, constants.X_OK);
+      await access(executable, process.platform === "win32" ? constants.F_OK : constants.X_OK);
       return { executable };
     } catch {
       // Continue through PATH and common user-local install folders.
