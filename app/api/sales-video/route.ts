@@ -9,13 +9,14 @@ import { getMaiVideoApiKey } from "../../lib/maivideo-api-keys";
 import { getCodingAgentPreference } from "../../lib/coding-agent-preferences";
 import { getCodingAgentCliStatuses, type CodingAgent } from "../../lib/coding-agent-cli";
 import { readMaiVideoAuthCookie } from "../../lib/maivideo-auth-shared";
+import { getSeedanceApiKey, getSeedanceApiSessionToken } from "../../lib/seedance-accounts";
 import { createCreativeSalesVideo, SalesVideoInputError } from "../../lib/sales-video-creative";
 import { deleteSalesVideoProject, listSalesVideoProjects, saveSalesVideoProject, type SalesVideoProject } from "../../lib/sales-video-storage";
 import { enqueueSalesVideoTask, salesVideoWorkerId } from "../../lib/sales-video-runtime";
 import { isVideoOffPeakRequired } from "../../lib/media-generation-settings";
 import {
   salesVideoDurationOptions, salesVideoProductSegments, salesVideoImageLimit, salesVideoLanguages, salesVideoNameLimit,
-  salesVideoRatios, salesVideoTemplates, salesVideoCreativeTemplates, salesVideoFileLimits, salesVideoModelOptions, salesVideoMaiVideoModels, salesVideoModels, salesVideoProductInstruction, salesVideoSupportsDialogue, salesVideoWordCount, salesVideoMaxWordCount, salesVideoMaxProductImages,
+  salesVideoRatios, salesVideoTemplates, salesVideoCreativeTemplates, salesVideoFileLimits, salesVideoModelOptions, salesVideoMaiVideoModels, salesVideoGatewayVideoModels, salesVideoModels, salesVideoProductInstruction, salesVideoSupportsDialogue, salesVideoWordCount, salesVideoMaxWordCount, salesVideoMaxProductImages,
   salesVideoDialogueToSrt, salesVideoSplitDialogue,
 } from "../../lib/sales-video-templates";
 
@@ -28,12 +29,15 @@ const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 export async function GET(request: Request) {
   const userId = request.headers.get("x-storyai-user-id")?.trim();
   if (!userId) return NextResponse.json({ message: "Vui lòng đăng nhập MaiVideo." }, { status: 401 });
+  const providerAuthToken = readMaiVideoAuthCookie(request.headers.get("cookie"));
   const [projects, maiVideoKey, preference, agentStatuses] = await Promise.all([
     listSalesVideoProjects(userId, worker),
     getMaiVideoApiKey(userId).catch(() => ""),
     getCodingAgentPreference(userId).catch(() => undefined),
     getCodingAgentCliStatuses({ includeModels: false }).catch(() => []),
   ]);
+  const seedanceApiKey = await getSeedanceApiKey(undefined, userId).catch(() => "");
+  const seedanceSessionToken = await getSeedanceApiSessionToken(undefined, userId, providerAuthToken).catch(() => "");
   const agentOrder: CodingAgent[] = ["codex", "claude", "antigravity"];
   const installed = agentStatuses.filter((agent) => agent.available);
   const environmentAgent = process.env.STORYAI_SALES_UGC_AGENT?.trim();
@@ -43,6 +47,7 @@ export async function GET(request: Request) {
     projects,
     access: {
       maiVideo: Boolean(maiVideoKey),
+      seedanceGateway: Boolean(seedanceApiKey && seedanceSessionToken),
       pixverse: Boolean(process.env.PIXVERSE_API_KEY?.trim()),
       voice: Boolean(process.env.FAL_KEY?.trim()),
       draftKey: createHash("sha256").update(userId).digest("hex").slice(0, 24),
@@ -177,6 +182,7 @@ export async function POST(request: Request) {
   const models = salesVideoModelOptions(creative);
   const requestedModel = value("model") || models[0] || "";
   let maiVideoModel: VideoGenerationModelOption | undefined;
+  let gatewayVideoModel: VideoGenerationModelOption | undefined;
   if (requestedModel.startsWith("maivideo:")) {
     const pixverseReferenceWorkflow = creative?.workflow === "remake" || creative?.workflow === "background";
     if (!pixverseReferenceWorkflow && !await getMaiVideoApiKey(userId).catch(() => "")) {
@@ -185,19 +191,31 @@ export async function POST(request: Request) {
     const catalog = await getMaiVideoModelCatalog(userId);
     maiVideoModel = salesVideoMaiVideoModels(catalog.videoModels, creative, ratio).find(({ id }) => `maivideo:${id}` === requestedModel);
   }
-  const model = maiVideoModel ? "higgsfield" : models.find((item) => item === requestedModel);
+  if (requestedModel.startsWith("flow:") || requestedModel.startsWith("muse:")) {
+    const [provider, modelId] = requestedModel.split(":", 2);
+    const apiKey = await getSeedanceApiKey(undefined, userId).catch(() => "");
+    const sessionToken = await getSeedanceApiSessionToken(undefined, userId, token).catch(() => "");
+    if (!apiKey || !sessionToken) return NextResponse.json({ message: "Cấu hình tài khoản Flow/Muse trong Cài đặt để dùng model này." }, { status: 503 });
+    const catalog = await getMaiVideoModelCatalog(userId).catch(() => null);
+    gatewayVideoModel = catalog
+      ? salesVideoGatewayVideoModels(catalog.videoModels, creative, ratio, Boolean(productTemplate))
+        .find((item) => item.provider === provider && item.id === modelId)
+      : undefined;
+  }
+  const model = maiVideoModel || gatewayVideoModel ? "higgsfield" : models.find((item) => item === requestedModel);
   if (!model) return NextResponse.json({ message: "Model không hỗ trợ đầu vào hoặc khung hình của mẫu này." }, { status: 400 });
-  const higgsfieldSpeed = !maiVideoModel && model === "higgsfield" ? "fast" as const : undefined;
+  const selectedVideoModel = maiVideoModel || gatewayVideoModel;
+  const higgsfieldSpeed = !selectedVideoModel && model === "higgsfield" ? "fast" as const : undefined;
   const fixedPixverseQuality = !maiVideoModel && model !== "higgsfield" ? "720p" : "";
-  const videoQuality = higgsfieldSpeed ? "720p" : fixedPixverseQuality || (maiVideoModel?.qualities.includes("720p") ? "720p" : maiVideoModel?.qualities[0] || "");
+  const videoQuality = higgsfieldSpeed ? "720p" : fixedPixverseQuality || (selectedVideoModel?.qualities.includes("720p") ? "720p" : selectedVideoModel?.qualities[0] || "");
   const videoOffPeak = Boolean(maiVideoModel && isVideoOffPeakRequired(maiVideoModel.id, maiVideoModel.label));
-  const durationOptions = salesVideoDurationOptions(maiVideoModel, creative, Boolean(productTemplate), maiVideoModel?.id || requestedModel, videoQuality);
+  const durationOptions = salesVideoDurationOptions(selectedVideoModel, creative, Boolean(productTemplate), selectedVideoModel?.id || requestedModel, videoQuality);
   const seconds = durationOptions.find((item) => item === durationValue);
   if (!seconds) {
-    const maxDuration = maiVideoModel?.id === "wan-3.0" ? 30 : Math.min(15, maiVideoModel?.maxDurationSec || 15);
+    const maxDuration = selectedVideoModel?.id === "wan-3.0" ? 30 : Math.min(15, selectedVideoModel?.maxDurationSec || 15);
     return NextResponse.json({ message: `Thời lượng video không hợp lệ với model đã chọn (tối đa ${maxDuration} giây).` }, { status: 400 });
   }
-  const speaksInVideo = salesVideoSupportsDialogue(maiVideoModel);
+  const speaksInVideo = salesVideoSupportsDialogue(selectedVideoModel);
   if (productTemplate && script && speaksInVideo) {
     const wordCount = salesVideoWordCount(script, language!);
     const maxWords = salesVideoMaxWordCount(seconds, language!);
@@ -242,7 +260,7 @@ export async function POST(request: Request) {
   if (productTemplate && productImageCount < 1) {
     return NextResponse.json({ message: "Cần ít nhất một ảnh sản phẩm cùng ảnh nhân vật." }, { status: 400 });
   }
-  const maxReferenceImages = maiVideoModel?.maxReferenceImages || (model === "higgsfield" ? 9 : 7);
+  const maxReferenceImages = selectedVideoModel?.maxReferenceImages || (model === "higgsfield" ? 9 : 7);
   if (productTemplate && productImageCount + 1 > maxReferenceImages) {
     return NextResponse.json({ message: `Model nhận tối đa ${maxReferenceImages} ảnh tham chiếu, gồm ảnh nhân vật. Hãy giảm ảnh sản phẩm.` }, { status: 400 });
   }
@@ -264,8 +282,8 @@ export async function POST(request: Request) {
     workflow: "prompt" as const,
     instruction: salesVideoProductInstruction,
   };
-  const productSegments = productTemplate ? salesVideoProductSegments(seconds, maiVideoModel, videoQuality) : undefined;
-  const promptMaxLength = productTemplate ? Math.min(20_000, maiVideoModel?.promptMaxLength || (model === "higgsfield" ? 10_000 : 5_000)) : undefined;
+  const productSegments = productTemplate ? salesVideoProductSegments(seconds, selectedVideoModel, videoQuality) : undefined;
+  const promptMaxLength = productTemplate ? Math.min(20_000, selectedVideoModel?.promptMaxLength || (model === "higgsfield" ? 10_000 : 5_000)) : undefined;
   let effectiveScriptSegments = submittedScriptSegments;
   if (productTemplate) {
     if (!productSegments || !submittedPromptSegments || submittedPromptSegments.length !== productSegments.length) {
@@ -308,7 +326,7 @@ export async function POST(request: Request) {
   const project: SalesVideoProject = {
     ...(pendingDraft || {}),
     id: requestedProjectId || randomUUID(), title: title || product.slice(0, 120) || template.name,
-    template: template.name, model: [maiVideoModel?.label || salesVideoModels[model], videoQuality, higgsfieldSpeed ? "Fast" : "", videoOffPeak ? "off-peak" : ""].filter(Boolean).join(" · "), createdAt: pendingDraft?.createdAt || new Date().toISOString(), status: "processing", phase: "generating", worker,
+    template: template.name, model: [selectedVideoModel?.label || salesVideoModels[model], videoQuality, higgsfieldSpeed ? "Fast" : "", videoOffPeak ? "off-peak" : ""].filter(Boolean).join(" · "), createdAt: pendingDraft?.createdAt || new Date().toISOString(), status: "processing", phase: "generating", worker,
     details: pendingDraft?.details ? {
       ...pendingDraft.details,
       product, facts, prompt, ...(submittedPromptSegments ? { promptSegments: submittedPromptSegments } : {}), script: scriptForVideo, language, duration: seconds, ratio,
@@ -330,7 +348,7 @@ export async function POST(request: Request) {
         const generatedSegments = await createCreativeSalesVideo({
           id: project.id, userId, template, images, seconds, ratio, prompt, promptSegments: submittedPromptSegments, videoQuality, videoOffPeak,
           splitDialogue: isStitched ? { script: scriptForVideo, language: language!, audio: speaksInVideo, segments: productSegments!, scriptSegments: effectiveScriptSegments } : undefined,
-          pixverseKey, voiceKey, model, maiVideoModel, providerAuthToken: token, sourceStart, signal: AbortSignal.timeout(60 * 60_000),
+          pixverseKey, voiceKey, model, maiVideoModel, gatewayVideoModel, providerAuthToken: token, sourceStart, signal: AbortSignal.timeout(60 * 60_000),
           audio: files.find(({ kind }) => kind === "audio")?.file as File | undefined,
           video: files.find(({ kind }) => kind === "video")?.file as File | undefined,
         });

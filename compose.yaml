@@ -13,7 +13,7 @@ services:
       PORT: 3011
       MAIVIDEO_HTMLVIDEO_BASE_URL: ${STORYAI_HTMLVIDEO_BASE_URL:-http://host.docker.internal:3000}
     ports:
-      - "${STORYAI_BIND_HOST:-127.0.0.1}:${STORYAI_PORT:-3011}:3011"
+      - "${STORYAI_BIND_HOST:-127.0.0.1}:${STORYAI_PORT:-3012}:3011"
     volumes:
       - ./data:/app/data
     init: true

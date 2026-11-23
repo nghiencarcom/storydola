@@ -118,7 +118,7 @@ if (-not (Wait-StoryAIHealthy)) {
   }
 }
 
-$port = 3011
+$port = 3012
 if ($config -match "(?m)^STORYAI_PORT=(\d+)$") { $port = [int]$Matches[1] }
 $storyaiUrl = "http://localhost:$port"
 Write-Host "StoryAI is starting at $storyaiUrl"

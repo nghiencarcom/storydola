@@ -4,7 +4,7 @@ import { useEffect, useId, useMemo, useRef, useState, useCallback, type FormEven
 import {
   salesVideoDurationOptions, salesVideoProductSegments, salesVideoLanguages, salesVideoWordCount, salesVideoMaxWordCount,
   salesVideoSplitDialogue, salesVideoDialogueToSrt,
-  salesVideoMaiVideoModels, salesVideoModelOptions, salesVideoModels, salesVideoProductExamples, salesVideoTextExamples, salesVideoSupportsDialogue,
+  salesVideoMaiVideoModels, salesVideoGatewayVideoModels, salesVideoModelOptions, salesVideoModels, salesVideoProductExamples, salesVideoTextExamples, salesVideoSupportsDialogue,
   salesVideoCreativeTemplates, salesVideoFileTypes, salesVideoFileLimits, salesVideoNameLimit, salesVideoRatios, salesVideoTemplates,
   salesVideoContentStyles, salesVideoContentFramework, salesVideoClaimCategories, salesVideoImageTypes, salesVideoMaxProductImages, salesVideoScriptPlaceholder,
   salesVideoHookStyles, salesVideoTargetAudiences, salesVideoPainExamples, salesVideoHeroExamples, salesVideoFlawExamples,
@@ -12,12 +12,12 @@ import {
 import { clearSalesVideoDraft, loadSalesVideoDraft, saveSalesVideoDraftFields, saveSalesVideoDraftFile } from "../lib/sales-video-drafts";
 
 import type { VideoGenerationModelOption } from "../lib/project-types";
-import { isVideoOffPeakRequired } from "../lib/media-generation-settings";
+import { isVideoOffPeakRequired, SALES_VIDEO_GATEWAY_VIDEO_MODEL_OPTIONS } from "../lib/media-generation-settings";
 import type { SalesVideoProject } from "../lib/sales-video-storage";
 import { SalesVideoTemplateArtwork } from "./sales-video-template-artwork";
 import { Icon } from "./ui-icon";
 
-type Access = { maiVideo: boolean; pixverse: boolean; voice: boolean; draftKey: string; codingAgent: { id: string; label: string; model: string; saved: boolean } | null };
+type Access = { maiVideo: boolean; seedanceGateway: boolean; pixverse: boolean; voice: boolean; draftKey: string; codingAgent: { id: string; label: string; model: string; saved: boolean } | null };
 type SalesVideoLibraryImage = { id: string; name: string; fileName: string; previewUrl: string; source: string };
 type ManualUgcPromptSegment = { start: number; duration: number; prompt: string };
 type ManualUgcJobData = {
@@ -402,7 +402,7 @@ export function SalesVideoView() {
   const [route, setRoute] = useState<SalesVideoRoute>({});
   const [projects, setProjects] = useState<SalesVideoProject[] | null>(null);
   const [access, setAccess] = useState<Access | null>(null);
-  const [catalog, setCatalog] = useState<VideoGenerationModelOption[]>([]);
+  const [catalog, setCatalog] = useState<VideoGenerationModelOption[]>(SALES_VIDEO_GATEWAY_VIDEO_MODEL_OPTIONS);
   const [error, setError] = useState("");
   const [selectedProjectIds, setSelectedProjectIds] = useState<Set<string>>(() => new Set());
   const [deleteTargets, setDeleteTargets] = useState<SalesVideoProject[]>([]);
@@ -431,7 +431,12 @@ export function SalesVideoView() {
     const controller = new AbortController();
     void refresh(controller.signal);
     void fetch("/api/media-models", { signal: controller.signal }).then(async (response) => {
-      if (response.ok) setCatalog((await response.json()).videoModels || []);
+      if (response.ok) {
+        const data = await response.json() as { videoModels?: VideoGenerationModelOption[] };
+        const models = Array.isArray(data.videoModels) ? data.videoModels : [];
+        const modelKeys = new Set(models.map((model) => `${model.provider || "maivideo"}:${model.id}`));
+        setCatalog([...models, ...SALES_VIDEO_GATEWAY_VIDEO_MODEL_OPTIONS.filter((model) => !modelKeys.has(`${model.provider}:${model.id}`))]);
+      }
     }).catch(() => {});
     return () => {
       controller.abort();
@@ -891,68 +896,98 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
   }
 
   async function copyManualJobData() {
-    const targetAudienceLabel = salesVideoTargetAudiences.find(({ id }) => id === targetAudience)?.label || targetAudience;
-    const hookStyleLabel = salesVideoHookStyles.find(({ id }) => id === hookStyle)?.label || hookStyle;
-    const contentStyleLabel = salesVideoContentStyles.find(({ id }) => id === contentStyle)?.label || contentStyle;
-    const segmentPlan = salesVideoProductSegments(selectedDuration, model?.modelMeta, videoQuality);
-    const payload = {
-      schema: "storyai.manual-ugc-job.v1",
-      template: { id: templateId, name: selectedTemplate?.name || "Video review" },
-      product: {
-        name: product.trim(),
-        url: productUrl.trim(),
-        verifiedFacts: facts.trim(),
-        userExperience: userExperience.trim(),
-        customerProblem: painPoint.trim(),
-        keyBenefit: heroBenefit.trim(),
-        consideration: minorFlaw.trim(),
-      },
-      creative: {
-        contentStyle: { id: contentStyle, label: contentStyleLabel },
-        claimCategory,
-        targetAudience: targetAudienceLabel,
-        openingHook: hookStyleLabel,
-        script: script.trim(),
-        extraInstructions: editableProductPrompt,
-      },
-      video: {
-        modelId: model?.id || selectedModel,
-        model: model?.label || "",
-        durationSeconds: selectedDuration,
-        aspectRatio: ratio,
-        dialogueLanguage: language,
-        audio: supportsAudio,
-        quality: videoQuality,
-        segments: segmentPlan.map((segmentDuration, index) => ({
-          start: segmentPlan.slice(0, index).reduce((sum, value) => sum + value, 0),
-          duration: segmentDuration,
-          prompt: "",
-        })),
-      },
-      attachments: {
-        presenter: files.presenter?.name || null,
-        mainProductImage: mainProductImage?.name || null,
-        additionalProductImages: additionalProductImageFiles.map((file) => file.name),
-        note: "Clipboard chỉ chứa dữ liệu và tên tệp; hãy tải các ảnh tham chiếu lên riêng khi tạo job thủ công.",
-      },
-      manualInstructions: [
-        "NHIỆM VỤ: Soạn nội dung cho job video review UGC dựa trên JSON này.",
-        "GIỮ NGUYÊN: schema, template, toàn bộ product, creative.contentStyle, creative.claimCategory, video.modelId, video.durationSeconds, video.aspectRatio, video.dialogueLanguage, video.quality và attachments.",
-        "CHỈ ĐƯỢC ĐIỀN: video.segments[*].prompt và creative.script. Không thêm, xóa, sắp xếp lại clip hoặc thay start/duration đã cho.",
-        "Viết prompt hình ảnh từng clip bằng tiếng Anh; viết creative.script bằng video.dialogueLanguage. Mỗi prompt phải độc lập và bám đúng sản phẩm, kiểu nội dung, đối tượng, kiểu mở đầu và thời lượng clip.",
-        "Chỉ dùng thông tin trong product.verifiedFacts và product.userExperience; không bịa thông số, công dụng, giá, ưu đãi, chứng nhận hoặc trải nghiệm sử dụng.",
-        "Trả về toàn bộ JSON hợp lệ, không Markdown, không code fence, không giải thích. Ảnh tham chiếu được tải lên riêng trong StoryAI.",
-      ].join("\n"),
-    };
-
     try {
-      if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
-      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+      const guideResponse = await fetch("/api/sales-video/ugc", {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+        credentials: "same-origin",
+      });
+      const guideResult: unknown = await guideResponse.json().catch(() => null);
+      if (!guideResult || typeof guideResult !== "object" || Array.isArray(guideResult)) {
+        throw new Error("Không đọc được nội dung file hướng dẫn UGC.");
+      }
+      const guideData = guideResult as { sourceFileName?: unknown; format?: unknown; content?: unknown; message?: unknown };
+      if (!guideResponse.ok) {
+        throw new Error(typeof guideData.message === "string" ? guideData.message : "Không tải được file hướng dẫn UGC.");
+      }
+      if (typeof guideData.sourceFileName !== "string" || guideData.format !== "text/plain"
+        || typeof guideData.content !== "string" || !guideData.content.trim()) {
+        throw new Error("File hướng dẫn UGC đang trống hoặc không hợp lệ.");
+      }
+      if (!navigator.clipboard?.writeText) throw new Error("CLIPBOARD_UNAVAILABLE");
+
+      const targetAudienceLabel = salesVideoTargetAudiences.find(({ id }) => id === targetAudience)?.label || targetAudience;
+      const hookStyleLabel = salesVideoHookStyles.find(({ id }) => id === hookStyle)?.label || hookStyle;
+      const contentStyleLabel = salesVideoContentStyles.find(({ id }) => id === contentStyle)?.label || contentStyle;
+      const segmentPlan = salesVideoProductSegments(selectedDuration, model?.modelMeta, videoQuality);
+      const payload = {
+        schema: "storyai.manual-ugc-job.v1",
+        template: { id: templateId, name: selectedTemplate?.name || "Video review" },
+        product: {
+          name: product.trim(),
+          url: productUrl.trim(),
+          verifiedFacts: facts.trim(),
+          userExperience: userExperience.trim(),
+          customerProblem: painPoint.trim(),
+          keyBenefit: heroBenefit.trim(),
+          consideration: minorFlaw.trim(),
+        },
+        creative: {
+          contentStyle: { id: contentStyle, label: contentStyleLabel },
+          claimCategory,
+          targetAudience: targetAudienceLabel,
+          openingHook: hookStyleLabel,
+          script: script.trim(),
+          extraInstructions: editableProductPrompt,
+        },
+        video: {
+          modelId: model?.id || selectedModel,
+          model: model?.label || "",
+          durationSeconds: selectedDuration,
+          aspectRatio: ratio,
+          dialogueLanguage: language,
+          audio: supportsAudio,
+          quality: videoQuality,
+          segments: segmentPlan.map((segmentDuration, index) => ({
+            start: segmentPlan.slice(0, index).reduce((sum, value) => sum + value, 0),
+            duration: segmentDuration,
+            prompt: "",
+          })),
+        },
+        attachments: {
+          presenter: files.presenter?.name || null,
+          mainProductImage: mainProductImage?.name || null,
+          additionalProductImages: additionalProductImageFiles.map((file) => file.name),
+          note: "Tên ảnh tham chiếu chỉ để đối chiếu; ảnh cần được tải lên riêng khi tạo job thủ công.",
+        },
+      };
+      const manualInstructions = [
+        "NHIỆM VỤ: Soạn nội dung cho job video review UGC dựa trên dữ liệu JSON và toàn bộ hướng dẫn văn bản thuần bên dưới.",
+        "ĐỌC HƯỚNG DẪN: áp dụng đầy đủ phần HƯỚNG DẪN UGC bên dưới và chọn module ngành hàng phù hợp.",
+        "GIỮ NGUYÊN: schema, template, toàn bộ product, creative.contentStyle, creative.claimCategory, model, thời lượng, tỷ lệ khung hình, ngôn ngữ, chất lượng và attachments.",
+        "CHỈ ĐƯỢC ĐIỀN prompt cho từng clip trong video.segments và creative.script. Không thêm, xóa, sắp xếp lại clip hoặc thay start/duration đã cho.",
+        "Viết prompt hình ảnh từng clip bằng tiếng Anh; viết lời thoại bằng ngôn ngữ đã chọn. Mỗi prompt phải bám đúng sản phẩm, kiểu nội dung, đối tượng, kiểu mở đầu và thời lượng clip.",
+        "Chỉ dùng thông tin xác minh và trải nghiệm người dùng có trong dữ liệu job; không bịa thông số, công dụng, giá, ưu đãi, chứng nhận hoặc trải nghiệm.",
+        "Trả về duy nhất toàn bộ JSON job hợp lệ, không Markdown, không code fence, không giải thích. Ảnh tham chiếu được tải lên riêng trong StoryAI.",
+      ].join("\n");
+      const clipboardText = [
+        "DỮ LIỆU JOB (JSON)",
+        JSON.stringify(payload, null, 2),
+        "HƯỚNG DẪN UGC (VĂN BẢN THUẦN)",
+        guideData.content,
+        "YÊU CẦU CHO AI",
+        manualInstructions,
+      ].join("\n\n");
+
+      await navigator.clipboard.writeText(clipboardText);
       setMessage("");
-      setCopyStatus("Đã sao chép JSON job kèm hướng dẫn cho AI. Ảnh tham chiếu tải lên riêng.");
-    } catch {
+      setCopyStatus(`Đã sao chép JSON job kèm hướng dẫn text thuần (${guideData.content.length.toLocaleString("vi-VN")} ký tự, xuống dòng thật). Ảnh tham chiếu tải lên riêng.`);
+    } catch (error) {
       setCopyStatus("");
-      setMessage("Không thể sao chép vào clipboard. Hãy kiểm tra quyền clipboard của trình duyệt.");
+      setMessage(error instanceof Error && error.message !== "CLIPBOARD_UNAVAILABLE"
+        ? error.message
+        : "Không thể sao chép vào clipboard. Hãy kiểm tra quyền clipboard của trình duyệt.");
     }
   }
 
@@ -969,7 +1004,7 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
       return;
     }
     if (imported.schema !== "storyai.manual-ugc-job.v1") {
-      setManualImportError("Không nhận diện được định dạng. Hãy dùng JSON từ nút “Sao chép dữ liệu job”.");
+      setManualImportError("Không nhận diện được định dạng. Hãy dùng JSON từ nút “Sao chép JSON + hướng dẫn”.");
       return;
     }
     const importedTemplate = imported.template && typeof imported.template === "object" ? imported.template as Record<string, unknown> : {};
@@ -1259,9 +1294,15 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
 
   const models = salesVideoModelOptions(creative);
   const maiVideoModels = salesVideoMaiVideoModels(catalog, creative, ratio);
+  const gatewayVideoModels = salesVideoGatewayVideoModels(catalog, creative, ratio, Boolean(selectedTemplate));
   const pixverseReferenceWorkflow = creative?.workflow === "remake" || creative?.workflow === "background";
   const options = [
     ...models.filter((id) => id === "higgsfield").map((id) => ({ id, label: selectedTemplate ? salesVideoModels[id] : `${salesVideoModels[id]} · tối đa 15 giây mỗi clip`, available: true, modelMeta: undefined as VideoGenerationModelOption | undefined })),
+    ...gatewayVideoModels.map((item) => {
+      const providerLabel = item.provider === "flow" ? "Flow" : "Muse.ai";
+      const label = `${item.label.toLowerCase().includes(providerLabel.toLowerCase()) ? item.label : `${item.label} · ${providerLabel}`}${salesVideoSupportsDialogue(item) ? "" : " · không thoại"}`;
+      return { id: `${item.provider}:${item.id}`, label, available: Boolean(access?.seedanceGateway), modelMeta: item };
+    }),
     ...maiVideoModels.map((item) => {
       const max = item.id === "wan-3.0" ? 30 : Math.min(15, item.maxDurationSec);
       const capability = salesVideoSupportsDialogue(item) ? "" : " · không thoại";
@@ -1278,8 +1319,17 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
   const offPeakRequired = Boolean(model?.modelMeta && isVideoOffPeakRequired(model.modelMeta.id, model.modelMeta.label));
   const videoOffPeak = offPeakRequired;
   const durationOptions = salesVideoDurationOptions(model?.modelMeta, creative, Boolean(selectedTemplate), model?.modelMeta?.id || model?.id || "", videoQuality);
-  const selectedDuration = durationOptions.includes(duration) ? duration : durationOptions.at(-1) ?? 15;
+  const selectedDuration = durationOptions.includes(duration) ? duration : durationOptions.reduce(
+    (closest, candidate) => Math.abs(candidate - duration) < Math.abs(closest - duration) ? candidate : closest,
+    durationOptions[0] ?? 15,
+  );
+  useEffect(() => {
+    if (durationOptions.length && !durationOptions.includes(duration)) setDuration(selectedDuration);
+  }, [durationOptions, duration, selectedDuration]);
   const manualSegmentDurations = salesVideoProductSegments(selectedDuration, model?.modelMeta, videoQuality);
+  const longVideoPlanLabel = manualSegmentDurations.length > 0 && manualSegmentDurations.every((segmentDuration) => segmentDuration === manualSegmentDurations[0])
+    ? `${manualSegmentDurations.length} clip × ${manualSegmentDurations[0]} giây`
+    : `${manualSegmentDurations.length} clip (${manualSegmentDurations.join(" + ")} giây)`;
   const manualPromptsReady = Boolean(manualUgcJob && manualUgcJob.segments.length === manualSegmentDurations.length
     && manualUgcJob.segments.every((segment, index) => segment.start === manualSegmentDurations.slice(0, index).reduce((sum, value) => sum + value, 0)
       && segment.duration === manualSegmentDurations[index] && Boolean(segment.prompt.trim())));
@@ -1500,12 +1550,13 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
                   {options.map((item) => <option value={item.id} key={item.id} disabled={!item.available}>{item.label}{item.available ? "" : " (chưa cấu hình)"}</option>)}
                 </select>
               </label>
-              {selectedTemplate && <label className="form-field">
+              {selectedTemplate && supportsAudio && <label className="form-field">
                 <span>Ngôn ngữ thoại <em>Bắt buộc</em></span>
                 <select name="language" value={language} onChange={(event) => setLanguage(event.target.value)}>
                   {salesVideoLanguages.map((lang) => <option key={lang}>{lang}</option>)}
                 </select>
               </label>}
+              {selectedTemplate && !supportsAudio && <input type="hidden" name="language" value={language} />}
               <label className="form-field">
                 <span>Thời lượng video <em>Bắt buộc</em></span>
                 <select name="duration" value={selectedDuration} onChange={(event) => setDuration(Number(event.target.value))} disabled={!durationOptions.length}>
@@ -1561,7 +1612,8 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
         </div>}
         <div className="sales-form-footer">
           <div className="sales-form-feedback">
-            {!selectedTemplate && !supportsAudio && creative?.workflow !== "narration" && <p role="status">Model này không tạo giọng nói.</p>}
+            {!supportsAudio && creative?.workflow !== "narration" && <p role="status">Model này tạo video không có thoại.</p>}
+            {access && !access.seedanceGateway && gatewayVideoModels.length > 0 && <p><a href="/settings">Cấu hình tài khoản Seedance</a> để dùng thêm model Flow/Muse.</p>}
             {access && !model?.available && model?.id.startsWith("maivideo:") && <p role="status">Chưa cấu hình khóa MaiVideo để dùng PixVerse V6 Reference.</p>}
             {access && !model?.available && !model?.id.startsWith("maivideo:") && <p role="status">Chưa cấu hình khóa PixVerse Platform cho model nhận video hoặc âm thanh tham chiếu.</p>}
             {access && !access.maiVideo && maiVideoModels.length > 0 && !pixverseReferenceWorkflow && <p><a href="/settings">Cài đặt khóa MaiVideo</a> để dùng thêm các model từ Phim AI.</p>}
@@ -1585,8 +1637,11 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
             {message && <p className="sales-form-error" role="alert">{message}</p>}
           </div>
           <div className="sales-form-footer-actions">
+            {selectedTemplate && selectedDuration >= 20 && selectedDuration <= 60 && manualSegmentDurations.length > 1 && <span className="sales-long-video-note">
+              Video {selectedDuration} giây sẽ tự chia thành {longVideoPlanLabel}, rồi ghép thành một video hoàn chỉnh.
+            </span>}
             {selectedTemplate && <button type="button" className="secondary-button" onClick={() => void copyManualJobData()} disabled={!draftReady || busy}>
-              Sao chép JSON job cho AI
+              Sao chép JSON + hướng dẫn
             </button>}
             {selectedTemplate && <button type="button" className="secondary-button" onClick={() => { setManualImportError(""); setManualImportOpen(true); }} disabled={!draftReady || busy}>
               Nhập JSON job
@@ -1597,7 +1652,7 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
         {manualImportOpen && <div className="sales-media-library-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setManualImportOpen(false); }}>
           <section className="sales-manual-import-modal" role="dialog" aria-modal="true" aria-labelledby="sales-manual-import-title">
             <header>
-              <div><h2 id="sales-manual-import-title">Nhập JSON job</h2><p>Sao chép JSON, nhờ AI điền prompt trong video.segments rồi dán lại đây. Ảnh tải riêng.</p></div>
+              <div><h2 id="sales-manual-import-title">Nhập JSON job</h2><p>Nút sao chép tạo phần JSON job và hướng dẫn UGC dạng text thuần riêng. Gửi toàn bộ cho AI, rồi chỉ dán JSON AI trả về vào đây. Ảnh tải riêng.</p></div>
               <button type="button" aria-label="Đóng nhập JSON job" onClick={() => setManualImportOpen(false)}>×</button>
             </header>
             <textarea autoFocus aria-label="JSON dữ liệu job" value={manualImportText} onChange={(event) => { setManualImportText(event.target.value); setManualImportError(""); }} rows={16} spellCheck={false} placeholder="Dán JSON job vào đây…" />

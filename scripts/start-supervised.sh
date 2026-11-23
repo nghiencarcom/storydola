@@ -9,7 +9,7 @@ port="${PORT:-}"
 if [ -z "$port" ] && [ -f .env ]; then
   port=$(sed -n 's/^PORT=\([0-9][0-9]*\)[[:space:]]*$/\1/p' .env | tail -n 1)
 fi
-port="${port:-3011}"
+port="${port:-3012}"
 case "$port" in *[!0-9]*|'') printf 'PORT must be a number between 1 and 65535.\n' >&2; exit 1 ;; esac
 if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then printf 'PORT must be a number between 1 and 65535.\n' >&2; exit 1; fi
 stopping=0

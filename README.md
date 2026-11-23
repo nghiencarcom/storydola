@@ -25,7 +25,7 @@ cd StoryAI
 npm start
 ```
 
-The first start installs dependencies, builds the app, creates local configuration and opens `http://localhost:3011`. Later starts check `main` for updates and rebuild when source files have changed. Keep the terminal open while using StoryAI; press `Ctrl+C` to stop it. See [README-USER.md](README-USER.md) for setup, updates, and local data details.
+The first start installs dependencies, builds the app, creates local configuration and opens `http://localhost:3012`. Later starts check `main` for updates and rebuild when source files have changed. Keep the terminal open while using StoryAI; press `Ctrl+C` to stop it. See [README-USER.md](README-USER.md) for setup, updates, and local data details.
 
 On macOS, install Node.js and Git with your preferred package manager or installers, then run the same clone and `npm start` commands in Terminal.
 

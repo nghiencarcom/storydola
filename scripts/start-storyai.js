@@ -220,9 +220,12 @@ function checkExternalTools() {
 }
 
 function portFromConfig() {
-  const content = fs.readFileSync(path.join(projectRoot, ".env"), "utf8");
+  const environmentPort = process.env.PORT?.trim();
+  if (/^\d+$/.test(environmentPort || "")) return Number(environmentPort);
+  const envFile = path.join(projectRoot, ".env");
+  const content = fs.existsSync(envFile) ? fs.readFileSync(envFile, "utf8") : "";
   const match = content.match(/^PORT=(\d+)\s*$/m);
-  return Number(match?.[1] || 3011);
+  return Number(match?.[1] || 3012);
 }
 
 function assertPortAvailable(port) {
@@ -234,6 +237,17 @@ function assertPortAvailable(port) {
     });
     server.listen(port, "127.0.0.1", () => server.close(resolve));
   });
+}
+
+async function isStoryAIAlreadyRunning(port) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/login`, { signal: AbortSignal.timeout(1500) });
+    if (!response.ok) return false;
+    const html = await response.text();
+    return /<title>\s*StoryAI\b/i.test(html);
+  } catch {
+    return false;
+  }
 }
 
 function openBrowser(url) {
@@ -330,7 +344,17 @@ async function main() {
   ensureProductionBuild();
 
   const port = portFromConfig();
-  await assertPortAvailable(port);
+  try {
+    await assertPortAvailable(port);
+  } catch (error) {
+    if (await isStoryAIAlreadyRunning(port)) {
+      const url = `http://localhost:${port}`;
+      log(`StoryAI is already running at ${url}.`);
+      openBrowser(url);
+      return;
+    }
+    throw error;
+  }
   await serve(port);
 }
 

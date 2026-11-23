@@ -4,7 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 const token = process.env.STORYAI_MCP_TOKEN?.trim() || "";
-const configuredBaseUrl = process.env.STORYAI_URL?.trim() || "http://127.0.0.1:3011";
+const configuredBaseUrl = process.env.STORYAI_URL?.trim() || "http://127.0.0.1:3012";
 
 function resolveBaseUrl(value) {
   const url = new URL(value);

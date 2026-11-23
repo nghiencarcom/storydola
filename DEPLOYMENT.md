@@ -16,7 +16,7 @@ cd StoryAI
 npm start
 ```
 
-The first run creates a local `.env` file and encryption key, installs npm dependencies, builds the production app, and opens `http://localhost:3011`. Keep the terminal open while using StoryAI. Press `Ctrl+C` to stop it.
+The first run creates a local `.env` file and encryption key, installs npm dependencies, builds the production app, and opens `http://localhost:3012`. Keep the terminal open while using StoryAI. Press `Ctrl+C` to stop it.
 
 On a clean clone of the `main` branch, `npm start` checks GitHub for updates before starting. Downloaded source ZIPs do not contain Git metadata, so they do not update automatically.
 

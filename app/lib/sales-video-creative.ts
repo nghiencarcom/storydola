@@ -3,7 +3,7 @@ import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promise
 import path from "node:path";
 import { promisify } from "node:util";
 import { createFalClient } from "@fal-ai/client";
-import { generateMaiVideoPixverseV6ReferenceSegment, generateMaiVideoSalesSegment, generateSalesVideoSegment } from "./media-provider";
+import { generateMaiVideoPixverseV6ReferenceSegment, generateMaiVideoSalesSegment, generateSalesVideoSegment, generateSeedanceGatewaySalesSegment } from "./media-provider";
 import { videoDurationOptions } from "./media-generation-settings";
 import type { VideoGenerationModelOption } from "./project-types";
 import { pixverseSalesClient } from "./pixverse-sales-video";
@@ -121,6 +121,7 @@ export async function createCreativeSalesVideo(input: {
   videoOffPeak?: boolean;
   model: "higgsfield" | "pixverse-avatar";
   maiVideoModel?: VideoGenerationModelOption;
+  gatewayVideoModel?: VideoGenerationModelOption;
   pixverseKey?: string;
   voiceKey?: string;
   providerAuthToken: string;
@@ -175,8 +176,9 @@ export async function createCreativeSalesVideo(input: {
       await download((result.data as { audio?: { url?: string } }).audio?.url, soundtrack, signal);
     }
 
-    const durationOptions = input.maiVideoModel ? videoDurationOptions(input.maiVideoModel, input.maiVideoModel.qualities.includes("720p") ? "720p" : input.maiVideoModel.qualities[0]) : [];
-    const modelLimit = input.splitDialogue ? 15 : input.maiVideoModel?.id === "wan-3.0" ? 30 : durationOptions.at(-1) || 15;
+    const activeVideoModel = input.maiVideoModel || input.gatewayVideoModel;
+    const durationOptions = activeVideoModel ? videoDurationOptions(activeVideoModel, activeVideoModel.qualities.includes("720p") ? "720p" : activeVideoModel.qualities[0]) : [];
+    const modelLimit = input.splitDialogue ? 15 : activeVideoModel?.id === "wan-3.0" ? 30 : durationOptions.at(-1) || 15;
     const isPairedImageWorkflow = template.workflow === "poses" || template.workflow === "narration";
     const imagePairCount = isPairedImageWorkflow ? Math.ceil(images.length / 2) : 0;
     const plannedDurations = imagePairCount
@@ -279,6 +281,13 @@ export async function createCreativeSalesVideo(input: {
           durationSec: length, references: referenceImages, model: input.maiVideoModel,
           quality: input.videoQuality, offPeak: input.videoOffPeak,
           signal, audio: template.workflow === "prompt",
+        });
+      } else if (input.gatewayVideoModel) {
+        await generateSeedanceGatewaySalesSegment({
+          userId, prompt: segmentPrompt, outputPath: rendered, aspectRatio: ratio,
+          durationSec: length, references: referenceImages,
+          referenceNames: referenceImages.map((_, index) => `Image${index + 1}`),
+          model: input.gatewayVideoModel, providerAuthToken: input.providerAuthToken, signal,
         });
       } else {
         await generateSalesVideoSegment({

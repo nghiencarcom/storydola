@@ -129,7 +129,7 @@ if ! wait_for_healthy; then
 fi
 
 storyai_port="$(sed -n 's/^STORYAI_PORT=//p' .env | tail -n 1)"
-storyai_port="${storyai_port:-3011}"
+storyai_port="${storyai_port:-3012}"
 storyai_url="http://localhost:${storyai_port}"
 echo "StoryAI is starting at ${storyai_url}"
 

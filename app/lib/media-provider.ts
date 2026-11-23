@@ -25,7 +25,7 @@ import { isFlowStoryOnlyPreset, type StoryPresetId } from "./story-presets";
 import { characterReferencePrompt, locationReferencePrompt, PROFILE_REFERENCE_ASPECT_RATIO } from "./ai-drama-reference-prompts";
 import { normalizeEntityName } from "./entity-name";
 import { normalizeAiDramaSceneDuration } from "./ai-drama-scene-timing";
-import { availableImageModels, defaultMediaGenerationSettings, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, filterPixverseVideoQualities, FLOW_IMAGE_MODEL_OPTIONS, FLOW_VIDEO_MODEL_OPTION, HIGGSFIELD_SEEDANCE_MODEL_ID, isFlowImageModel, isKlingVideoModel, isMaiVideoPixverseV56Model, isMaiVideoSeedanceModel, isMuseImageModel, isPixverseVideoSettings, isVideoOffPeakRequired, MINIMAX_H3_VIDEO_MODEL_ID, MUSE_IMAGE_MODEL_OPTION, normalizeVideoDuration, PIXVERSE_SEEDANCE_2_FAST_MODEL_ID, resolveMediaGenerationSettings, SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES, shouldUseVideoLocationReference, WAN_3_VIDEO_MODEL_ID } from "./media-generation-settings";
+import { availableImageModels, defaultMediaGenerationSettings, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, filterPixverseVideoQualities, FLOW_IMAGE_MODEL_OPTIONS, FLOW_VIDEO_MODEL_OPTION, HIGGSFIELD_SEEDANCE_MODEL_ID, isFlowImageModel, isKlingVideoModel, isMaiVideoPixverseV56Model, isMaiVideoSeedanceModel, isMuseImageModel, isPixverseVideoSettings, isVideoOffPeakRequired, MINIMAX_H3_VIDEO_MODEL_ID, MUSE_IMAGE_MODEL_OPTION, MUSE_VIDEO_MODEL_OPTION, normalizeVideoDuration, PIXVERSE_SEEDANCE_2_FAST_MODEL_ID, resolveMediaGenerationSettings, SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES, shouldUseVideoLocationReference, WAN_3_VIDEO_MODEL_ID } from "./media-generation-settings";
 import { createSeedanceCharacterReferenceUrl, createSeedanceLocationReferenceUrl, createSeedanceSceneReferenceUrl, seedancePublicBaseUrlIssue } from "./seedance-reference-links";
 import { getSeedanceApiKey, getSeedanceApiSessionToken } from "./seedance-accounts";
 import { getMaiVideoApiKey } from "./maivideo-api-keys";
@@ -289,21 +289,7 @@ const SEEDANCE_VIDEO_MODELS: VideoGenerationModelOption[] = [
   },
 ];
 
-const MUSE_VIDEO_MODELS: VideoGenerationModelOption[] = [{
-  id: DEFAULT_MUSE_VIDEO_MODEL_ID,
-  label: "Muse.ai",
-  provider: "muse",
-  qualities: [],
-  aspectRatios: ["9:16", "16:9", "1:1", "4:3", "3:4"],
-  minDurationSec: 5,
-  maxDurationSec: 10,
-  supportedDurationsSec: [5, 10],
-  supportsMultiShot: false,
-  supportsAudio: false,
-  supportsOffPeak: false,
-  maxReferenceImages: SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES,
-  promptMaxLength: 12_000,
-}];
+const MUSE_VIDEO_MODELS: VideoGenerationModelOption[] = [MUSE_VIDEO_MODEL_OPTION];
 
 const FLOW_VIDEO_MODELS: VideoGenerationModelOption[] = [FLOW_VIDEO_MODEL_OPTION];
 
@@ -2888,6 +2874,45 @@ export async function generateMaiVideoSalesSegment(input: {
     videoAudio: input.audio,
     videoOffPeak: input.model.supportsOffPeak ? input.offPeak ?? false : false,
   }, input.userId, undefined, undefined, input.signal, model);
+}
+
+export async function generateSeedanceGatewaySalesSegment(input: {
+  userId: string;
+  prompt: string;
+  outputPath: string;
+  aspectRatio: string;
+  durationSec: number;
+  references: string[];
+  referenceNames: string[];
+  model: VideoGenerationModelOption;
+  providerAuthToken: string;
+  signal: AbortSignal;
+}) {
+  const provider = input.model.provider;
+  if (provider !== "flow" && provider !== "muse") throw new Error("Model Flow/Muse không hợp lệ.");
+  const modelId = provider === "flow" ? DEFAULT_FLOW_VIDEO_MODEL_ID : DEFAULT_MUSE_VIDEO_MODEL_ID;
+  const settings = resolveMediaGenerationSettings({
+    videoProvider: provider,
+    videoModel: modelId,
+    videoQuality: provider === "flow" ? "1080p" : "",
+    videoDurationMode: "fixed",
+    videoDurationSec: input.durationSec,
+    videoAudio: true,
+    flowReferenceMode: "ingredients",
+  });
+  const apiKey = await getSeedanceApiKey(undefined, input.userId);
+  const sessionToken = await getSeedanceApiSessionToken(undefined, input.userId, input.providerAuthToken);
+  if (!sessionToken) throw new Error("PROVIDER_SESSION_REQUIRED");
+  if (provider === "flow") {
+    return generateFlowVideo(
+      input.prompt, input.outputPath, input.aspectRatio, input.references, input.referenceNames,
+      settings, apiKey, undefined, undefined, undefined, input.signal, sessionToken,
+    );
+  }
+  return generateMuseVideo(
+    input.prompt, input.outputPath, input.aspectRatio, input.references, input.referenceNames,
+    settings, apiKey, undefined, undefined, undefined, undefined, input.signal, sessionToken,
+  );
 }
 
 export async function generateMaiVideoPixverseV6ReferenceSegment(input: {

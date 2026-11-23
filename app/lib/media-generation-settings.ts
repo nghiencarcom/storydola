@@ -16,6 +16,22 @@ export const FLOW_IMAGE_MODEL_OPTIONS: ImageGenerationModelOption[] = [
 export const DEFAULT_SEEDANCE_VIDEO_MODEL_ID = "seedance-2.5";
 export const DEFAULT_MUSE_VIDEO_MODEL_ID = "muse-video";
 export const DEFAULT_FLOW_VIDEO_MODEL_ID = "flow-omni-1.1-flash";
+export const SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES = 30;
+export const MUSE_VIDEO_MODEL_OPTION: VideoGenerationModelOption = {
+  id: DEFAULT_MUSE_VIDEO_MODEL_ID,
+  label: "Muse.ai",
+  provider: "muse",
+  qualities: [],
+  aspectRatios: ["9:16", "16:9", "1:1", "4:3", "3:4"],
+  minDurationSec: 5,
+  maxDurationSec: 10,
+  supportedDurationsSec: [5, 10],
+  supportsMultiShot: false,
+  supportsAudio: true,
+  supportsOffPeak: false,
+  maxReferenceImages: SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES,
+  promptMaxLength: 12_000,
+};
 export const MINIMAX_H3_VIDEO_MODEL_ID = "minimax-h3";
 export const WAN_3_VIDEO_MODEL_ID = "wan-3.0";
 export const FLOW_VIDEO_MODEL_OPTION: VideoGenerationModelOption = {
@@ -28,15 +44,15 @@ export const FLOW_VIDEO_MODEL_OPTION: VideoGenerationModelOption = {
   maxDurationSec: 10,
   supportedDurationsSec: [6, 8, 10],
   supportsMultiShot: false,
-  supportsAudio: false,
+  supportsAudio: true,
   supportsOffPeak: false,
   maxReferenceImages: 10,
   promptMaxLength: 12_000,
 };
+export const SALES_VIDEO_GATEWAY_VIDEO_MODEL_OPTIONS: VideoGenerationModelOption[] = [MUSE_VIDEO_MODEL_OPTION, FLOW_VIDEO_MODEL_OPTION];
 export const KLING_VIDEO_MODEL_ID = "kling-4.0";
 export const PIXVERSE_SEEDANCE_2_FAST_MODEL_ID = "seedance-2.0-fast";
 export const HIGGSFIELD_SEEDANCE_MODEL_ID = "higgsfield-seedance-2.0";
-export const SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES = 30;
 
 const DIRECT_SEEDANCE_VIDEO_MODEL_IDS = new Set(["seedance-2.0", "seedance-2.5"]);
 

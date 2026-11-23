@@ -240,6 +240,30 @@ export function salesVideoSupportsDialogue(model?: VideoGenerationModelOption) {
 }
 
 export function salesVideoProductSegments(seconds: number, model?: VideoGenerationModelOption, requestedQuality?: string) {
+  if (model?.provider === "flow" || model?.provider === "muse") {
+    const supported = (model.supportedDurationsSec || [])
+      .filter((duration) => Number.isInteger(duration) && duration >= model.minDurationSec && duration <= model.maxDurationSec)
+      .sort((left, right) => right - left);
+    const plans = new Map<number, number[] | null>();
+    const findPlan = (remaining: number, slots: number): number[] | undefined => {
+      if (remaining === 0) return [];
+      if (remaining < 0 || slots === 0) return undefined;
+      const key = remaining * 10 + slots;
+      if (plans.has(key)) return plans.get(key) || undefined;
+      for (const duration of supported) {
+        const tail = findPlan(remaining - duration, slots - 1);
+        if (tail) {
+          const result = [duration, ...tail];
+          plans.set(key, result);
+          return result;
+        }
+      }
+      plans.set(key, null);
+      return undefined;
+    };
+    const supportedPlan = findPlan(seconds, 6);
+    if (supportedPlan) return supportedPlan;
+  }
   const quality = requestedQuality && model?.qualities.includes(requestedQuality)
     ? requestedQuality
     : model?.qualities.includes("720p") ? "720p" : model?.qualities[0] || "";
@@ -266,7 +290,10 @@ export function salesVideoDurationOptions(
     const candidate = isWan ? [15, 20, 25, 30, 45, 60] : [...salesVideoDurations];
     // Long videos are stitched from separate prompts. Keep the number of
     // clips within the six-segment limit used by the draft and generation APIs.
-    return candidate.filter((duration) => Math.ceil(duration / clipMax) <= 6);
+    return candidate.filter((duration) => Math.ceil(duration / clipMax) <= 6
+      && (model?.provider !== "flow" && model?.provider !== "muse"
+        || salesVideoProductSegments(duration, model, requestedQuality).reduce((sum, segment) => sum + segment, 0) === duration
+          && salesVideoProductSegments(duration, model, requestedQuality).every((segment) => model.supportedDurationsSec?.includes(segment))));
   }
   const isComposedImageWorkflow = template?.workflow === "poses" || template?.workflow === "narration";
   const photoPairs = isComposedImageWorkflow
@@ -317,6 +344,22 @@ export function salesVideoMaiVideoModels(models: VideoGenerationModelOption[], t
       && model.maxDurationSec >= 5 && (!model.supportedDurationsSec?.length || model.supportedDurationsSec.includes(5))))
     && (salesVideoSupportsDialogue(model) || (template && template.workflow !== "prompt"))
     && model.maxDurationSec >= 5);
+}
+
+export function salesVideoGatewayVideoModels(
+  models: VideoGenerationModelOption[],
+  template?: CreativeTemplate,
+  ratio?: string,
+  productTemplate = false,
+) {
+  if (template && !["prompt", "poses", "narration"].includes(template.workflow)) return [];
+  const imageCount = productTemplate
+    ? 2
+    : template ? template.files.filter((file) => file.kind === "image").length : 2;
+  return models.filter((model) => (model.provider === "flow" || model.provider === "muse")
+    && (model.maxReferenceImages || 0) >= imageCount
+    && (!ratio || !model.aspectRatios?.length || model.aspectRatios.includes(ratio))
+    && salesVideoDurationOptions(model, template, productTemplate, model.id).length > 0);
 }
 
 export function salesVideoProductReferenceLock(productImageCount = 1) {

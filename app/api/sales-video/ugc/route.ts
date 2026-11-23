@@ -12,11 +12,12 @@ import { getMaiVideoApiKey } from "../../../lib/maivideo-api-keys";
 import { getMaiVideoModelCatalog } from "../../../lib/media-provider";
 import type { VideoGenerationModelOption } from "../../../lib/project-types";
 import { readMaiVideoAuthCookie } from "../../../lib/maivideo-auth-shared";
+import { getSeedanceApiKey, getSeedanceApiSessionToken } from "../../../lib/seedance-accounts";
 import { enqueueSalesUgcDraftTask, salesVideoWorkerId } from "../../../lib/sales-video-runtime";
 import { listSalesVideoProjects, salesVideoOwnerDirectory, salesVideoReferencePath, saveSalesVideoProject, type SalesVideoProject } from "../../../lib/sales-video-storage";
 import {
   salesVideoDurationOptions, salesVideoImageLimit, salesVideoLanguages, salesVideoModelOptions,
-  salesVideoMaiVideoModels, salesVideoProductInstructionForImages, salesVideoProductReferenceLock, salesVideoRatios, salesVideoSupportsDialogue, salesVideoTemplates,
+  salesVideoMaiVideoModels, salesVideoGatewayVideoModels, salesVideoProductInstructionForImages, salesVideoProductReferenceLock, salesVideoRatios, salesVideoSupportsDialogue, salesVideoTemplates,
   salesVideoWordCount, salesVideoMaxWordCount, salesVideoContentStyles, salesVideoClaimCategories, salesVideoDialogueToSrt, salesVideoSplitDialogue,
   salesVideoContentStyleGuidance, salesVideoContentFramework, salesVideoClaimGuidance, salesVideoMaxProductImages, salesVideoProductSegments,
   salesVideoProductScriptInstruction, salesVideoScriptStyleGuidance,
@@ -50,6 +51,58 @@ let salesVideoUgcGuidePromise: Promise<string> | undefined;
 function loadSalesVideoUgcGuide() {
   salesVideoUgcGuidePromise ??= readFile(salesVideoUgcGuidePath, "utf8").then((guide) => guide.trim());
   return salesVideoUgcGuidePromise;
+}
+
+function salesVideoUgcGuideAsPlainText(markdown: string) {
+  const source = markdown.replace(/^---\s*\r?\n[\s\S]*?\r?\n---\s*(?:\r?\n)?/, "");
+  const output: string[] = [];
+  let insideCodeFence = false;
+  let codeFenceLines: string[] = [];
+
+  for (const rawLine of source.split(/\r?\n/)) {
+    if (/^\s*```/.test(rawLine)) {
+      if (insideCodeFence) {
+        const example = codeFenceLines.join("\n");
+        if (/[\"']product[\"']\s*:/.test(example) && /[\"']facts[\"']\s*:/.test(example)
+          && /[\"']segments[\"']\s*:/.test(example) && /[\"']script[\"']\s*:/.test(example)) {
+          output.push("Cấu trúc đầu ra gồm product là tên sản phẩm; facts là dữ kiện đã xác minh; segments là danh sách clip, mỗi clip có start, duration và prompt; script là lời thoại.");
+        }
+        codeFenceLines = [];
+        insideCodeFence = false;
+      } else {
+        insideCodeFence = true;
+      }
+      continue;
+    }
+    if (insideCodeFence) {
+      codeFenceLines.push(rawLine);
+      continue;
+    }
+
+    const line = rawLine
+      .replace(/^\s{0,3}#{1,6}\s+/, "")
+      .replace(/^\s*>\s?/, "")
+      .replace(/^\s*[-+*]\s+/, "• ")
+      .replace(/^\s*(\d+)[.)]\s+/, "$1. ")
+      .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/\*\*(.*?)\*\*/g, "$1")
+      .replace(/__(.*?)__/g, "$1")
+      .replace(/(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)/g, "$1")
+      .replace(/(?<!_)_(?!\s)(.+?)(?<!\s)_(?!_)/g, "$1")
+      .replace(/~~(.*?)~~/g, "$1")
+      .replace(/`+/g, "")
+      .replace(/\[\*\]/g, "từng clip")
+      .trim();
+
+    if (!line || /^\s*(?:-{3,}|_{3,}|\*{3,})\s*$/.test(line)) {
+      if (output.at(-1) !== "") output.push("");
+      continue;
+    }
+    output.push(line);
+  }
+
+  return output.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function text(form: FormData, key: string) {
@@ -323,6 +376,7 @@ export async function POST(request: Request) {
 
   const modelOptions = salesVideoModelOptions();
   let maiVideoModel: VideoGenerationModelOption | undefined;
+  let gatewayVideoModel: VideoGenerationModelOption | undefined;
   if (requestedModel.startsWith("maivideo:")) {
     if (!await getMaiVideoApiKey(userId).catch(() => "")) {
       return NextResponse.json({ message: "Thêm khóa MaiVideo trong Cài đặt để dùng model này." }, { status: 503 });
@@ -331,27 +385,39 @@ export async function POST(request: Request) {
     maiVideoModel = catalog ? salesVideoMaiVideoModels(catalog.videoModels, undefined, ratio)
       .find(({ id }) => `maivideo:${id}` === requestedModel) : undefined;
   }
-  const model = maiVideoModel ? "higgsfield" : modelOptions.find((item) => item === requestedModel);
-  if (!model) return NextResponse.json({ message: "Model đã chọn không hỗ trợ ảnh tham chiếu hoặc tỷ lệ này." }, { status: 400 });
-  const maxReferenceImages = maiVideoModel?.maxReferenceImages || (model === "higgsfield" ? 9 : 7);
-  if (productBytes.length + 1 > maxReferenceImages) {
-    return NextResponse.json({ message: `Model ${maiVideoModel?.label || requestedModel} nhận tối đa ${maxReferenceImages} ảnh tham chiếu, gồm ảnh nhân vật. Hãy giảm ảnh sản phẩm.` }, { status: 400 });
+  if (requestedModel.startsWith("flow:") || requestedModel.startsWith("muse:")) {
+    const [provider, modelId] = requestedModel.split(":", 2);
+    const apiKey = await getSeedanceApiKey(undefined, userId).catch(() => "");
+    const sessionToken = await getSeedanceApiSessionToken(undefined, userId, authToken).catch(() => "");
+    if (!apiKey || !sessionToken) return NextResponse.json({ message: "Cấu hình tài khoản Flow/Muse trong Cài đặt để dùng model này." }, { status: 503 });
+    const catalog = await getMaiVideoModelCatalog(userId).catch(() => null);
+    gatewayVideoModel = catalog
+      ? salesVideoGatewayVideoModels(catalog.videoModels, undefined, ratio, true)
+        .find((item) => item.provider === provider && item.id === modelId)
+      : undefined;
   }
-  const higgsfieldSpeed = !maiVideoModel && model === "higgsfield" ? "fast" as const : undefined;
-  const videoQuality = higgsfieldSpeed ? "720p" : maiVideoModel?.qualities.includes("720p") ? "720p" : maiVideoModel?.qualities[0] || "";
+  const model = maiVideoModel || gatewayVideoModel ? "higgsfield" : modelOptions.find((item) => item === requestedModel);
+  if (!model) return NextResponse.json({ message: "Model đã chọn không hỗ trợ ảnh tham chiếu hoặc tỷ lệ này." }, { status: 400 });
+  const selectedVideoModel = maiVideoModel || gatewayVideoModel;
+  const maxReferenceImages = selectedVideoModel?.maxReferenceImages || (model === "higgsfield" ? 9 : 7);
+  if (productBytes.length + 1 > maxReferenceImages) {
+    return NextResponse.json({ message: `Model ${selectedVideoModel?.label || requestedModel} nhận tối đa ${maxReferenceImages} ảnh tham chiếu, gồm ảnh nhân vật. Hãy giảm ảnh sản phẩm.` }, { status: 400 });
+  }
+  const higgsfieldSpeed = !selectedVideoModel && model === "higgsfield" ? "fast" as const : undefined;
+  const videoQuality = higgsfieldSpeed ? "720p" : selectedVideoModel?.qualities.includes("720p") ? "720p" : selectedVideoModel?.qualities[0] || "";
   const videoOffPeak = Boolean(maiVideoModel && isVideoOffPeakRequired(maiVideoModel.id, maiVideoModel.label));
-  const durationOptions = salesVideoDurationOptions(maiVideoModel, undefined, true, maiVideoModel?.id || requestedModel, videoQuality);
+  const durationOptions = salesVideoDurationOptions(selectedVideoModel, undefined, true, selectedVideoModel?.id || requestedModel, videoQuality);
   if (!durationOptions.includes(seconds)) return NextResponse.json({ message: "Thời lượng không được model đã chọn hỗ trợ." }, { status: 400 });
-  const segmentDurations = salesVideoProductSegments(seconds, maiVideoModel, videoQuality);
+  const segmentDurations = salesVideoProductSegments(seconds, selectedVideoModel, videoQuality);
   if (!segmentDurations.length || segmentDurations.some((duration) => duration > 15)) {
     return NextResponse.json({ message: "Không thể chia thời lượng thành các prompt tối đa 15 giây cho model đã chọn." }, { status: 400 });
   }
-  const audio = salesVideoSupportsDialogue(maiVideoModel);
+  const audio = salesVideoSupportsDialogue(selectedVideoModel);
   const maxScriptWords = salesVideoMaxWordCount(seconds, language);
   const speechBudgetInstruction = maxScriptWords === null
     ? "Không áp giới hạn tổng từ/giây cho lời thoại tiếng Việt; ưu tiên câu ngắn, tự nhiên và phân chia theo nhịp các clip."
     : `Lời thoại không vượt ${maxScriptWords} từ tổng cho ${seconds} giây; mỗi clip tuân theo giới hạn từ được StoryAI tính.`;
-  const promptMaxLength = maiVideoModel?.promptMaxLength || 10_000;
+  const promptMaxLength = selectedVideoModel?.promptMaxLength || 10_000;
   let manualDraft: z.infer<typeof draftSchema> | undefined;
   if (manualDraftJson) {
     let parsedManual: z.infer<typeof manualDraftSchema>;
@@ -417,7 +483,7 @@ export async function POST(request: Request) {
     ...productBytes.map((bytes, index) => writeFile(salesVideoReferencePath(userId, id, "product", index), bytes, { mode: 0o600 })),
   ]);
   const project: SalesVideoProject = {
-    id, title, template: template.name, model: [maiVideoModel?.label || requestedModel || "Model đã chọn", videoQuality, higgsfieldSpeed ? "Fast" : ""].filter(Boolean).join(" · "),
+    id, title, template: template.name, model: [selectedVideoModel?.label || requestedModel || "Model đã chọn", videoQuality, higgsfieldSpeed ? "Fast" : ""].filter(Boolean).join(" · "),
     createdAt: new Date().toISOString(), status: manualDraft ? "draft" : "processing", phase: manualDraft ? "review" : "writing", worker: manualDraft ? undefined : salesVideoWorkerId,
     details: {
       templateId: template.id, product, productUrl: url, facts, userExperience,
@@ -554,4 +620,26 @@ export async function POST(request: Request) {
     });
   });
   return NextResponse.json({ project: projectToSave }, { status: 202 });
+}
+
+export async function GET(request: Request) {
+  const userId = request.headers.get("x-storyai-user-id")?.trim();
+  const cookie = request.headers.get("cookie") || "";
+  const authToken = readMaiVideoAuthCookie(cookie);
+  if (!userId || !authToken) return NextResponse.json({ message: "Vui lòng đăng nhập MaiVideo." }, { status: 401 });
+
+  try {
+    const content = await loadSalesVideoUgcGuide();
+    return NextResponse.json(
+      {
+        sourceFileName: "prompts/sales-video-ugc-code-agent-guide.md",
+        format: "text/plain",
+        content: salesVideoUgcGuideAsPlainText(content),
+      },
+      { headers: { "Cache-Control": "private, no-store" } },
+    );
+  } catch (error) {
+    console.error("Failed to load sales video UGC guide:", error);
+    return NextResponse.json({ message: "Không đọc được file hướng dẫn UGC." }, { status: 500 });
+  }
 }

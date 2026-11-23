@@ -1,6 +1,6 @@
 # Chạy StoryAI trên macOS và Windows bằng npm
 
-StoryAI chạy trực tiếp trên máy và mở giao diện trong trình duyệt tại `http://localhost:3011`. Chỉ cần Node.js và chạy `npm start` trong Terminal hoặc PowerShell; không cần Docker.
+StoryAI chạy trực tiếp trên máy và mở giao diện trong trình duyệt tại `http://localhost:3012`. Chỉ cần Node.js và chạy `npm start` trong Terminal hoặc PowerShell; không cần Docker.
 
 ## Yêu cầu
 
