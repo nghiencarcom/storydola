@@ -12,6 +12,7 @@ type PersistedTimelapse = { workflowId: string; images: TimelapseImage[]; prompt
 
 const STORAGE_KEY = "storyai.timelapse.v1";
 const DURATIONS = [6, 8, 10];
+const AUDIO_DESIGN_GUIDANCE = "AUDIO AND SFX: Make the sound design depend on this transition's video prompt and reference images. Follow any explicit sound or silence directions in the prompt; otherwise, add only natural ambience and restrained sound effects that fit the setting and visible actions, synchronized to their visible causes. Do not force construction sounds into scenes without construction activity, or add unrelated sounds, dialogue, narration, or music unless requested by the prompt.";
 
 function newId() {
   return globalThis.crypto?.randomUUID?.().replace(/-/g, "") || `tl_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
@@ -23,7 +24,7 @@ function samplePrompts(pairCount: number) {
     const to = `Now ${index + 1}`;
     return {
       name: `Transition ${index + 1} · ${from} to ${to}`,
-      video_prompt: "Create one continuous photorealistic timelapse transition. Use the first reference image as the exact opening frame and the second reference image as the exact final frame. Show a gradual, physically plausible progression from the visible starting state to the visible ending state. Animate only changes supported by the two references; do not add new structures, objects, people, damage, or environmental changes that are absent from the ending frame. Keep the camera locked in the same position, lens, framing, perspective, and horizon. Preserve the site's layout, identity, and lighting continuity. Show workers and tools only where appropriate to the visible work, moving with believable cause and effect; avoid duplicated people, flicker, warping, floating objects, sudden jumps, and morphing. End with a stable frame that matches the second reference image as closely as possible."
+      video_prompt: `Create one continuous photorealistic timelapse transition. Use the first reference image as the exact opening frame and the second reference image as the exact final frame. Show a gradual, physically plausible progression from the visible starting state to the visible ending state. Animate only changes supported by the two references; do not add new structures, objects, people, damage, or environmental changes that are absent from the ending frame. Keep the camera locked in the same position, lens, framing, perspective, and horizon. Preserve the site's layout, identity, and lighting continuity. Show workers and tools only where appropriate to the visible work, moving with believable cause and effect; avoid duplicated people, flicker, warping, floating objects, sudden jumps, and morphing. ${AUDIO_DESIGN_GUIDANCE} End with a stable frame that matches the second reference image as closely as possible.`
     };
   });
   return JSON.stringify({
@@ -40,6 +41,22 @@ function parsePromptDocument(source: string) {
     return { document: { ...parsed, scenes }, error: "" };
   } catch {
     return { document: null, error: "JSON chưa hợp lệ. Kiểm tra dấu ngoặc kép, dấu phẩy và ngoặc nhọn." };
+  }
+}
+
+function addAudioGuidanceToSavedPrompts(source: string) {
+  try {
+    const document = JSON.parse(source) as PromptDocument;
+    if (!Array.isArray(document.scenes)) return source;
+    let changed = false;
+    const scenes = document.scenes.map((scene) => {
+      if (!scene || typeof scene.video_prompt !== "string" || !scene.video_prompt.trim() || /AUDIO AND SFX:/i.test(scene.video_prompt)) return scene;
+      changed = true;
+      return { ...scene, video_prompt: `${scene.video_prompt.trim()}\n\n${AUDIO_DESIGN_GUIDANCE}` };
+    });
+    return changed ? JSON.stringify({ ...document, scenes }, null, 2) : source;
+  } catch {
+    return source;
   }
 }
 
@@ -89,7 +106,7 @@ export function TimelapseView() {
           if (typeof saved.workflowId === "string" && Array.isArray(saved.images)) {
             setWorkflowId(saved.workflowId);
             setImages(saved.images.filter((image): image is TimelapseImage => Boolean(image?.id && image?.url)));
-            if (typeof saved.promptsJson === "string") setPromptsJson(saved.promptsJson);
+            if (typeof saved.promptsJson === "string") setPromptsJson(addAudioGuidanceToSavedPrompts(saved.promptsJson));
             if (DURATIONS.includes(Number(saved.durationSec))) setDurationSec(Number(saved.durationSec));
             if (saved.videos && typeof saved.videos === "object") {
               setVideos(Object.fromEntries(Object.entries(saved.videos).map(([id, video]) => [id, video?.status === "generating" ? { status: "failed", error: "Tab đã được tải lại khi Flow đang tạo. Hãy thử tạo lại transition này." } : video])) as Record<string, VideoState>);
