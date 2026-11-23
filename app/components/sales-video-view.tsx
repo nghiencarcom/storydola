@@ -19,6 +19,11 @@ import { Icon } from "./ui-icon";
 
 type Access = { maiVideo: boolean; pixverse: boolean; voice: boolean; draftKey: string; codingAgent: { id: string; label: string; model: string; saved: boolean } | null };
 type SalesVideoLibraryImage = { id: string; name: string; fileName: string; previewUrl: string; source: string };
+type ManualUgcPromptSegment = { start: number; duration: number; prompt: string };
+type ManualUgcJobData = {
+  segments: ManualUgcPromptSegment[];
+  script: string;
+};
 const labels = { processing: "Đang xử lý", draft: "Chờ bạn duyệt", ready: "Hoàn tất", failed: "Thất bại" };
 function projectStatusLabel(project: SalesVideoProject) {
   if (project.status !== "processing") return labels[project.status];
@@ -856,6 +861,12 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
   const [draftWarning, setDraftWarning] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [copyStatus, setCopyStatus] = useState("");
+  const [manualImportOpen, setManualImportOpen] = useState(false);
+  const [manualImportText, setManualImportText] = useState("");
+  const [manualImportError, setManualImportError] = useState("");
+  const [manualImportStatus, setManualImportStatus] = useState("");
+  const [manualUgcJob, setManualUgcJob] = useState<ManualUgcJobData | null>(null);
 
   const overlyLongSentences = useMemo(() => {
     if (!/(vietnam|việt)/i.test(language) || !script.trim()) return [];
@@ -877,6 +888,151 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
       setFacts("Chất liệu cao cấp đã kiểm định, dung tích tiêu chuẩn, bảo hành chính hãng.");
     }
     setMessage("");
+  }
+
+  async function copyManualJobData() {
+    const targetAudienceLabel = salesVideoTargetAudiences.find(({ id }) => id === targetAudience)?.label || targetAudience;
+    const hookStyleLabel = salesVideoHookStyles.find(({ id }) => id === hookStyle)?.label || hookStyle;
+    const contentStyleLabel = salesVideoContentStyles.find(({ id }) => id === contentStyle)?.label || contentStyle;
+    const segmentPlan = salesVideoProductSegments(selectedDuration, model?.modelMeta, videoQuality);
+    const payload = {
+      schema: "storyai.manual-ugc-job.v1",
+      template: { id: templateId, name: selectedTemplate?.name || "Video review" },
+      product: {
+        name: product.trim(),
+        url: productUrl.trim(),
+        verifiedFacts: facts.trim(),
+        userExperience: userExperience.trim(),
+        customerProblem: painPoint.trim(),
+        keyBenefit: heroBenefit.trim(),
+        consideration: minorFlaw.trim(),
+      },
+      creative: {
+        contentStyle: { id: contentStyle, label: contentStyleLabel },
+        claimCategory,
+        targetAudience: targetAudienceLabel,
+        openingHook: hookStyleLabel,
+        script: script.trim(),
+        extraInstructions: editableProductPrompt,
+      },
+      video: {
+        modelId: model?.id || selectedModel,
+        model: model?.label || "",
+        durationSeconds: selectedDuration,
+        aspectRatio: ratio,
+        dialogueLanguage: language,
+        audio: supportsAudio,
+        quality: videoQuality,
+        segments: segmentPlan.map((segmentDuration, index) => ({
+          start: segmentPlan.slice(0, index).reduce((sum, value) => sum + value, 0),
+          duration: segmentDuration,
+          prompt: "",
+        })),
+      },
+      attachments: {
+        presenter: files.presenter?.name || null,
+        mainProductImage: mainProductImage?.name || null,
+        additionalProductImages: additionalProductImageFiles.map((file) => file.name),
+        note: "Clipboard chỉ chứa dữ liệu và tên tệp; hãy tải các ảnh tham chiếu lên riêng khi tạo job thủ công.",
+      },
+      manualInstructions: [
+        "NHIỆM VỤ: Soạn nội dung cho job video review UGC dựa trên JSON này.",
+        "GIỮ NGUYÊN: schema, template, toàn bộ product, creative.contentStyle, creative.claimCategory, video.modelId, video.durationSeconds, video.aspectRatio, video.dialogueLanguage, video.quality và attachments.",
+        "CHỈ ĐƯỢC ĐIỀN: video.segments[*].prompt và creative.script. Không thêm, xóa, sắp xếp lại clip hoặc thay start/duration đã cho.",
+        "Viết prompt hình ảnh từng clip bằng tiếng Anh; viết creative.script bằng video.dialogueLanguage. Mỗi prompt phải độc lập và bám đúng sản phẩm, kiểu nội dung, đối tượng, kiểu mở đầu và thời lượng clip.",
+        "Chỉ dùng thông tin trong product.verifiedFacts và product.userExperience; không bịa thông số, công dụng, giá, ưu đãi, chứng nhận hoặc trải nghiệm sử dụng.",
+        "Trả về toàn bộ JSON hợp lệ, không Markdown, không code fence, không giải thích. Ảnh tham chiếu được tải lên riêng trong StoryAI.",
+      ].join("\n"),
+    };
+
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+      setMessage("");
+      setCopyStatus("Đã sao chép JSON job kèm hướng dẫn cho AI. Ảnh tham chiếu tải lên riêng.");
+    } catch {
+      setCopyStatus("");
+      setMessage("Không thể sao chép vào clipboard. Hãy kiểm tra quyền clipboard của trình duyệt.");
+    }
+  }
+
+  function importManualJobData() {
+    setManualImportError("");
+    setManualImportStatus("");
+    let imported: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(manualImportText);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Dán một đối tượng JSON hợp lệ.");
+      imported = parsed as Record<string, unknown>;
+    } catch (error) {
+      setManualImportError(error instanceof Error ? error.message : "JSON không hợp lệ.");
+      return;
+    }
+    if (imported.schema !== "storyai.manual-ugc-job.v1") {
+      setManualImportError("Không nhận diện được định dạng. Hãy dùng JSON từ nút “Sao chép dữ liệu job”.");
+      return;
+    }
+    const importedTemplate = imported.template && typeof imported.template === "object" ? imported.template as Record<string, unknown> : {};
+    if (typeof importedTemplate.id === "string" && importedTemplate.id !== templateId) {
+      setManualImportError("JSON thuộc mẫu nội dung khác. Hãy mở đúng mẫu rồi nhập lại.");
+      return;
+    }
+    const importedProduct = imported.product && typeof imported.product === "object" ? imported.product as Record<string, unknown> : {};
+    const importedCreative = imported.creative && typeof imported.creative === "object" ? imported.creative as Record<string, unknown> : {};
+    const importedVideo = imported.video && typeof imported.video === "object" ? imported.video as Record<string, unknown> : {};
+    const getString = (source: Record<string, unknown>, key: string) => typeof source[key] === "string" ? source[key] as string : undefined;
+    if (getString(importedProduct, "name") !== undefined) setProduct(getString(importedProduct, "name")!);
+    if (getString(importedProduct, "url") !== undefined) setProductUrl(getString(importedProduct, "url")!);
+    if (getString(importedProduct, "verifiedFacts") !== undefined) setFacts(getString(importedProduct, "verifiedFacts")!);
+    if (getString(importedProduct, "userExperience") !== undefined) setUserExperience(getString(importedProduct, "userExperience")!);
+    if (getString(importedProduct, "customerProblem") !== undefined) setPainPoint(getString(importedProduct, "customerProblem")!);
+    if (getString(importedProduct, "keyBenefit") !== undefined) setHeroBenefit(getString(importedProduct, "keyBenefit")!);
+    if (getString(importedProduct, "consideration") !== undefined) setMinorFlaw(getString(importedProduct, "consideration")!);
+    if (getString(importedCreative, "script") !== undefined) setScript(getString(importedCreative, "script")!);
+    if (getString(importedCreative, "extraInstructions") !== undefined) {
+      setProductPromptOverride(getString(importedCreative, "extraInstructions")!);
+      setProductPromptEdited(Boolean(getString(importedCreative, "extraInstructions")));
+    }
+    const importedContentStyle = importedCreative.contentStyle && typeof importedCreative.contentStyle === "object"
+      ? importedCreative.contentStyle as Record<string, unknown> : {};
+    const contentStyleId = getString(importedContentStyle, "id");
+    if (contentStyleId && salesVideoContentStyles.some((style) => style.id === contentStyleId)) setContentStyle(contentStyleId);
+    const importedClaimCategory = getString(importedCreative, "claimCategory");
+    if (importedClaimCategory && salesVideoClaimCategories.some((category) => category.id === importedClaimCategory)) setClaimCategory(importedClaimCategory);
+    const audience = getString(importedCreative, "targetAudience");
+    const audienceOption = salesVideoTargetAudiences.find((item) => item.id === audience || item.label === audience);
+    if (audienceOption) setTargetAudience(audienceOption.id);
+    const hook = getString(importedCreative, "openingHook");
+    const hookOption = salesVideoHookStyles.find((item) => item.id === hook || item.label === hook);
+    if (hookOption) setHookStyle(hookOption.id);
+    const modelId = getString(importedVideo, "modelId");
+    if (modelId) setModel(modelId);
+    const importedRatio = getString(importedVideo, "aspectRatio");
+    if (importedRatio && salesVideoRatios.includes(importedRatio as typeof salesVideoRatios[number])) setRatio(importedRatio);
+    const importedLanguage = getString(importedVideo, "dialogueLanguage");
+    if (importedLanguage && salesVideoLanguages.includes(importedLanguage as typeof salesVideoLanguages[number])) setLanguage(importedLanguage);
+    if (typeof importedVideo.durationSeconds === "number") setDuration(importedVideo.durationSeconds);
+
+    const videoSegments = Array.isArray(importedVideo.segments) ? importedVideo.segments : [];
+    const importedSegments = videoSegments.some((item) => item && typeof item === "object" && typeof (item as Record<string, unknown>).prompt === "string" && Boolean((item as Record<string, unknown>).prompt))
+      ? videoSegments
+      : Array.isArray(imported.segments) ? imported.segments : Array.isArray(imported.promptSegments) ? imported.promptSegments : videoSegments;
+    const parsedSegments = importedSegments.flatMap((item): ManualUgcPromptSegment[] => {
+      if (!item || typeof item !== "object") return [];
+      const segment = item as Record<string, unknown>;
+      return Number.isInteger(segment.start) && Number.isInteger(segment.duration) && typeof segment.prompt === "string" && segment.prompt.trim()
+        ? [{ start: segment.start as number, duration: segment.duration as number, prompt: segment.prompt.trim() }]
+        : [];
+    });
+    const importedScript = getString(imported, "script") ?? getString(importedCreative, "script") ?? "";
+    setScript(importedScript);
+    setManualUgcJob(parsedSegments.length ? { segments: parsedSegments, script: importedScript } : null);
+    setMessage("");
+    setCopyStatus("");
+    setManualImportStatus(parsedSegments.length
+      ? "Đã nhập dữ liệu và prompt clip. Ảnh tham chiếu cần tải lên riêng."
+      : "Đã nhập thông tin. Để tạo job không cần CLI, hãy bổ sung prompt trong từng video.segments rồi nhập JSON lại.");
+    setManualImportOpen(false);
   }
 
   useEffect(() => {
@@ -1123,6 +1279,10 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
   const videoOffPeak = offPeakRequired;
   const durationOptions = salesVideoDurationOptions(model?.modelMeta, creative, Boolean(selectedTemplate), model?.modelMeta?.id || model?.id || "", videoQuality);
   const selectedDuration = durationOptions.includes(duration) ? duration : durationOptions.at(-1) ?? 15;
+  const manualSegmentDurations = salesVideoProductSegments(selectedDuration, model?.modelMeta, videoQuality);
+  const manualPromptsReady = Boolean(manualUgcJob && manualUgcJob.segments.length === manualSegmentDurations.length
+    && manualUgcJob.segments.every((segment, index) => segment.start === manualSegmentDurations.slice(0, index).reduce((sum, value) => sum + value, 0)
+      && segment.duration === manualSegmentDurations[index] && Boolean(segment.prompt.trim())));
   const supportsAudio = salesVideoSupportsDialogue(model?.modelMeta);
   const maxProductImages = Math.min(salesVideoMaxProductImages, Math.max(0, (model?.modelMeta?.maxReferenceImages || 7) - 1));
   const mainProductImage = files[salesVideoProductImageFieldNames[0]];
@@ -1141,7 +1301,7 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
   const requiredPromptReady = !creative?.text || Boolean(creative.defaultText) || Boolean(prompt.trim());
   const canSubmit = Boolean(draftReady && !libraryOpen && !libraryActionBusy && requiredFilesReady && (creative || product.trim()) && requiredPromptReady
     && model?.available && durationOptions.length && !scriptTooLong
-    && (!selectedTemplate || Boolean(access?.codingAgent)) && (creative?.workflow !== "narration" || access?.voice)
+    && (!selectedTemplate || Boolean(access?.codingAgent) || manualPromptsReady) && (creative?.workflow !== "narration" || access?.voice)
     && (!selectedTemplate || !productImagesExceedModelLimit));
   const example = salesVideoTextExamples[templateId];
 
@@ -1156,7 +1316,7 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
     if (selectedTemplate) {
       form.set("product", product.trim());
       form.set("productFacts", facts.trim());
-      form.set("userExperience", "");
+      form.set("userExperience", userExperience.trim());
       form.set("painPoint", painPoint.trim());
       form.set("heroBenefit", heroBenefit.trim());
       form.set("minorFlaw", minorFlaw.trim());
@@ -1167,6 +1327,9 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
       form.set("contentStyle", contentStyle);
       form.set("claimCategory", selectedTemplate.id === "supplements" ? "health" : claimCategory);
       form.set("prompt", "");
+      if (manualPromptsReady && manualUgcJob) {
+        form.set("manualDraft", JSON.stringify({ segments: manualUgcJob.segments, script: manualUgcJob.script || script }));
+      }
     }
     let totalFileBytes = 0;
     if (selectedTemplate) {
@@ -1328,14 +1491,35 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
               </details>
             </>}
             <div className="sales-form-step full"><span>{selectedTemplate ? "03" : "02"}</span><div><strong>Model và định dạng video</strong></div></div>
-            <label className={`form-field${creative?.workflow === "remake" ? "" : " full"}`}>
-              <span>Model tạo video <em>Bắt buộc</em></span>
-              <select name="model" value={model?.id || ""} onChange={(event) => {
-                setModel(event.target.value);
-              }}>
-                {options.map((item) => <option value={item.id} key={item.id} disabled={!item.available}>{item.label}{item.available ? "" : " (chưa cấu hình)"}</option>)}
-              </select>
-            </label>
+            <div className={`sales-video-model-fields full${selectedTemplate ? " is-ugc" : ""}`}>
+              <label className={`form-field${!selectedTemplate && creative?.workflow !== "remake" ? " full" : ""}`}>
+                <span>Model tạo video <em>Bắt buộc</em></span>
+                <select name="model" value={model?.id || ""} onChange={(event) => {
+                  setModel(event.target.value);
+                }}>
+                  {options.map((item) => <option value={item.id} key={item.id} disabled={!item.available}>{item.label}{item.available ? "" : " (chưa cấu hình)"}</option>)}
+                </select>
+              </label>
+              {selectedTemplate && <label className="form-field">
+                <span>Ngôn ngữ thoại <em>Bắt buộc</em></span>
+                <select name="language" value={language} onChange={(event) => setLanguage(event.target.value)}>
+                  {salesVideoLanguages.map((lang) => <option key={lang}>{lang}</option>)}
+                </select>
+              </label>}
+              <label className="form-field">
+                <span>Thời lượng video <em>Bắt buộc</em></span>
+                <select name="duration" value={selectedDuration} onChange={(event) => setDuration(Number(event.target.value))} disabled={!durationOptions.length}>
+                  {durationOptions.map((seconds) => <option key={seconds} value={seconds}>{seconds} giây</option>)}
+                </select>
+                {!durationOptions.length && <small role="status">Model này không có thời lượng phù hợp với mẫu đã chọn.</small>}
+              </label>
+              <label className="form-field">
+                <span>Tỷ lệ khung hình <em>Bắt buộc</em></span>
+                <select name="ratio" value={ratio} onChange={(event) => setRatio(event.target.value)}>
+                  {salesVideoRatios.map((ratio) => <option key={ratio} value={ratio}>{ratio} · {ratio === "9:16" ? "Dọc" : "Ngang"}</option>)}
+                </select>
+              </label>
+            </div>
             <input type="hidden" name="quality" value={videoQuality} />
             <input type="hidden" name="videoSpeed" value="fast" />
             <input type="hidden" name="videoOffPeak" value={videoOffPeak ? "true" : "false"} />
@@ -1343,25 +1527,6 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
               <span>Bắt đầu từ (giây)</span>
               <input name="sourceStart" type="number" min="0" max="3600" step="0.1" value={sourceStart} onChange={(event) => setSourceStart(event.target.value)} />
             </label>}
-            {selectedTemplate && <label className="form-field">
-              <span>Ngôn ngữ thoại <em>Bắt buộc</em></span>
-              <select name="language" value={language} onChange={(event) => setLanguage(event.target.value)}>
-                {salesVideoLanguages.map((lang) => <option key={lang}>{lang}</option>)}
-              </select>
-            </label>}
-            <label className="form-field">
-              <span>Thời lượng video <em>Bắt buộc</em></span>
-              <select name="duration" value={selectedDuration} onChange={(event) => setDuration(Number(event.target.value))} disabled={!durationOptions.length}>
-                {durationOptions.map((seconds) => <option key={seconds} value={seconds}>{seconds} giây</option>)}
-              </select>
-              {!durationOptions.length && <small role="status">Model này không có thời lượng phù hợp với mẫu đã chọn.</small>}
-            </label>
-            <label className="form-field">
-              <span>Tỷ lệ khung hình <em>Bắt buộc</em></span>
-              <select name="ratio" value={ratio} onChange={(event) => setRatio(event.target.value)}>
-                {salesVideoRatios.map((ratio) => <option key={ratio} value={ratio}>{ratio} · {ratio === "9:16" ? "Dọc" : "Ngang"}</option>)}
-              </select>
-            </label>
           </div>
         </fieldset>
         {libraryOpen && <div className="sales-media-library-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeMediaLibrary(); }}>
@@ -1403,10 +1568,13 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
             {access && !access.voice && creative?.workflow === "narration" && <p role="status">Máy chủ chưa cấu hình dịch vụ giọng mẫu.</p>}
             {!draftReady && <p className="sales-draft-status" role="status">Đang khôi phục bản nháp…</p>}
             {creative?.text && !requiredPromptReady && <p>Nhập lời thoại để tiếp tục.</p>}
-            {selectedTemplate && access && !access.codingAgent && <p role="alert">Chưa tìm thấy Code Agent CLI. Hãy kết nối CLI và lưu cấu hình trong <a href="/settings#agent-cli-connection">Cài đặt Code Agent</a>.</p>}
+            {selectedTemplate && access && !access.codingAgent && !manualPromptsReady && <p role="alert">Chưa tìm thấy Code Agent CLI. Dùng “Nhập JSON job” với prompt clip đã soạn để tạo thủ công.</p>}
             {draftWarning && <p className="sales-script-warning" role="alert">{draftWarning}</p>}
             {busy && <p role="status">Đang tải tệp và lưu dự án…</p>}
-            {queuedProject && <p role="status">Đã lưu job nháp. <a href={`/sales-video?project=${queuedProject.id}`}>Theo dõi Code Agent và duyệt nội dung</a>. Bạn có thể tiếp tục nhập job khác.</p>}
+            {queuedProject && <p role="status">{manualPromptsReady ? "Bản nháp thủ công đã sẵn sàng." : "Đã lưu job nháp."} <a href={`/sales-video?project=${queuedProject.id}`}>{manualPromptsReady ? "Kiểm tra prompt và duyệt để tạo video" : "Theo dõi Code Agent và duyệt nội dung"}</a>. Bạn có thể tiếp tục nhập job khác.</p>}
+            {copyStatus && <p role="status">{copyStatus}</p>}
+            {manualImportStatus && <p role="status">{manualImportStatus}</p>}
+            {manualUgcJob && !manualPromptsReady && <p className="sales-script-warning" role="alert">Prompt clip không khớp thời lượng hoặc model hiện chọn. Nhập lại dữ liệu theo lịch clip trong JSON mới nhất đã sao chép.</p>}
             {projects.some((project) => project.status === "processing" || project.status === "draft") && <div className="sales-ugc-queue" aria-label="Job UGC đang xử lý">
               <strong>Job đang chạy, chờ duyệt hoặc chờ tạo video</strong>
               {projects.filter((project) => project.status === "processing" || project.status === "draft").slice(0, 5).map((project) => <a key={project.id} href={`/sales-video?project=${project.id}`}>
@@ -1416,8 +1584,31 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
             </div>}
             {message && <p className="sales-form-error" role="alert">{message}</p>}
           </div>
-          <button type="submit" className="primary-button" disabled={!canSubmit || busy}>{busy ? "Đang thêm job…" : selectedTemplate ? "Thêm job UGC vào hàng đợi" : "Tạo dự án và video"}</button>
+          <div className="sales-form-footer-actions">
+            {selectedTemplate && <button type="button" className="secondary-button" onClick={() => void copyManualJobData()} disabled={!draftReady || busy}>
+              Sao chép JSON job cho AI
+            </button>}
+            {selectedTemplate && <button type="button" className="secondary-button" onClick={() => { setManualImportError(""); setManualImportOpen(true); }} disabled={!draftReady || busy}>
+              Nhập JSON job
+            </button>}
+            <button type="submit" className="primary-button" disabled={!canSubmit || busy}>{busy ? "Đang thêm job…" : manualPromptsReady ? "Tạo job thủ công" : selectedTemplate ? "Thêm job UGC vào hàng đợi" : "Tạo dự án và video"}</button>
+          </div>
         </div>
+        {manualImportOpen && <div className="sales-media-library-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setManualImportOpen(false); }}>
+          <section className="sales-manual-import-modal" role="dialog" aria-modal="true" aria-labelledby="sales-manual-import-title">
+            <header>
+              <div><h2 id="sales-manual-import-title">Nhập JSON job</h2><p>Sao chép JSON, nhờ AI điền prompt trong video.segments rồi dán lại đây. Ảnh tải riêng.</p></div>
+              <button type="button" aria-label="Đóng nhập JSON job" onClick={() => setManualImportOpen(false)}>×</button>
+            </header>
+            <textarea autoFocus aria-label="JSON dữ liệu job" value={manualImportText} onChange={(event) => { setManualImportText(event.target.value); setManualImportError(""); }} rows={16} spellCheck={false} placeholder="Dán JSON job vào đây…" />
+            {manualImportError && <p className="sales-form-error" role="alert">{manualImportError}</p>}
+            <footer>
+              <span>Để tạo không cần CLI, JSON cần có video.segments với prompt cho từng clip.</span>
+              <div><button type="button" className="secondary-button" onClick={() => setManualImportOpen(false)}>Hủy</button>
+                <button type="button" className="primary-button" onClick={importManualJobData}>Nhập dữ liệu</button></div>
+            </footer>
+          </section>
+        </div>}
       </form>
   );
 }

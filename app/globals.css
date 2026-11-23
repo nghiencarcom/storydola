@@ -2745,6 +2745,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .sales-video-composer > fieldset { width: 100%; }
 .sales-video-composer .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 20px; margin-top: 0; }
 .sales-video-composer .form-grid > .full { grid-column: 1 / -1; }
+.sales-video-model-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px 20px; min-width:0; }
+.sales-video-model-fields.is-ugc { grid-template-columns:repeat(4,minmax(0,1fr)); }
+.sales-video-model-fields > .full { grid-column:1 / -1; }
 .sales-ugc-content-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px 16px; min-width: 0; }
 .sales-ugc-content-grid .form-field { align-content: start; min-width: 0; }
 .sales-retention-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; min-width: 0; }
@@ -2856,12 +2859,25 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .sales-media-library-state.is-error { color: #ab515b; }
 .sales-media-library-modal > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: auto; padding: 14px 20px; border-top: 1px solid #eef1f5; color: #8792a3; font-size: 11px; }
 .sales-media-library-modal > footer > div { display: flex; gap: 8px; }
+.sales-manual-import-modal { display:flex; flex-direction:column; gap:14px; width:min(760px,100%); max-height:min(820px,90vh); padding:20px; overflow:auto; border:1px solid #e2e8f0; border-radius:17px; background:#fff; box-shadow:0 25px 90px rgba(25,39,66,.24); }
+.sales-manual-import-modal > header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
+.sales-manual-import-modal h2 { margin:0; color:#303a50; font-size:19px; }
+.sales-manual-import-modal header p { margin:5px 0 0; color:#7b879b; font-size:12px; }
+.sales-manual-import-modal header button { flex:0 0 auto; width:30px; height:30px; border-radius:8px; color:#748197; background:#f4f6fa; font-size:20px; }
+.sales-manual-import-modal textarea { box-sizing:border-box; width:100%; min-height:260px; padding:13px; resize:vertical; border:1px solid #d6deeb; border-radius:10px; color:#27364f; background:#fbfcff; font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; }
+.sales-manual-import-modal > footer { display:flex; align-items:center; justify-content:space-between; gap:16px; padding-top:13px; border-top:1px solid #eef1f5; }
+.sales-manual-import-modal > footer > span { max-width:360px; color:#748197; font-size:11px; line-height:1.45; }
+.sales-manual-import-modal > footer > div { display:flex; flex:0 0 auto; gap:8px; }
 @media (max-width: 560px) {
   .sales-media-library-backdrop { padding: 10px; }
   .sales-media-library-modal > header { padding: 17px 15px 12px; }
   .sales-media-library-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 12px; }
   .sales-media-library-modal > footer { align-items: stretch; flex-direction: column; padding: 12px 15px; }
   .sales-media-library-modal > footer > div { justify-content: flex-end; }
+  .sales-manual-import-modal { gap:11px; padding:15px; }
+  .sales-manual-import-modal > footer { align-items:stretch; flex-direction:column; }
+  .sales-manual-import-modal > footer > span { max-width:none; }
+  .sales-manual-import-modal > footer > div { justify-content:flex-end; }
 }
 .sales-video-optional-details { min-width: 0; overflow: hidden; border: 1px solid #dfe5f1; border-radius: 11px; background: #fafbff; }
 .sales-video-optional-details > summary { position: relative; display: flex; align-items: center; min-height: 46px; padding: 10px 42px 10px 14px; color: #4d5680; font-size: 12px; font-weight: 750; line-height: 1.45; cursor: pointer; list-style: none; }
@@ -2895,8 +2911,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .sales-form-feedback > p { color: #687790; font-size: 11px; line-height: 1.45; }
 .sales-form-feedback > p a { color: #4f46e5; font-weight: 700; }
 .sales-form-feedback .sales-script-warning, .sales-form-error { color: #b42318 !important; }
-.sales-form-footer > .primary-button { min-width: 210px; min-height: 44px; height: auto; padding: 0 20px; font-size: 13px; }
-.sales-form-footer > .primary-button:disabled { color: #fff; background: #a5add0; box-shadow: none; cursor: not-allowed; transform: none; }
+.sales-form-footer-actions { display:flex; align-items:center; flex-wrap:wrap; justify-content:flex-end; gap:9px; min-width:0; }
+.sales-form-footer-actions > :is(.primary-button, .secondary-button) { min-height:44px; height:auto; }
+.sales-form-footer-actions > .primary-button { min-width:210px; padding:0 20px; font-size:13px; }
+.sales-form-footer-actions > .primary-button:disabled { color:#fff; background:#a5add0; box-shadow:none; cursor:not-allowed; transform:none; }
 .sales-video-composer :is(input, select, textarea, button):focus-visible { outline: 3px solid rgba(79,70,229,.23); outline-offset: 2px; }
 .sales-project-card {
   display: grid;
@@ -3008,6 +3026,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .sales-template-gallery-heading h2 { font-size: 18px; }
   .sales-video-composer { gap: 17px; padding: 18px; }
   .sales-video-composer .form-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .sales-video-model-fields.is-ugc { grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
   .agent-ugc-preference-fields { grid-template-columns: minmax(0, 1fr); }
   .agent-ugc-preference-footer { align-items: stretch; flex-direction: column; }
   .sales-video-composer .form-grid > .full { grid-column: 1; }
@@ -3026,9 +3045,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .sales-video-template-selected { grid-template-columns: 112px minmax(0, 1fr); }
   .sales-video-template-selected .secondary-button { grid-column: 1 / -1; justify-self: start; }
   .sales-form-footer { align-items: stretch; flex-direction: column; gap: 14px; }
-  .sales-form-footer > .primary-button { width: 100%; }
+  .sales-form-footer-actions { display:grid; width:100%; grid-template-columns:minmax(0,1fr); }
+  .sales-form-footer-actions > :is(.primary-button, .secondary-button) { width:100%; }
   .sales-prompt-editor { padding: 14px; }
   .sales-prompt-editor textarea { min-height: 170px; }
+}
+@media (max-width: 480px) {
+  .sales-video-model-fields, .sales-video-model-fields.is-ugc { grid-template-columns:minmax(0,1fr); gap:14px; }
 }
 @media (max-width: 980px) {
   .sales-video-page-heading.is-sticky { top: 64px; }

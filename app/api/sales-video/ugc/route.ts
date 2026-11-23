@@ -6,6 +6,7 @@ import sharp from "sharp";
 import { z } from "zod";
 import { getCodingAgentCliStatuses, generateWithCodingAgent, type CodingAgent } from "../../../lib/coding-agent-cli";
 import { getCodingAgentPreference } from "../../../lib/coding-agent-preferences";
+import type { CodingAgentEffort, CodingAgentSpeed } from "../../../lib/coding-agent-models";
 import { isVideoOffPeakRequired } from "../../../lib/media-generation-settings";
 import { getMaiVideoApiKey } from "../../../lib/maivideo-api-keys";
 import { getMaiVideoModelCatalog } from "../../../lib/media-provider";
@@ -33,6 +34,10 @@ const promptSegmentSchema = z.object({
 const draftSchema = z.object({
   product: z.string().trim().min(1).max(5000),
   facts: z.string().trim().max(1000).default(""),
+  segments: z.array(promptSegmentSchema).min(1).max(6),
+  script: z.string().trim().max(2000).default(""),
+});
+const manualDraftSchema = z.object({
   segments: z.array(promptSegmentSchema).min(1).max(6),
   script: z.string().trim().max(2000).default(""),
 });
@@ -146,6 +151,90 @@ function finalVideoPrompt(input: {
   ].filter(Boolean).join("\n\n").slice(0, input.promptMaxLength);
 }
 
+function buildReviewProject(input: {
+  project: SalesVideoProject;
+  draft: z.infer<typeof draftSchema>;
+  facts: string;
+  userExperience: string;
+  audio: boolean;
+  language: string;
+  duration: number;
+  ratio: string;
+  segmentDurations: number[];
+  promptMaxLength: number;
+  productImageCount: number;
+  templateName: string;
+  templateId: string;
+  direction: string;
+  contentStyle: string;
+  claimCategory: string;
+}) {
+  let dialogueStart = 0;
+  const dialogueRanges = input.segmentDurations.map((duration) => {
+    const range = { start: dialogueStart, duration };
+    dialogueStart += duration;
+    return range;
+  });
+  const scriptSegments = input.audio
+    ? salesVideoSplitDialogue(input.draft.script, dialogueRanges, input.duration, input.language)
+    : dialogueRanges.map((segment) => ({ ...segment, script: "" }));
+  if (input.audio) {
+    const overLimit = scriptSegments.find((segment) => {
+      const limit = salesVideoMaxWordCount(segment.duration, input.language);
+      return limit !== null && salesVideoWordCount(segment.script, input.language) > limit;
+    });
+    if (overLimit) throw new Error("UGC_MANUAL_SCRIPT_TOO_LONG");
+  }
+  let segmentStart = 0;
+  const promptSegments = input.segmentDurations.map((clipSeconds, clipIndex) => {
+    const start = segmentStart;
+    segmentStart += clipSeconds;
+    return {
+      start,
+      duration: clipSeconds,
+      prompt: finalVideoPrompt({
+        scenePrompt: input.draft.segments[clipIndex].prompt,
+        script: scriptSegments[clipIndex].script,
+        start,
+        clipSeconds,
+        clipIndex,
+        clipCount: input.segmentDurations.length,
+        product: input.draft.product,
+        facts: input.draft.facts || input.facts,
+        ratio: input.ratio,
+        language: input.language,
+        productImageCount: input.productImageCount,
+        promptMaxLength: input.promptMaxLength,
+        audio: input.audio,
+        templateName: input.templateName,
+        templateId: input.templateId,
+        direction: input.direction,
+        contentStyle: input.contentStyle,
+        claimCategory: input.claimCategory,
+      }),
+    };
+  });
+  return {
+    ...input.project,
+    status: "draft" as const,
+    phase: "review" as const,
+    worker: undefined,
+    details: {
+      ...input.project.details,
+      product: input.draft.product,
+      facts: input.draft.facts || input.facts,
+      userExperience: input.userExperience,
+      copyFramework: salesVideoContentFramework(input.contentStyle),
+      prompt: promptSegments[0]?.prompt || "",
+      promptMaxLength: input.promptMaxLength,
+      promptSegments,
+      script: input.draft.script,
+      scriptSegments,
+      subtitleSrt: input.audio ? salesVideoDialogueToSrt(scriptSegments, input.language) : "",
+    },
+  } satisfies SalesVideoProject;
+}
+
 function safeAgentFailure(error: unknown) {
   const message = error instanceof Error ? error.message : "";
   if (message.includes("UGC_PROMPT_SEGMENTS_INVALID")) return "Code Agent chưa trả về prompt riêng đúng thời lượng cho từng clip. Hãy tạo lại bản nháp trước khi duyệt video.";
@@ -184,6 +273,7 @@ export async function POST(request: Request) {
   const title = text(form, "title").slice(0, 120) || product.slice(0, 120);
   const url = text(form, "productUrl");
   const existingScript = text(form, "script");
+  const manualDraftJson = text(form, "manualDraft");
   const requirements = text(form, "prompt");
   const requestedContentStyle = text(form, "contentStyle");
   const contentStyle = salesVideoContentStyles.some((style) => style.id === requestedContentStyle)
@@ -262,25 +352,59 @@ export async function POST(request: Request) {
     ? "Không áp giới hạn tổng từ/giây cho lời thoại tiếng Việt; ưu tiên câu ngắn, tự nhiên và phân chia theo nhịp các clip."
     : `Lời thoại không vượt ${maxScriptWords} từ tổng cho ${seconds} giây; mỗi clip tuân theo giới hạn từ được StoryAI tính.`;
   const promptMaxLength = maiVideoModel?.promptMaxLength || 10_000;
+  let manualDraft: z.infer<typeof draftSchema> | undefined;
+  if (manualDraftJson) {
+    let parsedManual: z.infer<typeof manualDraftSchema>;
+    try {
+      const parsed = manualDraftSchema.safeParse(JSON.parse(manualDraftJson));
+      if (!parsed.success) throw new Error();
+      parsedManual = parsed.data;
+    } catch {
+      return NextResponse.json({ message: "JSON job thủ công không hợp lệ. Kiểm tra prompt và lời thoại từng clip." }, { status: 400 });
+    }
+    let offset = 0;
+    const validTimeline = parsedManual.segments.length === segmentDurations.length && parsedManual.segments.every((segment, index) => {
+      const valid = segment.start === offset && segment.duration === segmentDurations[index] && segment.duration <= 15;
+      offset += segment.duration;
+      return valid;
+    }) && offset === seconds;
+    if (!validTimeline) return NextResponse.json({ message: "Prompt job thủ công phải khớp lịch clip theo model và thời lượng đã chọn." }, { status: 400 });
+    const manualScriptSegments = audio
+      ? salesVideoSplitDialogue(parsedManual.script || existingScript, segmentDurations.map((duration, index) => ({ start: segmentDurations.slice(0, index).reduce((sum, value) => sum + value, 0), duration })), seconds, language)
+      : [];
+    const tooLongDialogue = manualScriptSegments.find((segment) => {
+      const limit = salesVideoMaxWordCount(segment.duration, language);
+      return limit !== null && salesVideoWordCount(segment.script, language) > limit;
+    });
+    if (tooLongDialogue) return NextResponse.json({ message: "Lời thoại thủ công vượt giới hạn từ của một clip. Hãy rút gọn rồi nhập lại." }, { status: 400 });
+    manualDraft = { product, facts, segments: parsedManual.segments, script: audio ? (parsedManual.script || existingScript) : "" };
+  }
   if (!audio && existingScript) {
     form.set("script", "");
   }
-  const [cli, codingPreference] = await Promise.all([
-    getCodingAgentCliStatuses({ includeModels: false }),
-    getCodingAgentPreference(userId),
-  ]);
-  const installedAgents = agentOrder.filter((id) => cli.some((item) => item.id === id && item.available));
-  const environmentAgent = process.env.STORYAI_SALES_UGC_AGENT?.trim();
-  const selectedAgentId = codingPreference?.agent || (environmentAgent && agentOrder.includes(environmentAgent as CodingAgent) ? environmentAgent : "") || installedAgents[0] || "";
-  const codingModel = codingPreference?.model || "";
-  const codingQuality = codingPreference?.quality || "auto";
-  const codingSpeed = codingPreference?.speed || "standard";
-  if (!selectedAgentId || !installedAgents.includes(selectedAgentId as CodingAgent)) {
-    return NextResponse.json({ message: codingPreference
-      ? "Code Agent đã lưu trong Cài đặt chưa có CLI trên máy chạy StoryAI. Hãy kiểm tra lại cấu hình trong /settings."
-      : "Không tìm thấy Code Agent CLI trên máy chạy StoryAI." }, { status: 503 });
+  let selectedAgentId = "";
+  let codingModel = "";
+  let codingQuality: "auto" | CodingAgentEffort = "auto";
+  let codingSpeed: CodingAgentSpeed = "standard";
+  let availableAgents: CodingAgent[] = [];
+  if (!manualDraft) {
+    const [cli, codingPreference] = await Promise.all([
+      getCodingAgentCliStatuses({ includeModels: false }),
+      getCodingAgentPreference(userId),
+    ]);
+    const installedAgents = agentOrder.filter((id) => cli.some((item) => item.id === id && item.available));
+    const environmentAgent = process.env.STORYAI_SALES_UGC_AGENT?.trim();
+    selectedAgentId = codingPreference?.agent || (environmentAgent && agentOrder.includes(environmentAgent as CodingAgent) ? environmentAgent : "") || installedAgents[0] || "";
+    codingModel = codingPreference?.model || "";
+    codingQuality = codingPreference?.quality || "auto";
+    codingSpeed = codingPreference?.speed || "standard";
+    if (!selectedAgentId || !installedAgents.includes(selectedAgentId as CodingAgent)) {
+      return NextResponse.json({ message: codingPreference
+        ? "Code Agent đã lưu trong Cài đặt chưa có CLI trên máy chạy StoryAI. Hãy kiểm tra lại cấu hình trong /settings."
+        : "Không tìm thấy Code Agent CLI trên máy chạy StoryAI." }, { status: 503 });
+    }
+    availableAgents = [selectedAgentId as CodingAgent];
   }
-  const availableAgents = [selectedAgentId as CodingAgent];
 
   const pending = (await listSalesVideoProjects(userId, salesVideoWorkerId)).filter((project) => project.status === "processing").length;
   if (pending >= 10) return NextResponse.json({ message: "Bạn đã có 10 job đang chạy hoặc chờ. Tạo thêm khi có job hoàn tất." }, { status: 429 });
@@ -294,11 +418,11 @@ export async function POST(request: Request) {
   ]);
   const project: SalesVideoProject = {
     id, title, template: template.name, model: [maiVideoModel?.label || requestedModel || "Model đã chọn", videoQuality, higgsfieldSpeed ? "Fast" : ""].filter(Boolean).join(" · "),
-    createdAt: new Date().toISOString(), status: "processing", phase: "writing", worker: salesVideoWorkerId,
+    createdAt: new Date().toISOString(), status: manualDraft ? "draft" : "processing", phase: manualDraft ? "review" : "writing", worker: manualDraft ? undefined : salesVideoWorkerId,
     details: {
       templateId: template.id, product, productUrl: url, facts, userExperience,
       painPoint, heroBenefit, minorFlaw, targetAudience, hookStyle,
-      prompt: "", script: existingScript, language, duration: seconds, ratio,
+      prompt: "", script: manualDraft?.script || existingScript, language, duration: seconds, ratio,
       productImageCount: productBytes.length,
       additionalProductImageCount: Math.max(0, productBytes.length - 1),
       videoModelId: requestedModel, contentStyle, copyFramework: salesVideoContentFramework(contentStyle), claimCategory, audio,
@@ -309,10 +433,29 @@ export async function POST(request: Request) {
         additionalProducts: productBytes.slice(1).map((_, index) => `/api/sales-video/${id}/references/product-${index + 2}`),
         products: productBytes.map((_, index) => `/api/sales-video/${id}/references/${index === 0 ? "product" : `product-${index + 1}`}`),
       },
-      codingAgent: selectedAgentId, codingModel, codingQuality, codingSpeed,
+      ...(selectedAgentId ? { codingAgent: selectedAgentId, codingModel, codingQuality, codingSpeed } : {}),
     },
   };
-  await saveSalesVideoProject(userId, project);
+  const projectToSave = manualDraft ? buildReviewProject({
+    project,
+    draft: manualDraft,
+    facts,
+    userExperience,
+    audio,
+    language,
+    duration: seconds,
+    ratio,
+    segmentDurations,
+    promptMaxLength,
+    productImageCount: productBytes.length,
+    templateName: template.name,
+    templateId: template.id,
+    direction: template.direction,
+    contentStyle,
+    claimCategory,
+  }) : project;
+  await saveSalesVideoProject(userId, projectToSave);
+  if (manualDraft) return NextResponse.json({ project: projectToSave }, { status: 202 });
 
   after(async () => {
     await enqueueSalesUgcDraftTask(async () => {
@@ -389,53 +532,16 @@ export async function POST(request: Request) {
         if (audio && maxScriptWords !== null && salesVideoWordCount(draft.script, language) > maxScriptWords) {
           throw new Error("Generated dialogue exceeds the language word limit");
         }
-        let dialogueStart = 0;
-        const dialogueRanges = segmentDurations.map((duration) => {
-          const range = { start: dialogueStart, duration };
-          dialogueStart += duration;
-          return range;
+        const reviewProject = buildReviewProject({
+          project, draft, facts, userExperience, audio, language, duration: seconds, ratio, segmentDurations,
+          promptMaxLength, productImageCount: productBytes.length, templateName: template.name, templateId: template.id,
+          direction: template.direction, contentStyle, claimCategory,
         });
-        const scriptSegments = audio
-          ? salesVideoSplitDialogue(draft.script, dialogueRanges, seconds, language)
-          : dialogueRanges.map((segment) => ({ ...segment, script: "" }));
-        const subtitleSrt = audio ? salesVideoDialogueToSrt(scriptSegments, language) : "";
-        let segmentStart = 0;
-        const finalPromptSegments = segmentDurations.map((clipSeconds, clipIndex) => {
-          const start = segmentStart;
-          segmentStart += clipSeconds;
-          const scenePrompt = draft!.segments[clipIndex].prompt;
-          return {
-            start,
-            duration: clipSeconds,
-            prompt: finalVideoPrompt({
-              scenePrompt, script: scriptSegments[clipIndex].script, start, clipSeconds, clipIndex, clipCount: segmentDurations.length,
-              product: draft!.product, facts: draft!.facts || facts, ratio, language, productImageCount: productBytes.length, promptMaxLength,
-              audio, templateName: template.name, templateId: template.id, direction: template.direction, contentStyle, claimCategory,
-            }),
-          };
-        });
-        if (finalPromptSegments.length !== segmentDurations.length || finalPromptSegments.some((segment) => !segment.prompt.trim())) {
+        const reviewSegments = reviewProject.details?.promptSegments || [];
+        if (reviewSegments.length !== segmentDurations.length || reviewSegments.some((segment) => !segment.prompt.trim())) {
           throw new Error("Could not create one video prompt per clip");
         }
-        await saveSalesVideoProject(userId, {
-          ...project,
-          status: "draft",
-          phase: "review",
-          worker: undefined,
-          details: {
-            ...project.details,
-            product: draft.product,
-            facts: draft.facts || facts,
-            userExperience,
-            copyFramework: salesVideoContentFramework(contentStyle),
-            prompt: finalPromptSegments[0]?.prompt || "",
-            promptMaxLength,
-            promptSegments: finalPromptSegments,
-            script: draft.script,
-            scriptSegments,
-            subtitleSrt,
-          },
-        });
+        await saveSalesVideoProject(userId, reviewProject);
       } catch (error) {
         console.error("Sales UGC draft failed", id, error instanceof Error ? error.name : "UnknownError");
         await saveSalesVideoProject(userId, {
@@ -447,5 +553,5 @@ export async function POST(request: Request) {
       }
     });
   });
-  return NextResponse.json({ project }, { status: 202 });
+  return NextResponse.json({ project: projectToSave }, { status: 202 });
 }
