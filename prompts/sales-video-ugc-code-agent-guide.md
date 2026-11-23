@@ -49,8 +49,8 @@ Người xem quyết định lướt qua chỉ trong **0.8 đến 1.5 giây**. D
    - *CẤM câu hỏi đóng Yes/No hiển nhiên:* Tránh "Bạn có muốn da đẹp không?", "Bạn có mệt mỏi vì dọn nhà không?".
 2. **Lớp Hình ảnh (Visual Hook - In Medias Res):** Đưa nhân vật vào giữa một hành động đang diễn ra (đang chà vết bẩn, đang cắn thử miếng đồ ăn, đang bẻ gập chiếc giày, biểu cảm nhăn mặt hoặc ngạc nhiên). Không bao giờ mở đầu bằng cảnh nhân vật đứng im mỉm cười nhìn vào ống kính.
 3. **Lớp Chữ màn hình (Text Overlay Hook - Counter-point):**
-   - Chữ phủ trên video ở giây đầu tiên dành cho nhóm người xem lướt không bật tiếng (silent scrollers).
-   - **QUY TẮC ĐỐI TRỌNG (COUNTER-POINT):** Chữ màn hình KHÔNG được lặp lại nguyên văn lời thoại. Chữ màn hình phải đóng vai trò là "tiêu đề bài báo giật gân" hoặc tóm gọn nỗi đau bằng 2–5 từ in hoa kèm 1–2 emoji.
+   - Chữ phủ trên video ở giây đầu tiên dành cho nhóm 80% người xem lướt không bật tiếng (silent scrollers).
+   - **QUY TẮC ĐỐI TRỌNG (COUNTER-POINT):** Chữ màn hình KHÔNG được lặp lại nguyên văn lời thoại và **TUYỆT ĐỐI CẤM mô tả lại hành động mắt thấy** (Cấm: "CẦM BÌNH", "XOAY MÀN HÌNH", "MỞ NẮP"). Chữ màn hình phải đóng vai trò là "tiêu đề bài báo giật gân" hoặc tóm gọn nỗi đau bằng 2–5 từ in hoa kèm 1–2 emoji (Xem chi tiết bộ 4 công thức giật tít tại Mục 9.3).
    - *Ví dụ:*
      * Lời thoại: "Mấy bà da dầu bôi kem chống nắng bóng nhẫy như chảo mỡ đúng không?" (15 từ, rất tự nhiên, giàu hình ảnh và giữ chân cực tốt)
      * Chữ màn hình: `HẾT BÓNG DẦU TRONG 10S? 😱` (5 từ)
@@ -220,7 +220,43 @@ TIMELINE OVERLAYS & SFX:
 - SFX TIMELINE: 00:02–00:04 | [subtle nonverbal tactile sound: click, soft rustle, metallic tap]
 ```
 
-### 9.3 Thư viện hành động tương tác sản phẩm (UGC Action Playbook) theo ngành:
+### 9.3 Nghệ thuật giật tít Text Overlay giữ chân người xem (High-Retention Text Overlay Playbook):
+
+Chữ màn hình là **mồi câu thị giác thứ ba** quyết định tỷ lệ giữ chân của **80% người xem lướt video ở chế độ tắt tiếng**.
+
+#### 🚫 CẤM TUYỆT ĐỐI: Mô tả lại hành động mắt thấy (Redundant Action Labeling)
+Người xem mắt đã thấy bàn tay đang thao tác gì trên màn hình. Chữ màn hình lặp lại hành động mắt thấy là vô nghĩa, nhàm chán và lãng phí không gian thị giác:
+- ❌ **CẤM VIẾT:** `"XOAY MÀN HÌNH"`, `"CẦM BÌNH"`, `"MỞ NẮP"`, `"BẺ CHIẾC GIÀY"`, `"THOA KEM LÊN TAY"`, `"BẤM NÚT NGUỒN"`.
+
+#### ✅ BẮT BUỘC: Giật tít Nỗi đau, Lợi ích tốc độ hoặc Sự thật gây tò mò
+Chữ màn hình phải là lý do người xem **buộc phải dừng ngón tay lại xem tiếp**:
+- **Thay vì `"XOAY MÀN HÌNH"`** 👉 `BẬT MÁY TRONG 1S ⚡` hoặc `XOAY LÀ QUAY LIỀN 🎬` (Lợi ích tốc độ thao tác!)
+- **Thay vì `"CẦM BÌNH NƯỚC"`** 👉 `CỰC KỲ ĐẦM TAY! 🏆` hoặc `BÌNH XỊN HAY PHÍ TIỀN? 🤔` (Cảm nhận chất lượng!)
+- **Thay vì `"MỞ NẮP HỘP"`** 👉 `XEM CÓ ĐÁNG TIỀN? 👀` hoặc `ĐẬP HỘP THỰC TẾ 📦`
+- **Thay vì `"BẺ CHIẾC GIÀY"`** 👉 `BẺ GẬP ĐẾ KHÔNG GÃY? 💥` hoặc `ĐỆM ÊM TỰA MÂY ☁️`
+- **Thay vì `"THOA KEM"`** 👉 `THẤM HẾT SAU 3S? ⏱️` hoặc `HẾT BÓNG DẦU TRONG 10S? 😱`
+
+#### 🎯 Bộ 4 công thức Text Overlay chuẩn theo vị trí Clip:
+1. **Clip 1 (Hook / Problem — Giây 0–3):** Công thức **Nỗi đau cực đoan / Hoài nghi nhột tai**
+   - Cấu trúc: `[Nỗi đau / Hoài nghi / Thách thức] + [?] + [1–2 Emoji sốc 😱/😩/💸]`
+   - Mẫu: `QUAY ĐÊM HẠT NHƯ CÁT? 😩`, `VLOG RUNG NHƯ ĐỘNG ĐẤT? 📳`, `ĐỒ RẺ DÙNG MAU HỎNG? 💸`, `BÀN HỌC BÃI CHIẾN TRƯỜNG? 🤯`
+2. **Clip giữa (Deep Demo / Micro-test / Wow Factor):** Công thức **Lợi ích tốc độ / Khoảnh khắc "Wow"**
+   - Cấu trúc: `[Kết quả tức thì / Thao tác siêu nhanh] + [1–2 Emoji tia chớp ⚡/🔥/✨/🏆/🎬]`
+   - Mẫu: `BẬT MÁY TRONG 1 GIÂY ⚡`, `XOAY LÀ QUAY LIỀN 🎬`, `CHỐNG RUNG 3 TRỤC CỰC ĐỈNH 🎯`, `CỰC ĐẦM TAY! 🏆`, `XỊT 1 LẦN SẠCH BONG ✨`
+3. **Điểm bẻ lái (Giây 8–12 / Khử mùi quảng cáo — Honest Flaw):** Công thức **Bóc phốt ngược / Cảnh báo thật**
+   - Cấu trúc: `[Điểm trừ nhỏ có thật / Sự thật trần trụi] + [1–2 Emoji cảnh báo ⚠️/👀/🤔]`
+   - Mẫu: `ĐIỂM TRỪ NÊN BIẾT ⚠️`, `HỘP HƠI ĐƠN GIẢN NHA 📦`, `DÂY SẠC HƠI NGẮN 👀`, `ĐẮT NHƯNG XẮT RA MIẾNG 💯`
+4. **Clip cuối (Verdict / Soft CTA):** Công thức **Chốt hạ giá trị / Thách thức kiểm chứng**
+   - Cấu trúc: `[Lời khuyên chân thành / Mời kiểm chứng nhẹ nhàng] + [1–2 Emoji 🌙/📌/💯/🛡️]`
+   - Mẫu: `XEM TEST ĐÊM RỒI CHỌN 🌙`, `LƯU LẠI KHI CẦN NHA 📌`, `AI NÊN MUA NGAY? 🤔`, `RẤT ĐÁNG ĐỒNG TIỀN! 💯`, `CHECK KỸ BẢO HÀNH NHÉ 🛡️`
+
+#### 📐 Quy chuẩn kỹ thuật Text Overlay:
+- **Độ dài vàng:** Từ **2 đến 5 từ** (tối đa 6 từ ngắn).
+- **In hoa toàn bộ (ALL CAPS):** Giúp người xem lướt đọc hiểu ngay trong 0.5 giây.
+- **Kèm 1–2 emoji:** Biểu cảm trực quan, kích thích thị giác.
+- **Đối trọng với thoại (Counter-point):** Không chép lại nguyên văn lời nói; đóng vai trò như tiêu đề báo giật tít cho người xem không bật tiếng.
+
+### 9.4 Thư viện hành động tương tác sản phẩm (UGC Action Playbook) theo ngành:
 
 - **Mỹ phẩm & Chăm sóc cá nhân (`beauty`):** Thoa mỏng lớp gel/kem trên mu bàn tay (swatch), texture tan mịn bóng nhẹ tự nhiên dưới ánh sáng ban ngày; ngón tay chạm nhẹ kiểm tra độ ráo; tránh hiệu ứng cà da láng mịn giả tạo.
 - **Gia dụng & Đời sống (`home`):** Thao tác tháo/lắp nắp một chạm dứt khoát, nghe tiếng khớp nối "tách", rót nước không rỉ mép, bọt tẩy rửa tan cặn bẩn, cầm đầm tay chắc chắn.
@@ -363,7 +399,7 @@ Khi nhận task từ hệ thống StoryAI:
 - [ ] Câu hook mở đầu có chào hỏi hoặc nêu tên sản phẩm không? (Nếu có -> Xóa ngay).
 - [ ] Toàn bộ lời thoại đọc lên có trôi chảy, giàu cảm xúc và cuốn hút không? (Ưu tiên câu đọc hay, có hồn, không máy móc băm cụt câu).
 - [ ] Kịch bản có chứa từ sáo rỗng trong Bảng Đen không? (Nếu có -> Thay bằng khẩu ngữ đời thường).
-- [ ] Chữ trong `VIDEO OVERLAY TIMELINE` có bị trùng nguyên văn với lời thoại không? (Nếu có -> Đổi thành tiêu đề giật tít 2–5 từ).
+- [ ] Chữ trong `VIDEO OVERLAY TIMELINE` có bị rơi vào bẫy mô tả lại hành động mắt thấy (như "XOAY MÀN HÌNH", "CẦM BÌNH", "MỞ NẮP", "BẤM NÚT") không? HOẶC có bị trùng nguyên văn lời thoại không? (Nếu có -> BẮT BUỘC đổi thành tiêu đề giật tít 2–5 từ in hoa + emoji nêu lợi ích tốc độ, nỗi đau nhột tai hoặc sự thật tò mò: ví dụ "BẬT MÁY 1 GIÂY ⚡", "VLOG RUNG NHƯ ĐỘNG ĐẤT? 📳", "CỰC KỲ ĐẦM TAY! 🏆").
 - [ ] Ở giây thứ 8–12 có chi tiết bẻ lái (Micro-test / Khuyết điểm nhỏ có thật) để giữ chân người xem không?
 - [ ] Đã khóa đúng `@Image1` cho người dẫn và `@Image2` cho sản phẩm chưa?
 - [ ] Prompt hình ảnh của từng clip đã phân vai rõ ràng chưa? (Clip 1 là Hook/Problem, các clip giữa là Macro Close-up Demo có căn cứ, clip cuối là Demo Payoff/CTA). Các mốc thời gian có nằm trong duration và các clip có điểm nối hợp lý không?

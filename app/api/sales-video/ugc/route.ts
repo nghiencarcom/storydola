@@ -196,6 +196,14 @@ function buildAgentTask(input: {
       return `PHÂN VAI THỊ GIÁC CHO TỪNG CLIP THEO LỊCH CỐ ĐỊNH:\n${segmentRoleInstructions}\n\nViết prompt video tiếng Anh độc lập cho từng clip theo lịch cố định ${JSON.stringify(segmentPlan)}; trả đủ các phần tử segments với đúng start/duration, tối đa 2500 ký tự mỗi prompt. Cấu trúc mỗi prompt video tiếng Anh chuẩn 5 khối: [REFERENCE LOCK] -> [CAMERA & FRAMING] -> [ACTION & CHOREOGRAPHY (timecoded)] -> [ENVIRONMENT & LIGHTING] -> [VIDEO OVERLAY TIMELINE & SFX TIMELINE]. Tuyệt đối tuân thủ phân vai của từng clip đã nêu ở trên (không nhồi nhét cả hook, demo và CTA vào từng clip lẻ nếu video có nhiều clip). Đảm bảo có ghi chú tiếp nối (Continuity Note) ở cuối mỗi clip để khi ghép không bị jump-cut.`;
     })(),
     "DIRECTING GUIDELINES: Use soft directional natural daylight, true material textures, and authentic skin detail. Avoid glossy CGI surfaces, artificial beauty smoothing, exaggerated bokeh, ultrawide distortion, floating objects, and unnatural 360-degree spins. Bind the hero product strictly to @Image2. In every in-hand shot use the exact single hero item from @Image2, at a plausible scale and in a relaxed stable grip.",
+    "QUY TẮC TEXT OVERLAY HẤP DẪN (VIDEO OVERLAY TIMELINE):\n" +
+    "- Chữ màn hình dành cho 80% người xem lướt tắt tiếng. Cụm chữ ngắn từ 2–5 từ in hoa kèm 1–2 emoji cảm xúc mạnh.\n" +
+    "- CẤM TUYỆT ĐỐI mô tả lại hành động mắt thấy (CẤM viết kiểu tường thuật: 'XOAY MÀN HÌNH', 'CẦM BÌNH', 'MỞ NẮP', 'BẤM NÚT', 'THOA KEM'). Người xem đã thấy tay làm gì, chữ không được lặp lại!\n" +
+    "- THAY VÀO ĐÓ: Phải giật tít đánh trúng tim đen hoặc nêu bật lợi ích tốc độ / khoảnh khắc 'Wow' / sự thật tò mò:\n" +
+    "  * Clip 1 (Hook): Đánh nỗi đau cực đoan hoặc câu hỏi nhột tai (VD: 'QUAY ĐÊM HẠT NHƯ CÁT? 😩', 'VLOG RUNG NHƯ ĐỘNG ĐẤT? 📳', 'HẾT BÓNG DẦU TRONG 10S? 😱').\n" +
+    "  * Clip giữa (Demo): Nêu lợi ích tốc độ / điểm ăn tiền (VD: thay vì 'XOAY MÀN HÌNH' -> 'BẬT MÁY TRONG 1 GIÂY ⚡', 'XOAY LÀ QUAY LIỀN 🎬', 'CHỐNG RUNG 3 TRỤC CỰC ĐỈNH 🎯', 'CỰC ĐẦM TAY! 🏆').\n" +
+    "  * Clip cuối (CTA/Verdict): Chốt hạ giá trị hoặc thách thức kiểm chứng (VD: 'XEM TEST ĐÊM RỒI CHỌN 🌙', 'LƯU LẠI KHI CẦN 📌', 'RẤT ĐÁNG ĐỒNG TIỀN! 💯').\n" +
+    "- Chữ phải đối trọng (counter-point) với lời thoại, không chép lại thoại.",
     `Trường script phải là lời thoại riêng bằng ${input.language}, không chứa chỉ dẫn quay. ${speechBudgetInstruction} Chỉ trả JSON theo schema.`,
   ].filter(Boolean).join("\n\n");
 }

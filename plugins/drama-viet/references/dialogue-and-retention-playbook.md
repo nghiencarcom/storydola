@@ -108,3 +108,55 @@ Tận dụng 25 Camera Combos của StoryAI để lời thoại đạt hiệu qu
 - **Khi thoại là sự đối đầu nảy lửa giữa 2 nhân vật:** Dùng **Combo 06 (Arc Left + Slow Push-In)** hoặc **Combo 12 (OTS Push-In + Rack Focus)** — siết chặt khoảng cách giữa hai nhân vật qua góc quay qua vai.
 - **Khi thoại là cú sốc bất ngờ:** Dùng **Combo 20 (Whip Pan + Tracking Follow)** hoặc **Combo 22 (Push-In + Rapid Pull-Back)** — tạo nhịp giật thị giác ngay khi câu nói chấn động phát ra.
 - **Khi thoại là sự tuyệt vọng hoặc cô đơn sau phán quyết:** Dùng **Combo 15 (Tilt-Down + Slow Pull-Back)** hoặc **Combo 13 (Slow Arc + Gentle Dolly-Out)** — lùi dần ra xa để nhân vật chìm trong không gian trống trải.
+
+---
+
+## 6. Quy tắc Khóa Nhận Diện Nhân Vật & Gắn Token Tham Chiếu (Reference Identity Lock)
+
+Trong StoryAI, mỗi nhân vật chính đều có một **Character Reference Sheet** (bộ ảnh mẫu 3 góc nhìn). Hệ thống gán ảnh tham chiếu theo thứ tự `@Image1`, `@Image2`... hoặc token tên canonical `@CharacterName`.
+
+### A. Lỗi Thường Gặp Cần Tuyệt Đối Tránh
+- **Lỗi lặp lại mô tả ngoại hình tĩnh:** Trong `image_prompt` hoặc `video_prompt`, AI tự động chép lại các tính từ mô tả từ Character Bible (*"Bà Loan 60 tuổi, mặt nhăn nheo, tóc hoa râm búi thấp..."* hay *"Hương 32 tuổi, mắt sắc sảo, tóc ngang vai..."*).
+- **Hậu quả nghiêm trọng:**
+  1. Kích hoạt lỗi từ chối của StoryAI (`requireReferenceIdentityOnly`): Hệ thống sẽ ném lỗi nếu phát hiện mô tả tuổi tác hoặc chi tiết khuôn mặt tĩnh khi đã gắn ảnh tham chiếu.
+  2. Khiến các model AI video (Kling, Seedance, Wan, Veo) bị xung đột (conflict): Model vừa phải bám theo ảnh mẫu `@Image`, vừa cố diễn dịch lại dòng chữ tiếng Anh, dẫn đến hiện tượng nhân vật bị "trẻ hóa", đổi kiểu tóc hoặc khuôn mặt bị biến dạng qua từng tập.
+
+### B. Quy Chuẩn Viết Prompt Đúng Chuẩn Reference Lock
+1. **Chỉ gọi tên Canonical hoặc Token ảnh:**
+   * Viết: `Huong stands rigidly on screen-left...` hoặc `@Huong stands rigidly...`
+   * **CẤM:** `A 32-year-old Vietnamese woman named Huong with straight black hair...`
+2. **Chỉ mô tả Diễn xuất theo Frame (Frame-Specific State):**
+   * Tập trung 100% vào: Biểu cảm (`expression`), Ánh mắt (`gaze/eyeline`), Tư thế cơ thể (`posture/body language`), Hành động tương tác với đạo cụ (`object handling`).
+   * *Ví dụ chuẩn:*
+     * `Huong pauses mid-motion holding the porcelain soup ladle, her dark eyes wide in shock, lips slightly parted as color drains from her cheeks.`
+     * `Ba Loan lowers her chin in defensive silence, fingers tightly clasping the dark silk over her knees.`
+
+---
+
+## 7. Quy tắc Trục Quay 180 Độ & Tính Nhất Quán Không Gian (180-Degree Line of Action)
+
+Trong phim ngắn drama, sự đảo lộn phương hướng thị giác giữa các cảnh liên tiếp sẽ làm người xem bị mất định hướng (disorientation) và cắt đứt dòng cảm xúc.
+
+### A. Thiết lập Trục Hành Động (Line of Action)
+- Trong mọi cảnh có từ 2 nhân vật (đặc biệt là cảnh tranh cãi tại bàn ăn, phòng khách hay phòng ngủ), phải xác định một đường thẳng tưởng tượng nối giữa 2 nhân vật.
+- **Quy tắc máy quay:** Toàn bộ máy quay cho cảnh đó và các cảnh đảo góc tiếp theo phải nằm **cùng một phía** của đường thẳng này (Stage-Left hoặc Stage-Right).
+
+### B. Khóa Vị trí Màn hình & Hướng Nhìn (Eyeline Anchors)
+- **Nhân vật A (Tấn công/Chất vấn):** Neo ở **Screen-Left**, hướng nhìn sang phải (**facing screen-right**).
+- **Nhân vật B (Phòng thủ/Bị chất vấn):** Neo ở **Screen-Right**, hướng nhìn sang trái (**facing screen-left**).
+- **Khi quay góc qua vai (OTS Shots):**
+  * Shot quay A: Máy quay đặt sau vai phải của B (B chiếm tiền cảnh screen-right, A ở trung cảnh screen-left nhìn sang phải).
+  * Shot quay B: Máy quay đặt sau vai trái của A (A chiếm tiền cảnh screen-left, B ở trung cảnh screen-right nhìn sang trái).
+  * Hướng nhìn của 2 nhân vật luôn chạm nhau qua từng cú cắt, tạo cảm giác đối thoại chân thực, không bao giờ bị nhảy trục.
+
+---
+
+## 8. Thiết Kế Chuyển Động Máy Quay (Camera Combos) Cho Khung Cảnh 15 Giây
+
+Cảnh 15 giây là chuẩn mực của AI Drama để truyền tải trọn vẹn một beat tâm lý có diễn biến và chuyển đổi cảm xúc. Một prompt video 15 giây chuẩn mực phải được phân bổ thành **3 pha hành động liên tục**, không có thời gian chết:
+
+| Pha thời gian | Mục tiêu thị giác | Cách thức thực thi | Ví dụ thực chiến |
+| :--- | :--- | :--- | :--- |
+| **Pha 1: 00:00 – 00:05**<br>*(Start Framing & Motivated Trigger)* | Xác lập cỡ cảnh xuất phát và tạo động lực di chuyển. | Bắt đầu bằng một cỡ cảnh ổn định (Medium Shot, OTS, Low-Angle). Camera bắt đầu chuyển động ngay khi có kích hoạt từ hành động (tiếng rơi, tiếng bước chân, điện thoại rung). | *Camera bắt đầu ở góc trung ngang tầm mắt. Giây 00:02, điện thoại trên bàn rung sáng thông báo trừ tiền, chiếc muôi canh khựng lại.* |
+| **Pha 2: 00:05 – 00:10**<br>*(Movement & Climax Beat)* | Thực thi combo máy quay chính và đẩy cao trào. | Camera thực hiện cú chuyển động chủ đạo (Slow Push-In, Lateral Tracking, Rack Focus) đồng bộ với lượt thoại chính hoặc phản ứng bàng hoàng của nhân vật. | *Camera từ từ đẩy vào đồng thời chuyển nét (Rack Focus) từ ánh mắt sửng sốt của Hương xuống màn hình điện thoại rực sáng.* |
+| **Pha 3: 00:10 – 00:15**<br>*(End Framing & Hook/Cutaway)* | Khóa cỡ cảnh đích và giữ nhịp kết nối. | Camera tiến vào cỡ cảnh kết thúc (Tight Close-up hold, Wide Pull-Back overview hoặc pan bám theo nhân vật rời đi). Khép lại trọn vẹn hành vi trước khi chuyển cảnh. | *Camera khóa chặt vào dòng chữ số dư âm và các ngón tay siết chặt của Hương, giữ trọn căng thẳng đến giây thứ 15 trước khi cut.* |

@@ -975,6 +975,7 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
         "GIỮ NGUYÊN: schema, template, toàn bộ product, creative.claimCategory, model, thời lượng, tỷ lệ khung hình, ngôn ngữ, chất lượng và attachments.",
         "CHỈ ĐƯỢC ĐIỀN prompt cho từng clip trong video.segments và creative.script. Không thêm, xóa, sắp xếp lại clip hoặc thay start/duration đã cho.",
         "Viết prompt hình ảnh từng clip bằng tiếng Anh theo cấu trúc 5 khối: [REFERENCE LOCK] -> [CAMERA & FRAMING] -> [ACTION & CHOREOGRAPHY (timecoded)] -> [ENVIRONMENT & LIGHTING] -> [VIDEO OVERLAY TIMELINE & SFX TIMELINE]. Bám sát 'role' phân vai cho từng clip. Viết lời thoại bằng ngôn ngữ đã chọn cho một người dẫn duy nhất. Không tạo thoại hỏi đáp, người hỏi ngoài khung hình hoặc nhãn vai.",
+        "TEXT OVERLAY: Trong VIDEO OVERLAY TIMELINE, viết chữ in hoa 2–5 từ kèm 1–2 emoji giật tít, nêu lợi ích tốc độ hoặc đánh nỗi đau (VD: 'QUAY ĐÊM HẠT NHƯ CÁT? 😩', 'BẬT MÁY 1 GIÂY ⚡', 'CỰC ĐẦM TAY! 🏆'). CẤM mô tả lại hành động mắt thấy như 'XOAY MÀN HÌNH', 'CẦM BÌNH', 'MỞ NẮP'.",
         "Chỉ dùng thông tin xác minh và trải nghiệm người dùng có trong dữ liệu job; không bịa thông số, công dụng, giá, ưu đãi, chứng nhận hoặc trải nghiệm.",
         "Trả về duy nhất toàn bộ JSON job hợp lệ, không Markdown, không code fence, không giải thích. Ảnh tham chiếu được tải lên riêng trong StoryAI.",
       ].join("\n");
