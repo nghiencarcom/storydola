@@ -1025,7 +1025,6 @@ code { padding: 2px 5px; border-radius: 5px; color: #6f69ce; background: #f2f1ff
   .batch-media-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 760px) {
-  .sidebar { display: none; }
   .topbar { height: 58px; padding: 0 18px; }
   .breadcrumbs span:not(:last-child), .breadcrumbs svg { display: none; }
   .page-wrap { padding: 27px 16px 22px; }
