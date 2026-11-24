@@ -1,3 +1,4 @@
+import { videoCheckpoint } from "./sales-video-checkpoint";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -46,7 +47,8 @@ export function pixverseSalesClient(key: string, signal: AbortSignal) {
         model: "v6", duration: input.video ? 0 : input.duration, quality: "720p",
         aspect_ratio: input.ratio, prompt: input.prompt.slice(0, 5000), generate_audio_switch: input.sound,
       };
-      const created = input.audio
+      const checkpoint = await videoCheckpoint();
+      const created = checkpoint.existingJobId ? { video_id: checkpoint.existingJobId } : input.audio
         ? await request("/video/avatar/generate", { img_id: rawId(input.images[0]), audio_media_id: rawId(input.audio), prompt: input.prompt.slice(0, 5000), quality: "720p" })
         : input.images.length
           ? await request("/video/fusion/generate", {
@@ -56,6 +58,7 @@ export function pixverseSalesClient(key: string, signal: AbortSignal) {
           })
           : await request("/video/text/generate", common);
       const id = resourceId(created.video_id);
+      if (!checkpoint.existingJobId && checkpoint.onJobCreated) await checkpoint.onJobCreated(id);
       const deadline = Date.now() + 15 * 60_000;
       while (Date.now() < deadline) {
         const result = await request(`/video/result/${id}`);

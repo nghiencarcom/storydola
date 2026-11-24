@@ -129,7 +129,12 @@ export async function listSalesVideoProjects(userId: string, worker: string) {
       delete project.worker;
       await saveSalesVideoProject(userId, project);
     }
-    if (project.status === "processing" && project.worker !== worker) {
+    const recoveryFiles = ["all", ...(project.details?.promptSegments || []).map((_, index) => String(index))];
+    const canRecover = (await Promise.all(recoveryFiles.map(async suffix => {
+      try { const record = JSON.parse(await readFile(dataPath("sales-video-recovery", `${project.id}-${suffix}.json`), "utf8")); return record.state === "pending"; }
+      catch { return false; }
+    }))).some(Boolean);
+    if (project.status === "processing" && project.worker !== worker && !canRecover) {
       const output = await stat(salesVideoPath(userId, project.id)).catch(() => null);
       project.status = output?.isFile() ? "ready" : "failed";
       if (project.status === "failed") project.error = "Máy chủ đã khởi động lại trong lúc tạo video. Hãy tạo lượt mới.";

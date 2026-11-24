@@ -31,14 +31,14 @@ export function agentAccessEncryptionReady() {
   return Boolean(secret && secret.length >= 32);
 }
 
-function encrypt(value: string): EncryptedValue {
+export function encrypt(value: string): EncryptedValue {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", encryptionKey(), iv);
   const ciphertext = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
   return { iv: iv.toString("hex"), tag: cipher.getAuthTag().toString("hex"), ciphertext: ciphertext.toString("hex") };
 }
 
-function decrypt(value: EncryptedValue) {
+export function decrypt(value: EncryptedValue) {
   const decipher = createDecipheriv("aes-256-gcm", encryptionKey(), Buffer.from(value.iv, "hex"));
   decipher.setAuthTag(Buffer.from(value.tag, "hex"));
   return Buffer.concat([decipher.update(Buffer.from(value.ciphertext, "hex")), decipher.final()]).toString("utf8");

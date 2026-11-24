@@ -1,3 +1,4 @@
+import { videoCheckpoint } from "./sales-video-checkpoint";
 import { IMAGE_SCENE_VARIETY_GUIDANCE } from "./image-scene-guidance";
 import { checkpointProviderSubmission } from "./provider-submission-checkpoint";
 import { providerRequestWithRetry } from "./provider-request-retry";
@@ -2831,6 +2832,7 @@ export async function generateSalesVideoSegment(input: {
   audio?: boolean;
   referenceNames?: string[];
 }) {
+  const checkpoint = await videoCheckpoint();
   const settings = resolveMediaGenerationSettings({
     videoProvider: "higgsfield",
     videoModel: HIGGSFIELD_SEEDANCE_MODEL_ID,
@@ -2841,7 +2843,7 @@ export async function generateSalesVideoSegment(input: {
   });
   return generateHiggsfieldVideo(
     input.prompt, input.outputPath, input.aspectRatio, input.references, input.referenceNames ?? ["presenter", "product"],
-    settings, input.providerAuthToken, undefined, undefined, undefined, input.signal, "fast",
+    settings, input.providerAuthToken, checkpoint.existingJobId, undefined, checkpoint.onJobCreated, input.signal, "fast",
   );
 }
 
@@ -2858,6 +2860,7 @@ export async function generateMaiVideoSalesSegment(input: {
   audio: boolean;
   signal: AbortSignal;
 }) {
+  const checkpoint = await videoCheckpoint();
   const model = input.model.id === MINIMAX_H3_VIDEO_MODEL_ID
     ? { ...input.model, supportsAudio: true }
     : input.model.id === WAN_3_VIDEO_MODEL_ID
@@ -2873,7 +2876,7 @@ export async function generateMaiVideoSalesSegment(input: {
     videoDurationSec: input.durationSec,
     videoAudio: input.audio,
     videoOffPeak: input.model.supportsOffPeak ? input.offPeak ?? false : false,
-  }, input.userId, undefined, undefined, input.signal, model);
+  }, input.userId, checkpoint.existingJobId, checkpoint.onJobCreated, input.signal, model);
 }
 
 export async function generateSeedanceGatewaySalesSegment(input: {
@@ -2891,6 +2894,7 @@ export async function generateSeedanceGatewaySalesSegment(input: {
   const provider = input.model.provider;
   if (provider !== "flow" && provider !== "muse") throw new Error("Model Flow/Muse không hợp lệ.");
   const modelId = provider === "flow" ? DEFAULT_FLOW_VIDEO_MODEL_ID : DEFAULT_MUSE_VIDEO_MODEL_ID;
+  const checkpoint = await videoCheckpoint();
   const settings = resolveMediaGenerationSettings({
     videoProvider: provider,
     videoModel: modelId,
@@ -2906,12 +2910,12 @@ export async function generateSeedanceGatewaySalesSegment(input: {
   if (provider === "flow") {
     return generateFlowVideo(
       input.prompt, input.outputPath, input.aspectRatio, input.references, input.referenceNames,
-      settings, apiKey, undefined, undefined, undefined, input.signal, sessionToken,
+      settings, apiKey, checkpoint.existingJobId, undefined, checkpoint.onJobCreated, input.signal, sessionToken,
     );
   }
   return generateMuseVideo(
     input.prompt, input.outputPath, input.aspectRatio, input.references, input.referenceNames,
-    settings, apiKey, undefined, undefined, undefined, undefined, input.signal, sessionToken,
+    settings, apiKey, checkpoint.existingJobId, undefined, checkpoint.onJobCreated, undefined, input.signal, sessionToken,
   );
 }
 
@@ -2952,7 +2956,8 @@ export async function generateMaiVideoPixverseV6ReferenceSegment(input: {
   }
   form.append("reference_videos", input.referenceVideo, input.referenceVideo.name || "reference.mp4");
 
-  const created = await requestJson(`${base}/api/pixverse-video/bulk`, {
+  const checkpoint = await videoCheckpoint();
+  const created = checkpoint.existingJobId ? { job: { id: checkpoint.existingJobId } } : await requestJson(`${base}/api/pixverse-video/bulk`, {
     method: "POST",
     headers,
     body: form,
@@ -2960,6 +2965,7 @@ export async function generateMaiVideoPixverseV6ReferenceSegment(input: {
   const job = created.job && typeof created.job === "object" ? created.job as JsonRecord : {};
   const jobId = String(job.id || "");
   if (!jobId) throw new Error("MaiVideo không trả về job_id cho PixVerse V6 Reference.");
+  if (!checkpoint.existingJobId && checkpoint.onJobCreated) await checkpoint.onJobCreated(jobId);
   const timeoutSeconds = Number(job.off_peak_timeout_seconds || input.model.offPeakTimeoutSeconds || job.timeout_seconds || input.model.timeoutSeconds) || 3_600;
   const statusUrl = `${base}/api/pixverse-video/bulk/${encodeURIComponent(jobId)}`;
   const { mediaUrl } = await pollJob(

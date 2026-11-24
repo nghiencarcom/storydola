@@ -1,3 +1,5 @@
+import { withVideoCheckpoint } from "./sales-video-checkpoint";
+import { durableSalesVideo } from "./sales-video-recovery";
 import { execFile } from "node:child_process";
 import { copyFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -240,7 +242,7 @@ function splitLabeledDialogue(script: string, durations: number[], totalSeconds:
   return result.map((segment) => segment.join("\n"));
 }
 
-export async function createCreativeSalesVideo(input: {
+async function renderCreativeSalesVideo(input: {
   id: string;
   userId: string;
   template: typeof salesVideoCreativeTemplates[number];
@@ -263,6 +265,7 @@ export async function createCreativeSalesVideo(input: {
   providerAuthToken: string;
   sourceStart?: number;
   splitDialogue?: { script: string; language: string; audio: boolean; segments: number[]; scriptSegments?: Array<{ start: number; duration: number; script: string }> };
+  recoveryRunId?: string;
   onlySegmentIndex?: number;
   signal: AbortSignal;
 }) {
@@ -343,7 +346,8 @@ export async function createCreativeSalesVideo(input: {
     const labeledDialogueSegments = dialogue
       ? dialogue.scriptSegments?.map((segment) => segment.script) || splitLabeledDialogue(dialogue.script, durations, seconds, dialogue.language)
       : undefined;
-    const results = await Promise.allSettled(durations.map(async (length, index) => {
+    const results = await Promise.allSettled(durations.map(async (length, index) => withVideoCheckpoint(
+      path.join(path.dirname(salesVideoPath(userId, id)), "api-jobs", input.recoveryRunId || "legacy", `clip-${index}.json`), async () => {
       if (input.onlySegmentIndex !== undefined && index !== input.onlySegmentIndex) return;
       const start = durations.slice(0, index).reduce((sum, duration) => sum + duration, 0);
       try {
@@ -455,7 +459,7 @@ export async function createCreativeSalesVideo(input: {
       } catch (error) {
         throw new SalesVideoSegmentError(index, error instanceof Error ? error.message : "Không tạo được clip.");
       }
-    }));
+    })));
     const failed = results.find((result) => result.status === "rejected");
     if (failed?.status === "rejected") throw failed.reason;
 
@@ -559,3 +563,6 @@ export async function stitchSalesVideoSegments(
     await rm(work, { recursive: true, force: true }).catch(() => undefined);
   }
 }
+
+export type SalesVideoRenderInput = Parameters<typeof renderCreativeSalesVideo>[0];
+export function createCreativeSalesVideo(input: SalesVideoRenderInput) { return durableSalesVideo(input, renderCreativeSalesVideo); }
