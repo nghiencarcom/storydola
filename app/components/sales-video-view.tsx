@@ -1075,21 +1075,23 @@ function SalesVideoProjectDetail({ project, catalog, videoUrl, promptMaxLength, 
       <div className="sales-project-video-heading"><div><h2>Video đã ghép</h2><p>Bản video đầy đủ sau khi ghép các clip.</p></div>
         <div className="sales-project-video-actions">
           <a className="secondary-button compact" href={`${videoUrl}?download=1&v=${encodeURIComponent(videoRevision)}`}>Tải MP4</a>
-          <button type="button" className="secondary-button compact" onClick={() => void restitchVideo(true)} disabled={!allClipsReady || stitching || retryingClips.size > 0 || voiceJob?.status === "processing"} title="Ghép các clip với âm thanh gốc, bỏ voice đã tạo lại.">{stitching ? "Đang ghép…" : "Ghép với voice gốc"}</button>
+
           {details?.audio && details.subtitleSrt && <button type="button" className="secondary-button compact" onClick={() => void openVoiceDialog()}
             disabled={!maiVideoConfigured || voiceJob?.status === "processing" || stitching || !details.subtitleSrt.trim()}
             title={!maiVideoConfigured ? "Cấu hình MaiVideo API key trong Cài đặt để tạo lại voice." : undefined}>
             {voiceJob?.status === "processing" ? "Đang tạo voice…" : voiceJob?.status === "failed" ? "Thử tạo lại voice" : "Tạo lại voice"}
           </button>}
+          <button type="button" className="secondary-button compact" onClick={() => void restitchVideo()} disabled={!allClipsReady || stitching || retryingClips.size > 0 || voiceJob?.status === "processing"}>{stitching ? "Đang ghép…" : "Ghép lại video"}</button>
+          <button type="button" className="secondary-button compact" onClick={() => void restitchVideo(true)} disabled={!allClipsReady || stitching || retryingClips.size > 0 || voiceJob?.status === "processing"} title="Ghép các clip với âm thanh gốc, bỏ voice đã tạo lại.">{stitching ? "Đang ghép…" : "Ghép với voice gốc"}</button>
         </div>
       </div>
       <video className="sales-project-final-video" key={finalVideoUrl} controls playsInline preload="metadata" src={finalVideoUrl} />
     </section>}
     {project.status !== "draft" && videoSegments.length > 0 && <section className="sales-project-clips">
       <div className="sales-project-video-heading"><div><h2>Các clip 15 giây</h2><p>Mỗi clip có thể xem riêng và tạo lại khi cần.</p></div>
-        <button type="button" className="primary-button" onClick={() => void restitchVideo()} disabled={!allClipsReady || stitching || retryingClips.size > 0 || project.status === "processing" || voiceJob?.status === "processing"}>
+        {project.status !== "ready" && <button type="button" className="primary-button" onClick={() => void restitchVideo()} disabled={!allClipsReady || stitching || retryingClips.size > 0 || project.status === "processing" || voiceJob?.status === "processing"}>
           {stitching ? "Đang ghép video…" : "Ghép lại video"}
-        </button>
+        </button>}
       </div>
       {details?.needsStitching && !allClipsReady && <small className="sales-project-stitch-hint">Hãy tạo xong tất cả clip trước khi ghép lại.</small>}
       <div className="sales-project-clips-grid">
