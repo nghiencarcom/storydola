@@ -5,6 +5,9 @@ const { loadEnvConfig } = require("@next/env");
 const projectRoot = process.cwd();
 const standaloneRoot = path.join(projectRoot, ".next", "standalone");
 loadEnvConfig(projectRoot);
+if (!process.env.FONTCONFIG_FILE || !fs.existsSync(process.env.FONTCONFIG_FILE)) {
+  process.env.FONTCONFIG_FILE = path.join(projectRoot, "assets", "fonts", "fonts.conf");
+}
 const configuredDataDir = process.env.STORYAI_DATA_DIR?.trim() || "data";
 process.env.STORYAI_DATA_DIR = path.isAbsolute(configuredDataDir)
   ? configuredDataDir
