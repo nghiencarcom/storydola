@@ -128,6 +128,7 @@ function buildAgentTask(input: {
   templateName: string; templateId: string; direction: string; claimCategory: string;
   link: string; pageText: string; requirements: string; existingScript: string;
   painPoint?: string; heroBenefit?: string; minorFlaw?: string; targetAudience?: string; hookStyle?: string;
+  postProcessTextOverlay: boolean;
 }, guide: string) {
   const maxWords = salesVideoMaxWordCount(input.duration, input.language);
   const audience = salesVideoTargetAudiences.find(({ id }) => id === input.targetAudience) || salesVideoTargetAudiences[0];
@@ -150,7 +151,9 @@ function buildAgentTask(input: {
   const speechBudgetInstruction = maxWords === null
     ? "Không áp giới hạn tổng từ/giây cho lời thoại tiếng Việt; ưu tiên câu thoại cuốn hút, tự nhiên và phân chia theo nhịp các clip."
     : `Lời thoại không vượt ${maxWords} từ tổng cho ${input.duration} giây; mỗi clip tuân theo giới hạn từ được StoryAI tính.`;
-  const hookPacingRule = "Hook đầu video chiếm 0–3 giây. Dành câu mở đầu giàu hình ảnh, nỗi đau hoặc hoài nghi để giữ chân người xem; ưu tiên câu cuốn hút, biểu cảm, không chào hỏi, không giới thiệu tên sản phẩm ngay câu đầu. Chữ overlay ở clip 1 phải đối trọng (counter-point) với thoại, không lặp lại nguyên văn.";
+  const hookPacingRule = input.postProcessTextOverlay
+    ? "Hook đầu video chiếm 0–3 giây. Dành câu mở đầu giàu hình ảnh, nỗi đau hoặc hoài nghi để giữ chân người xem; ưu tiên câu cuốn hút, biểu cảm, không chào hỏi, không giới thiệu tên sản phẩm ngay câu đầu."
+    : "Hook đầu video chiếm 0–3 giây. Dành câu mở đầu giàu hình ảnh, nỗi đau hoặc hoài nghi để giữ chân người xem; ưu tiên câu cuốn hút, biểu cảm, không chào hỏi, không giới thiệu tên sản phẩm ngay câu đầu. Chữ overlay ở clip 1 phải đối trọng (counter-point) với thoại, không lặp lại nguyên văn.";
   const subtitleCueRule = "Mỗi câu hoàn chỉnh hoặc lượt thoại tự nhiên nằm trên một dòng để StoryAI tạo cue phụ đề theo lời nói; không ép cue hoặc dòng thoại thành các khúc đều 5 giây. Độ dài cue thay đổi theo câu, nhịp nói và khoảng nghỉ. Mốc hook 0–3 giây là vùng nội dung, không phải nhịp chia phụ đề; nhịp hình 3–5 giây chỉ áp dụng cho hình ảnh.";
   const scriptPacing = `${sentencePacingRule} ${hookPacingRule} ${subtitleCueRule} Không lặp hook ở các clip sau. Mỗi clip 15 giây có khoảng 2–4 câu của cùng một người dẫn; clip ngắn hơn giảm số câu tương ứng. Không viết theo dạng hỏi đáp, không tạo người hỏi ngoài khung hình, không gắn nhãn vai. Mỗi câu trên một dòng để StoryAI chia phụ đề theo nhịp lời nói. Không thêm chỉ dẫn trong ngoặc vào lời thoại.`;
   let segmentStart = 0;
@@ -208,10 +211,11 @@ function buildAgentTask(input: {
         const flawEnd = Math.max(flawStart, Math.round(seg.duration * 0.8));
         return `• Clip ${index + 1}/${segmentPlan.length} (giây ${seg.start}–${seg.start + seg.duration}): DEEP-DIVE HANDS-ON DEMO. Nối tiếp bằng góc cận Tabletop 45° Macro Close-Up hoặc First-person POV (50mm lens). Tập trung vào một thao tác với @Image2 có căn cứ trong dữ kiện/ảnh (${input.heroBenefit || "điểm lợi ích đã xác minh"}). Nếu có nhược điểm thật do người dùng cung cấp (${input.minorFlaw || ""}), nêu khách quan trong ${flawStart}–${flawEnd}s; không tự bịa nhược điểm hay thử độ bền/chống nước. Giữ nguyên hướng sáng và trục phòng.`;
       }).join("\n");
-      return `PHÂN VAI THỊ GIÁC CHO TỪNG CLIP THEO LỊCH CỐ ĐỊNH:\n${segmentRoleInstructions}\n\nViết prompt video tiếng Anh độc lập cho từng clip theo lịch cố định ${JSON.stringify(segmentPlan)}; trả đủ các phần tử segments với đúng start/duration, tối đa 2500 ký tự mỗi prompt. Cấu trúc mỗi prompt video tiếng Anh chuẩn 5 khối: [REFERENCE LOCK] -> [CAMERA & FRAMING] -> [ACTION & CHOREOGRAPHY (timecoded)] -> [ENVIRONMENT & LIGHTING] -> [VIDEO OVERLAY TIMELINE & SFX TIMELINE]. Tuyệt đối tuân thủ phân vai của từng clip đã nêu ở trên (không nhồi nhét cả hook, demo và CTA vào từng clip lẻ nếu video có nhiều clip). Đảm bảo có ghi chú tiếp nối (Continuity Note) ở cuối mỗi clip để khi ghép không bị jump-cut.`;
+      const finalBlock = input.postProcessTextOverlay ? "[SFX TIMELINE ONLY]" : "[VIDEO OVERLAY TIMELINE & SFX TIMELINE]";
+      return `PHÂN VAI THỊ GIÁC CHO TỪNG CLIP THEO LỊCH CỐ ĐỊNH:\n${segmentRoleInstructions}\n\nViết prompt video tiếng Anh độc lập cho từng clip theo lịch cố định ${JSON.stringify(segmentPlan)}; trả đủ các phần tử segments với đúng start/duration, tối đa 2500 ký tự mỗi prompt. Cấu trúc mỗi prompt video tiếng Anh chuẩn 5 khối: [REFERENCE LOCK] -> [CAMERA & FRAMING] -> [ACTION & CHOREOGRAPHY (timecoded)] -> [ENVIRONMENT & LIGHTING] -> ${finalBlock}. Tuyệt đối tuân thủ phân vai của từng clip đã nêu ở trên (không nhồi nhét cả hook, demo và CTA vào từng clip lẻ nếu video có nhiều clip). Đảm bảo có ghi chú tiếp nối (Continuity Note) ở cuối mỗi clip để khi ghép không bị jump-cut.`;
     })(),
     "DIRECTING GUIDELINES: Use soft directional natural daylight, true material textures, and authentic skin detail. Avoid glossy CGI surfaces, artificial beauty smoothing, exaggerated bokeh, ultrawide distortion, floating objects, and unnatural 360-degree spins. Bind the hero product strictly to @Image2. In every in-hand shot use the exact single hero item from @Image2, at a plausible scale and in a relaxed stable grip.",
-    "QUY TẮC TEXT OVERLAY HẤP DẪN (VIDEO OVERLAY TIMELINE):\n" +
+    input.postProcessTextOverlay ? "" : "QUY TẮC TEXT OVERLAY HẤP DẪN (VIDEO OVERLAY TIMELINE):\n" +
     "- Chữ màn hình dành cho 80% người xem lướt tắt tiếng. Cụm chữ ngắn từ 2–5 từ in hoa kèm 1–2 emoji cảm xúc mạnh.\n" +
     "- CẤM TUYỆT ĐỐI mô tả lại hành động mắt thấy (CẤM viết kiểu tường thuật: 'XOAY MÀN HÌNH', 'CẦM BÌNH', 'MỞ NẮP', 'BẤM NÚT', 'THOA KEM'). Người xem đã thấy tay làm gì, chữ không được lặp lại!\n" +
     "- THAY VÀO ĐÓ: Phải giật tít đánh trúng tim đen hoặc nêu bật lợi ích tốc độ / khoảnh khắc 'Wow' / sự thật tò mò:\n" +
@@ -219,6 +223,9 @@ function buildAgentTask(input: {
     "  * Clip giữa (Demo): Nêu lợi ích tốc độ / điểm ăn tiền (VD: thay vì 'XOAY MÀN HÌNH' -> 'BẬT MÁY TRONG 1 GIÂY ⚡', 'XOAY LÀ QUAY LIỀN 🎬', 'CHỐNG RUNG 3 TRỤC CỰC ĐỈNH 🎯', 'CỰC ĐẦM TAY! 🏆').\n" +
     "  * Clip cuối (CTA/Verdict): Chốt hạ giá trị hoặc thách thức kiểm chứng (VD: 'XEM TEST ĐÊM RỒI CHỌN 🌙', 'LƯU LẠI KHI CẦN 📌', 'RẤT ĐÁNG ĐỒNG TIỀN! 💯').\n" +
     "- Chữ phải đối trọng (counter-point) với lời thoại, không chép lại thoại.",
+    input.postProcessTextOverlay
+      ? "QUY TẮC BẮT BUỘC CHO JOB NÀY: Không tạo thêm chữ kỹ thuật số trong khung hình như tiêu đề, caption, subtitle, emoji, logo, watermark, giao diện hoặc đồ họa có chữ. Giữ nguyên nhãn và bao bì thật của sản phẩm theo ảnh tham chiếu; không bịa hoặc sửa chữ trên sản phẩm. Không đưa nội dung Text/Emoji của bước hậu kỳ vào product, facts, segments, script hay prompt. StoryAI sẽ thêm overlay riêng bằng FFmpeg sau khi ghép video."
+      : "",
     `Trường script phải là lời thoại riêng bằng ${input.language}, không chứa chỉ dẫn quay. ${speechBudgetInstruction} Chỉ trả JSON theo schema.`,
   ].filter(Boolean).join("\n\n");
 }
@@ -227,6 +234,7 @@ function finalVideoPrompt(input: {
   scenePrompt: string; script: string; start: number; clipSeconds: number; clipIndex: number; clipCount: number;
   product: string; facts: string; ratio: string; language: string; audio: boolean; productImageCount: number; promptMaxLength: number;
   templateName: string; templateId: string; direction: string; claimCategory: string;
+  suppressPromptOverlays: boolean;
 }) {
   const hasReferenceLock = /REFERENCE LOCK/i.test(input.scenePrompt);
   const cleanScript = input.script.replace(/\r?\n/gu, " ").trim();
@@ -239,6 +247,9 @@ function finalVideoPrompt(input: {
   const verifiedFacts = input.facts.trim()
     ? `VERIFIED PRODUCT INFORMATION: ${JSON.stringify(input.facts)}. Use only these facts; do not invent specifications, prices, offers, certifications, or benefits.`
     : "VERIFIED PRODUCT INFORMATION: None supplied. Describe only details visible in the references; do not invent specifications, prices, offers, certifications, or benefits.";
+  const overlayGuard = input.suppressPromptOverlays
+    ? "FINAL VIDEO MODEL INSTRUCTION: Do not add digital on-screen text, captions, subtitles, emoji, logos, watermarks, UI, or text graphics. Preserve real product labels and packaging from the references without inventing or altering their writing. Do not place the user's post-production Text/Emoji content in this prompt. StoryAI will add the separate overlay with FFmpeg only after all clips are stitched."
+    : "";
 
   const parts = [
     header,
@@ -247,9 +258,13 @@ function finalVideoPrompt(input: {
     verifiedFacts,
     input.scenePrompt,
     dialogueInstruction,
+    overlayGuard,
   ].filter(Boolean);
 
-  return parts.join("\n\n").slice(0, input.promptMaxLength);
+  const body = parts.slice(0, -1).join("\n\n");
+  if (!overlayGuard) return [...parts].join("\n\n").slice(0, input.promptMaxLength);
+  const bodyLimit = Math.max(0, input.promptMaxLength - overlayGuard.length - 2);
+  return `${body.slice(0, bodyLimit)}\n\n${overlayGuard}`;
 }
 
 function buildReviewProject(input: {
@@ -268,6 +283,7 @@ function buildReviewProject(input: {
   templateId: string;
   direction: string;
   claimCategory: string;
+  postProcessTextOverlay: boolean;
 }) {
   let dialogueStart = 0;
   const dialogueRanges = input.segmentDurations.map((duration) => {
@@ -310,6 +326,7 @@ function buildReviewProject(input: {
         templateId: input.templateId,
         direction: input.direction,
         claimCategory: input.claimCategory,
+        suppressPromptOverlays: input.postProcessTextOverlay,
       }),
     };
   });
@@ -377,6 +394,17 @@ export async function POST(request: Request) {
   const claimCategory = salesVideoClaimCategories.some((category) => category.id === requestedClaimCategory)
     ? requestedClaimCategory : template?.id === "supplements" ? "health" : "general";
   const requestedModel = text(form, "model");
+  const postProcessTextOverlayEnabled = text(form, "postProcessTextOverlayEnabled") === "1";
+  const postProcessTextOverlayText = text(form, "postProcessTextOverlayText");
+  const postProcessTextOverlayPosition = text(form, "postProcessTextOverlayPosition");
+  if (postProcessTextOverlayEnabled && (!postProcessTextOverlayText || postProcessTextOverlayText.length > 140
+    || !["top", "center", "bottom"].includes(postProcessTextOverlayPosition))) {
+    return NextResponse.json({ message: "Nhập Text/Emoji tối đa 140 ký tự và chọn vị trí hiển thị hợp lệ." }, { status: 400 });
+  }
+  const textOverlay = postProcessTextOverlayEnabled ? {
+    text: postProcessTextOverlayText,
+    position: postProcessTextOverlayPosition as "top" | "center" | "bottom",
+  } : undefined;
   if (!template || !product || product.length > 5000 || facts.length > 1000 || userExperience.length > 3000 || url.length > 2000 || !language || !ratio
     || !Number.isInteger(seconds) || seconds < 5 || seconds > 60 || existingScript.length > 2000
     || requirements.length > 5000 || title.length > 120) {
@@ -527,6 +555,7 @@ export async function POST(request: Request) {
   const project: SalesVideoProject = {
     id, title, template: template.name, model: [selectedVideoModel?.label || requestedModel || "Model đã chọn", videoQuality, higgsfieldSpeed ? "Fast" : ""].filter(Boolean).join(" · "),
     createdAt: new Date().toISOString(), status: manualDraft ? "draft" : "processing", phase: manualDraft ? "review" : "writing", worker: manualDraft ? undefined : salesVideoWorkerId,
+    ...(textOverlay ? { postProcessing: { textOverlay } } : {}),
     details: {
       templateId: template.id, product, productUrl: url, facts, userExperience,
       painPoint, heroBenefit, minorFlaw, targetAudience, hookStyle,
@@ -560,6 +589,7 @@ export async function POST(request: Request) {
     templateId: template.id,
     direction: template.direction,
     claimCategory,
+    postProcessTextOverlay: Boolean(textOverlay),
   }) : project;
   await saveSalesVideoProject(userId, projectToSave);
   if (manualDraft) return NextResponse.json({ project: projectToSave }, { status: 202 });
@@ -580,6 +610,7 @@ export async function POST(request: Request) {
           templateId: template.id, direction: template.direction, claimCategory,
           link: url, pageText: productPage, requirements, existingScript,
           painPoint, heroBenefit, minorFlaw, targetAudience, hookStyle,
+          postProcessTextOverlay: Boolean(textOverlay),
         }, ugcGuide);
         let draft: z.infer<typeof draftSchema> | undefined;
         let draftingAgent: CodingAgent | undefined;
@@ -641,7 +672,7 @@ export async function POST(request: Request) {
         const reviewProject = buildReviewProject({
           project, draft, facts, userExperience, audio, language, duration: seconds, ratio, segmentDurations,
           promptMaxLength, productImageCount: productBytes.length, templateName: template.name, templateId: template.id,
-          direction: template.direction, claimCategory,
+          direction: template.direction, claimCategory, postProcessTextOverlay: Boolean(textOverlay),
         });
         const reviewSegments = reviewProject.details?.promptSegments || [];
         if (reviewSegments.length !== segmentDurations.length || reviewSegments.some((segment) => !segment.prompt.trim())) {

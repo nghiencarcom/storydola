@@ -2907,6 +2907,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .sales-video-prompt-details { margin-top: 0; }
 .sales-video-optional-details.sales-video-prompt-details > summary { min-height: 48px; }
 .sales-video-optional-details .sales-prompt-editor { margin-top: 0; border: 0; border-radius: 0; background: transparent; }
+.sales-video-post-processing { display: grid; gap: 14px; padding: 16px; border: 1px solid #dfe5f1; border-radius: 12px; background: #fafbff; }
+.sales-video-post-processing-toggle { display: flex; align-items: flex-start; gap: 11px; color: #35435b; cursor: pointer; }
+.sales-video-post-processing-toggle > input { width: 17px; height: 17px; flex: 0 0 auto; margin: 2px 0 0; accent-color: #645de8; }
+.sales-video-post-processing-toggle > span { display: grid; gap: 4px; }
+.sales-video-post-processing-toggle strong { font-size: 13px; line-height: 1.4; }
+.sales-video-post-processing-toggle small { color: #687790; font-size: 11px; line-height: 1.5; }
+.sales-video-post-processing-fields { display: grid; grid-template-columns: minmax(0, 2fr) minmax(180px, 1fr); align-items: start; gap: 16px; padding-top: 13px; border-top: 1px solid #e6eaf2; }
+.sales-video-post-processing-fields textarea { min-height: 82px !important; padding: 11px 13px !important; }
 .sales-form-step { display: flex; align-items: center; gap: 11px; min-width: 0; padding: 4px 0 9px; border-bottom: 1px solid #e9edf4; }
 .sales-form-step > .secondary-button { min-height:32px; margin-left:auto; }
 .sales-form-step > span { display: grid; place-items: center; width: 27px; height: 27px; flex: 0 0 auto; border-radius: 8px; color: #514db8; background: #eeedff; font-size: 10px; font-weight: 800; }
@@ -2958,6 +2966,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .sales-project-card-status { grid-column:2; grid-row:1 / span 2; justify-self:end; color:#687790; font-size:12px !important; line-height:1.4; text-align:right; white-space:nowrap; }
 .sales-project-detail { display: grid; gap: 12px; justify-items: start; }
 .sales-project-detail video { width: 100%; max-height: 65vh; background: #121319; }
+.sales-project-post-processing-note { width: 100%; box-sizing: border-box; margin: -7px 0 0; padding: 11px 13px; border: 1px solid #dfe5f1; border-radius: 9px; color: #52617a; background: #fafbff; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.sales-project-post-processing-note strong { color: #39465f; }
 .sales-project-detail > :is(.sales-project-status-row, .sales-project-waiting, .sales-project-metadata, .sales-project-references, .sales-project-review, .sales-project-output-details, video) { width: 100%; }
 .sales-project-status-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; color: #687790; font-size: 12px; }
 .sales-project-status-row > .secondary-button { margin-left: auto; text-decoration: none; }
@@ -3083,6 +3093,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .sales-reference-assets-layout .sales-product-secondary-references { max-width: 100%; }
   .sales-video-optional-body { grid-template-columns: minmax(0, 1fr); gap: 15px; padding: 13px; }
   .sales-video-optional-body > .full { grid-column: 1; }
+  .sales-video-post-processing-fields { grid-template-columns: minmax(0, 1fr); gap: 12px; }
   .sales-product-reference-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
   .sales-video-template-selected { grid-template-columns: 112px minmax(0, 1fr); }
   .sales-video-template-selected .secondary-button { grid-column: 1 / -1; justify-self: start; }

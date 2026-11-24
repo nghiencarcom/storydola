@@ -362,6 +362,7 @@ export async function POST(request: Request) {
       try {
         const generatedSegments = await createCreativeSalesVideo({
           id: project.id, userId, template, images, seconds, ratio, prompt, promptSegments: submittedPromptSegments, videoQuality, videoOffPeak,
+          postProcessing: pendingDraft?.postProcessing,
           splitDialogue: isStitched ? { script: scriptForVideo, language: language!, audio: speaksInVideo, segments: productSegments!, scriptSegments: effectiveScriptSegments } : undefined,
           pixverseKey, voiceKey, model, maiVideoModel, gatewayVideoModel, providerAuthToken: token, sourceStart,
           onlySegmentIndex: retrySegmentIndex, signal: AbortSignal.timeout(60 * 60_000),

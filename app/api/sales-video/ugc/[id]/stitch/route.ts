@@ -26,7 +26,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
 
   try {
-    await stitchSalesVideoSegments(userId, id, segments, details.duration || segments.reduce((sum, segment) => sum + segment.duration, 0));
+    await stitchSalesVideoSegments(userId, id, segments, details.duration || segments.reduce((sum, segment) => sum + segment.duration, 0), project.postProcessing?.textOverlay);
     const updated: SalesVideoProject = {
       ...project,
       status: "ready",

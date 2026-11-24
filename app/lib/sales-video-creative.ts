@@ -4,11 +4,12 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { createFalClient } from "@fal-ai/client";
+import sharp from "sharp";
 import { generateMaiVideoPixverseV6ReferenceSegment, generateMaiVideoSalesSegment, generateSalesVideoSegment, generateSeedanceGatewaySalesSegment } from "./media-provider";
 import { videoDurationOptions } from "./media-generation-settings";
 import type { VideoGenerationModelOption } from "./project-types";
 import { pixverseSalesClient } from "./pixverse-sales-video";
-import { salesVideoPath, salesVideoSegmentPath } from "./sales-video-storage";
+import { salesVideoPath, salesVideoSegmentPath, type SalesVideoPostProcessing } from "./sales-video-storage";
 import { salesVideoProductReferenceLock, salesVideoProductScriptInstruction, salesVideoWordCount, type salesVideoCreativeTemplates } from "./sales-video-templates";
 
 const exec = promisify(execFile);
@@ -16,6 +17,89 @@ const ffmpeg = () => process.env.STORYAI_FFMPEG_PATH || process.env.VIBE_FFMPEG_
 const ffprobe = () => process.env.STORYAI_FFPROBE_PATH || path.join(path.dirname(ffmpeg()), "ffprobe");
 const videoFormat = ["-format_whitelist", "mov"];
 const audioFormats = ["-format_whitelist", "mp3,wav,mov,aac,ogg,flac"];
+
+type SalesVideoTextOverlay = NonNullable<SalesVideoPostProcessing["textOverlay"]>;
+
+function escapeXml(value: string) {
+  return value.replace(/&/gu, "&amp;").replace(/</gu, "&lt;").replace(/>/gu, "&gt;")
+    .replace(/\"/gu, "&quot;").replace(/'/gu, "&apos;");
+}
+
+function wrapOverlayText(text: string, maximumLineLength: number, maximumLines: number) {
+  const lines: string[] = [];
+  const cleanText = text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, "");
+  const inputLines = cleanText.replace(/\r/gu, "").split("\n");
+  for (const inputLine of inputLines) {
+    const words = inputLine.trim().split(/\s+/u).filter(Boolean);
+    let line = "";
+    for (const word of words) {
+      const graphemes = [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(word)].map(({ segment }) => segment);
+      while (graphemes.length) {
+        const part = graphemes.splice(0, maximumLineLength).join("");
+        if (!line) {
+          line = part;
+        } else if (`${line} ${part}`.length <= maximumLineLength) {
+          line += ` ${part}`;
+        } else {
+          lines.push(line);
+          line = part;
+        }
+        if (graphemes.length) {
+          lines.push(line);
+          line = "";
+        }
+      }
+    }
+    if (line) lines.push(line);
+    else if (!words.length && lines.length) lines.push("");
+  }
+  if (lines.length > maximumLines) {
+    lines.length = maximumLines;
+    lines[maximumLines - 1] = `${lines[maximumLines - 1].slice(0, Math.max(1, maximumLineLength - 1)).trimEnd()}…`;
+  }
+  return lines.length ? lines : [""];
+}
+
+async function renderSalesVideoTextOverlay(
+  source: string,
+  output: string,
+  work: string,
+  overlay: SalesVideoTextOverlay,
+  duration: number,
+  signal?: AbortSignal,
+) {
+  const { stdout } = await exec(ffprobe(), ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", source],
+    { signal, timeout: 15_000 });
+  const stream = (JSON.parse(stdout) as { streams?: Array<{ width?: number; height?: number }> }).streams?.[0];
+  const width = Number(stream?.width);
+  const height = Number(stream?.height);
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 2 || height < 2) throw new Error("Could not read stitched video dimensions for Text/Emoji overlay.");
+
+  const fontSize = Math.max(26, Math.min(64, Math.round(width * 0.055)));
+  const horizontalPadding = Math.round(width * 0.065);
+  const contentWidth = width - horizontalPadding * 2;
+  const maximumLineLength = Math.max(12, Math.floor((contentWidth - fontSize * 1.1) / (fontSize * 0.57)));
+  const lines = wrapOverlayText(overlay.text, maximumLineLength, 4);
+  const lineHeight = Math.round(fontSize * 1.24);
+  const verticalPadding = Math.round(fontSize * 0.5);
+  const cardHeight = lineHeight * lines.length + verticalPadding * 2;
+  const top = overlay.position === "top"
+    ? Math.round(height * 0.08)
+    : overlay.position === "center"
+      ? Math.round((height - cardHeight) / 2)
+      : Math.round(height * 0.88 - cardHeight);
+  const lineMarkup = lines.map((line, index) =>
+    `<text x="${width / 2}" y="${top + verticalPadding + fontSize + index * lineHeight}" text-anchor="middle" font-family="Arial, 'Apple Color Emoji', 'Noto Color Emoji', 'Segoe UI Emoji', sans-serif" font-size="${fontSize}" font-weight="700" fill="#fff" stroke="#111827" stroke-opacity=".45" stroke-width="${Math.max(1, Math.round(fontSize * 0.04))}" paint-order="stroke">${escapeXml(line)}</text>`
+  ).join("");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect x="${horizontalPadding}" y="${top}" width="${contentWidth}" height="${cardHeight}" rx="${Math.round(fontSize * 0.45)}" fill="#090b14" fill-opacity=".72"/>${lineMarkup}</svg>`;
+  const overlayImage = path.join(work, "text-emoji-overlay.png");
+  await sharp(Buffer.from(svg)).png().toFile(overlayImage);
+  await exec(ffmpeg(), ["-nostdin", "-y", "-hide_banner", "-loglevel", "error", "-i", source,
+    "-loop", "1", "-framerate", "24", "-i", overlayImage,
+    "-filter_complex", "[0:v:0][1:v:0]overlay=0:0:shortest=1:format=auto[v]",
+    "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+    "-c:a", "copy", "-t", String(duration), "-movflags", "+faststart", output], { signal, timeout: 600_000 });
+}
 
 function salesVideoOutputSize(ratio: string, quality: string) {
   const normalized = quality.trim().toLowerCase();
@@ -122,6 +206,7 @@ export async function createCreativeSalesVideo(input: {
   video?: File;
   prompt: string;
   promptSegments?: Array<{ start: number; duration: number; prompt: string }>;
+  postProcessing?: SalesVideoPostProcessing;
   seconds: number;
   ratio: string;
   videoQuality?: string;
@@ -349,7 +434,13 @@ export async function createCreativeSalesVideo(input: {
       ...(audioInput ? ["-af", "apad", "-c:a", "aac"] : ["-c:a", "copy"]),
       "-t", String(seconds), "-c:v", "copy", "-movflags", "+faststart", final]);
     await mkdir(path.dirname(output), { recursive: true });
-    await rename(final, output);
+    if (input.postProcessing?.textOverlay) {
+      const withOverlay = path.join(work, "final-with-overlay.mp4");
+      await renderSalesVideoTextOverlay(final, withOverlay, work, input.postProcessing.textOverlay, seconds, signal);
+      await rename(withOverlay, output);
+    } else {
+      await rename(final, output);
+    }
     await rm(work, { recursive: true, force: true });
     return generatedSegments;
   } catch (error) {
@@ -391,7 +482,13 @@ export async function ensureSalesVideoSegmentFile(userId: string, id: string, in
   }
 }
 
-export async function stitchSalesVideoSegments(userId: string, id: string, segments: Array<{ start: number; duration: number }>, duration: number) {
+export async function stitchSalesVideoSegments(
+  userId: string,
+  id: string,
+  segments: Array<{ start: number; duration: number }>,
+  duration: number,
+  textOverlay?: SalesVideoTextOverlay,
+) {
   if (!segments.length || segments.some((segment) => !Number.isInteger(segment.start) || !Number.isInteger(segment.duration) || segment.duration < 1)) {
     throw new Error("Danh sách clip cần ghép không hợp lệ.");
   }
@@ -407,7 +504,13 @@ export async function stitchSalesVideoSegments(userId: string, id: string, segme
     await exec(ffmpeg(), ["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", manifest,
       "-map", "0:v:0", "-map", "0:a:0?", "-t", String(duration), "-c", "copy", "-movflags", "+faststart", final],
     { timeout: 120_000 });
-    await rename(final, output);
+    if (textOverlay) {
+      const withOverlay = path.join(work, "final-with-overlay.mp4");
+      await renderSalesVideoTextOverlay(final, withOverlay, work, textOverlay, duration);
+      await rename(withOverlay, output);
+    } else {
+      await rename(final, output);
+    }
     return output;
   } finally {
     await rm(work, { recursive: true, force: true }).catch(() => undefined);

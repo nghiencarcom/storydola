@@ -55,6 +55,13 @@ export type SalesVideoProjectDetails = {
   needsStitching?: boolean;
 };
 
+export type SalesVideoPostProcessing = {
+  textOverlay?: {
+    text: string;
+    position: "top" | "center" | "bottom";
+  };
+};
+
 export type SalesVideoProject = {
   id: string;
   title: string;
@@ -65,6 +72,7 @@ export type SalesVideoProject = {
   phase?: "writing" | "review" | "generating";
   worker?: string;
   error?: string;
+  postProcessing?: SalesVideoPostProcessing;
   details?: SalesVideoProjectDetails;
 };
 

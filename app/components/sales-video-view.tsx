@@ -763,6 +763,8 @@ function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, onReviewA
   const generateAction = useRef<() => void>(() => undefined);
   const duration = details?.duration || 15;
   const language = details?.language || "Tiếng Việt";
+  const textOverlayPositionLabel = project.postProcessing?.textOverlay?.position === "top" ? "phía trên"
+    : project.postProcessing?.textOverlay?.position === "center" ? "ở giữa" : "phía dưới";
   const script = scriptSegments.map((segment) => segment.script).filter(Boolean).join("\n");
   const words = salesVideoWordCount(script, language);
   const maxWords = salesVideoMaxWordCount(duration, language);
@@ -897,6 +899,9 @@ function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, onReviewA
       <a className="secondary-button compact" href="/sales-video#sales-template-gallery">Tạo job khác</a>
     </div>
     {project.error && <p role="alert">{project.error}</p>}
+    {project.postProcessing?.textOverlay && <p className="sales-project-post-processing-note">
+      Text/Emoji hậu kỳ: <strong>{project.postProcessing.textOverlay.text}</strong> · vị trí {textOverlayPositionLabel} · được chèn bằng FFmpeg sau khi ghép.
+    </p>}
     {project.status === "processing" && project.phase === "writing" && <div className="sales-project-waiting" role="status">
       <strong>Code Agent đang chuẩn bị prompt và lời thoại</strong>
     </div>}
@@ -1039,6 +1044,9 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
   const [userExperience, setUserExperience] = useState("");
   const [script, setScript] = useState("");
   const [productUrl, setProductUrl] = useState("");
+  const [postProcessTextOverlayEnabled, setPostProcessTextOverlayEnabled] = useState(false);
+  const [postProcessTextOverlayText, setPostProcessTextOverlayText] = useState("");
+  const [postProcessTextOverlayPosition, setPostProcessTextOverlayPosition] = useState<"top" | "center" | "bottom">("bottom");
   const [claimCategory, setClaimCategory] = useState<string>(templateId === "supplements" ? "health" : "general");
   const [queuedProject, setQueuedProject] = useState<SalesVideoProject>();
   const [productPromptOverride, setProductPromptOverride] = useState("");
@@ -1333,6 +1341,11 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
       if (typeof saved.userExperience === "string") setUserExperience(saved.userExperience);
       if (typeof saved.script === "string") setScript(saved.script);
       if (typeof saved.productUrl === "string") setProductUrl(saved.productUrl);
+      if (typeof saved.postProcessTextOverlayEnabled === "boolean") setPostProcessTextOverlayEnabled(saved.postProcessTextOverlayEnabled);
+      if (typeof saved.postProcessTextOverlayText === "string") setPostProcessTextOverlayText(saved.postProcessTextOverlayText);
+      if (saved.postProcessTextOverlayPosition === "top" || saved.postProcessTextOverlayPosition === "center" || saved.postProcessTextOverlayPosition === "bottom") {
+        setPostProcessTextOverlayPosition(saved.postProcessTextOverlayPosition);
+      }
       if (typeof saved.claimCategory === "string" && salesVideoClaimCategories.some(({ id }) => id === saved.claimCategory)) setClaimCategory(saved.claimCategory);
       if (typeof saved.language === "string" && salesVideoLanguages.includes(saved.language as typeof salesVideoLanguages[number])) setLanguage(saved.language);
       if (typeof saved.duration === "number") setDuration(saved.duration);
@@ -1387,6 +1400,9 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
         setUserExperience(details?.userExperience || "");
         setScript(details?.script || "");
         setProductUrl(details?.productUrl || "");
+        setPostProcessTextOverlayEnabled(Boolean(similarProject.postProcessing?.textOverlay));
+        setPostProcessTextOverlayText(similarProject.postProcessing?.textOverlay?.text || "");
+        setPostProcessTextOverlayPosition(similarProject.postProcessing?.textOverlay?.position || "bottom");
         setClaimCategory(salesVideoClaimCategories.find(({ id }) => id === details?.claimCategory)?.id || fallbackClaimCategory);
         setLanguage(salesVideoLanguages.find((value) => value === details?.language) || salesVideoLanguages[0]);
         setDuration(typeof details?.duration === "number" && Number.isInteger(details.duration) ? details.duration : 15);
@@ -1451,12 +1467,13 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
         ratio, prompt, product, facts, userExperience,
         painPoint, heroBenefit, minorFlaw, targetAudience, hookStyle,
         script, productUrl,
+        postProcessTextOverlayEnabled, postProcessTextOverlayText, postProcessTextOverlayPosition,
         claimCategory: selectedTemplate?.id === "supplements" ? "health" : claimCategory, language, duration, sourceStart,
         productPromptOverride, productPromptEdited, savedFiles: JSON.stringify(savedFiles),
       });
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [draftReady, draftOwner, draftTemplateId, busy, selectedModel, ratio, prompt, product, facts, painPoint, heroBenefit, minorFlaw, targetAudience, hookStyle, userExperience, script, productUrl, claimCategory, language, duration, sourceStart, productPromptOverride, productPromptEdited, files, mediaFields, selectedTemplate?.id]);
+  }, [draftReady, draftOwner, draftTemplateId, busy, selectedModel, ratio, prompt, product, facts, painPoint, heroBenefit, minorFlaw, targetAudience, hookStyle, userExperience, script, productUrl, postProcessTextOverlayEnabled, postProcessTextOverlayText, postProcessTextOverlayPosition, claimCategory, language, duration, sourceStart, productPromptOverride, productPromptEdited, files, mediaFields, selectedTemplate?.id]);
 
   function updateFile(name: string, file?: File, kind?: keyof typeof salesVideoFileTypes) {
     if (file && kind) {
@@ -1696,7 +1713,8 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
   const canSubmit = Boolean(draftReady && !libraryOpen && !libraryActionBusy && requiredFilesReady && (creative || product.trim()) && requiredPromptReady
     && model?.available && durationOptions.length && !scriptTooLong && !productAnalysisBusy
     && (!selectedTemplate || Boolean(access?.codingAgent) || manualPromptsReady) && (creative?.workflow !== "narration" || access?.voice)
-    && (!selectedTemplate || !productImagesExceedModelLimit));
+    && (!selectedTemplate || !productImagesExceedModelLimit)
+    && (!selectedTemplate || !postProcessTextOverlayEnabled || Boolean(postProcessTextOverlayText.trim())));
   const example = salesVideoTextExamples[templateId];
 
   async function generate(event: FormEvent<HTMLFormElement>) {
@@ -1720,6 +1738,14 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
       form.set("productUrl", productUrl.trim());
       form.set("claimCategory", selectedTemplate.id === "supplements" ? "health" : claimCategory);
       form.set("prompt", "");
+      form.set("postProcessTextOverlayEnabled", postProcessTextOverlayEnabled ? "1" : "0");
+      if (postProcessTextOverlayEnabled) {
+        form.set("postProcessTextOverlayText", postProcessTextOverlayText.trim());
+        form.set("postProcessTextOverlayPosition", postProcessTextOverlayPosition);
+      } else {
+        form.delete("postProcessTextOverlayText");
+        form.delete("postProcessTextOverlayPosition");
+      }
       if (manualPromptsReady && manualUgcJob) {
         form.set("manualDraft", JSON.stringify({ segments: manualUgcJob.segments, script: manualUgcJob.script || script }));
       }
@@ -1897,6 +1923,32 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
                   </label>
                 </div>
               </details>
+              <section className="sales-video-post-processing full" aria-label="Hậu kỳ Text và Emoji">
+                <label className="sales-video-post-processing-toggle">
+                  <input type="checkbox" checked={postProcessTextOverlayEnabled}
+                    onChange={(event) => setPostProcessTextOverlayEnabled(event.target.checked)} />
+                  <span><strong>Chèn Text/Emoji bằng FFmpeg sau khi ghép video</strong>
+                    <small>Video model sẽ tạo clip không chữ; FFmpeg thêm nội dung này lên video đã ghép.</small></span>
+                </label>
+                {postProcessTextOverlayEnabled && <div className="sales-video-post-processing-fields">
+                  <label className="form-field">
+                    <span>Nội dung Text/Emoji <em>Tối đa 140 ký tự</em></span>
+                    <textarea name="postProcessTextOverlayText" value={postProcessTextOverlayText} maxLength={140} required
+                      onChange={(event) => setPostProcessTextOverlayText(event.target.value)}
+                      placeholder="Ví dụ: Nhỏ gọn, quay mượt hơn 🎬" />
+                    <small>Nội dung này chỉ được gửi tới bước FFmpeg sau khi ghép, không đi vào prompt tạo video.</small>
+                  </label>
+                  <label className="form-field">
+                    <span>Vị trí hiển thị</span>
+                    <select name="postProcessTextOverlayPosition" value={postProcessTextOverlayPosition}
+                      onChange={(event) => setPostProcessTextOverlayPosition(event.target.value as "top" | "center" | "bottom")}>
+                      <option value="top">Phía trên</option>
+                      <option value="center">Ở giữa</option>
+                      <option value="bottom">Phía dưới</option>
+                    </select>
+                  </label>
+                </div>}
+              </section>
             </>}
             <div className="sales-form-step full"><span>{selectedTemplate ? "03" : "02"}</span><div><strong>Model và định dạng video</strong></div></div>
             <div className={`sales-video-model-fields full${selectedTemplate ? " is-ugc" : ""}`}>
