@@ -2821,6 +2821,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .sales-product-reference-layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; gap: 20px; }
 .sales-product-primary-reference, .sales-product-secondary-references { display: grid; align-content: start; gap: 8px; min-width: 0; padding: 11px; border: 1px solid #e1e7f1; border-radius: 11px; background: #fbfcff; }
 .sales-product-primary-reference { border-color: #cfd8f2; background: #f8f9ff; }
+.sales-image-drop-target { transition: border-color .16s ease, background-color .16s ease, box-shadow .16s ease; }
+.sales-image-drop-target:focus-visible { outline: 2px solid #7b83e7; outline-offset: 2px; }
+.sales-image-drop-target.is-drop-active { border-color: #737ce2 !important; background-color: #f0f2ff; box-shadow: 0 0 0 3px rgba(99,102,241,.14); }
+.sales-image-drop-hint { color: #748199; font-size: 10px; line-height: 1.45; }
 .sales-product-reference-title { display:flex; align-items:baseline; justify-content:space-between; gap:8px; min-width:0; color:#3d4a63; font-size:12px; font-weight:700; line-height:1.4; }
 .sales-product-reference-title em { margin-left:4px; color:#7b879b; font-size:10px; font-style:normal; font-weight:550; }
 .sales-product-reference-title > span { flex:0 0 auto; color:#748199; font-size:10px; font-weight:700; }

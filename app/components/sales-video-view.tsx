@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, useState, useCallback, type FormEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, useCallback, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, type FormEvent } from "react";
 import {
   salesVideoDurationOptions, salesVideoProductSegments, salesVideoLanguages, salesVideoWordCount, salesVideoMaxWordCount,
   salesVideoSplitDialogue, salesVideoDialogueToSrt,
@@ -34,16 +34,67 @@ const salesVideoProductFields = [
 ] as const;
 const salesVideoProductImageFieldNames = Array.from({ length: salesVideoMaxProductImages }, (_, index) => `product-image-${index + 1}`);
 
-function ProductImagesInput({ mainFile, additionalFiles, maxCount, onMainFileChange, onAdditionalFilesChange, disabled }: {
+function imageFilesFromTransfer(transfer: DataTransfer) {
+  const transferredFiles = Array.from(transfer.files);
+  const files = transferredFiles.length ? transferredFiles : Array.from(transfer.items)
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file));
+  return files.filter((file) => file.type.startsWith("image/") || /\.(jpe?g|png|webp|avif)$/i.test(file.name));
+}
+
+function useImageDropPaste(onFiles: (files: File[]) => void, disabled = false) {
+  const [isDragActive, setIsDragActive] = useState(false);
+  const onDragEnter = (event: ReactDragEvent<HTMLElement>) => {
+    if (disabled || !Array.from(event.dataTransfer.types).includes("Files")) return;
+    event.preventDefault();
+    setIsDragActive(true);
+  };
+  const onDragOver = (event: ReactDragEvent<HTMLElement>) => {
+    if (disabled || !Array.from(event.dataTransfer.types).includes("Files")) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setIsDragActive(true);
+  };
+  const onDragLeave = (event: ReactDragEvent<HTMLElement>) => {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setIsDragActive(false);
+  };
+  const onDrop = (event: ReactDragEvent<HTMLElement>) => {
+    event.preventDefault();
+    setIsDragActive(false);
+    if (disabled) return;
+    const files = imageFilesFromTransfer(event.dataTransfer);
+    if (files.length) onFiles(files);
+  };
+  const onPaste = (event: ReactClipboardEvent<HTMLElement>) => {
+    if (disabled) return;
+    const files = imageFilesFromTransfer(event.clipboardData);
+    if (!files.length) return;
+    event.preventDefault();
+    onFiles(files);
+  };
+  return { isDragActive, onDragEnter, onDragOver, onDragLeave, onDrop, onPaste };
+}
+
+function isAllowedSalesVideoImage(file: File) {
+  return salesVideoImageTypes.includes(file.type) || /\.(jpe?g|png|webp|avif)$/i.test(file.name);
+}
+
+function ProductImagesInput({ mainFile, additionalFiles, maxCount, onMainFileChange, onMainFilesDrop, onAdditionalFilesChange, disabled }: {
   mainFile?: File;
   additionalFiles: File[];
   maxCount: number;
   onMainFileChange: (file?: File) => void;
+  onMainFilesDrop: (files: File[]) => void;
   onAdditionalFilesChange: (files: File[]) => void;
   disabled?: boolean;
 }) {
   const mainInputRef = useRef<HTMLInputElement>(null);
   const additionalInputRef = useRef<HTMLInputElement>(null);
+  const mainDrop = useImageDropPaste(onMainFilesDrop, disabled || maxCount < 1);
+  const additionalDrop = useImageDropPaste((files) => onAdditionalFilesChange([...additionalFiles, ...files]), disabled || maxCount < 2);
+  const { isDragActive: mainDropActive, ...mainDropHandlers } = mainDrop;
+  const { isDragActive: additionalDropActive, ...additionalDropHandlers } = additionalDrop;
   const [mainPreview, setMainPreview] = useState("");
   const [additionalPreviews, setAdditionalPreviews] = useState<string[]>([]);
   useEffect(() => {
@@ -64,7 +115,8 @@ function ProductImagesInput({ mainFile, additionalFiles, maxCount, onMainFileCha
   return <div className="form-field full sales-product-images-input">
     <div className="sales-product-reference-layout">
       <div className="sales-product-reference-title sales-product-primary-title"><strong>Ảnh chính <em>Bắt buộc</em></strong></div>
-      <section className="sales-product-primary-reference" aria-label="Ảnh sản phẩm chính">
+      <section {...mainDropHandlers} className={`sales-product-primary-reference sales-image-drop-target${mainDropActive ? " is-drop-active" : ""}`} aria-label="Ảnh sản phẩm chính — kéo thả hoặc dán ảnh" role="group" tabIndex={disabled ? -1 : 0}
+        onClick={(event) => { if (!(event.target as HTMLElement).closest("button")) event.currentTarget.focus(); }}>
         <input ref={mainInputRef} type="file" accept={salesVideoFileTypes.image} hidden aria-label="Chọn ảnh sản phẩm chính"
         onChange={(event) => {
           onMainFileChange(event.currentTarget.files?.[0]);
@@ -80,12 +132,14 @@ function ProductImagesInput({ mainFile, additionalFiles, maxCount, onMainFileCha
             </button>
             {mainFile && <button type="button" className="secondary-button compact" onClick={() => onMainFileChange(undefined)} disabled={disabled}>Xóa ảnh</button>}
           </div>
+          <small className="sales-image-drop-hint">Kéo thả hoặc dán ảnh vào đây · ⌘V / Ctrl+V</small>
         </div>
       </section>
       <div className="sales-product-reference-title sales-product-secondary-title">
         <strong>Ảnh phụ <em>Tùy chọn</em></strong><span>{additionalFiles.length}/{Math.max(0, maxCount - 1)}</span>
       </div>
-      <section className="sales-product-secondary-references" aria-label="Ảnh tham khảo sản phẩm bổ sung">
+      <section {...additionalDropHandlers} className={`sales-product-secondary-references sales-image-drop-target${additionalDropActive ? " is-drop-active" : ""}`} aria-label="Ảnh phụ — kéo thả hoặc dán để thêm ảnh" role="group" tabIndex={disabled ? -1 : 0}
+        onClick={(event) => { if (!(event.target as HTMLElement).closest("button")) event.currentTarget.focus(); }}>
         {additionalFiles.length > 0 && <div className="sales-product-image-grid">
           {additionalFiles.map((file, index) => <figure key={`${file.name}-${index}`}>
             {additionalPreviews[index] && <img src={additionalPreviews[index]} alt={`Ảnh tham khảo phụ ${index + 1}`} />}
@@ -104,6 +158,7 @@ function ProductImagesInput({ mainFile, additionalFiles, maxCount, onMainFileCha
           </button>
           {additionalFiles.length > 0 && <button type="button" className="secondary-button compact" onClick={() => onAdditionalFilesChange([])} disabled={disabled}>Xóa tất cả</button>}
         </div>
+        <small className="sales-image-drop-hint">Kéo thả hoặc dán ảnh vào vùng này để thêm ảnh phụ · ⌘V / Ctrl+V</small>
       </section>
     </div>
     {maxCount < 1 ? <small className="sales-product-image-help">Model hiện tại không nhận ảnh tham chiếu.</small>
@@ -111,17 +166,20 @@ function ProductImagesInput({ mainFile, additionalFiles, maxCount, onMainFileCha
   </div>;
 }
 
-function MediaInput({ name, label, kind, example, file, onFileChange }: {
+function MediaInput({ name, label, kind, example, file, onFileChange, disabled }: {
   name: string;
   label: string;
   kind: keyof typeof salesVideoFileTypes;
   example: string;
   file?: File;
-  onFileChange: (name: string, file?: File) => void;
+  onFileChange: (name: string, file?: File, kind?: keyof typeof salesVideoFileTypes) => void;
+  disabled?: boolean;
 }) {
   const id = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState("");
+  const imageDrop = useImageDropPaste((selected) => onFileChange(name, selected[0], kind), kind !== "image" || disabled);
+  const { isDragActive: imageDropActive, ...imageDropHandlers } = imageDrop;
   useEffect(() => {
     const input = inputRef.current;
     if (!input) return;
@@ -150,23 +208,24 @@ function MediaInput({ name, label, kind, example, file, onFileChange }: {
     <label htmlFor={id}>{label}<em>Bắt buộc</em></label>
     {kind === "image" ? <>
       <input ref={inputRef} id={id} name={name} type="file" accept={salesVideoFileTypes[kind]} aria-required="true" hidden
-        onChange={(event) => onFileChange(name, event.currentTarget.files?.[0])} />
-      <div className={`sales-image-input-row${preview ? " has-image" : ""}`}>
+        onChange={(event) => onFileChange(name, event.currentTarget.files?.[0], kind)} />
+      <div {...imageDropHandlers} className={`sales-image-input-row sales-image-drop-target${preview ? " has-image" : ""}${imageDropActive ? " is-drop-active" : ""}`} role="group" aria-label={`${label} — kéo thả hoặc dán ảnh`} tabIndex={disabled ? -1 : 0} aria-disabled={disabled || undefined}
+        onClick={(event) => { if (!(event.target as HTMLElement).closest("button")) event.currentTarget.focus(); }}>
         {preview ? <img className="sales-image-input-preview" src={preview} alt={label} /> : <span className="sales-image-input-empty" aria-hidden="true">Ảnh</span>}
         <div className="sales-image-input-copy">
           <strong title={file?.name}>{file?.name || "Chưa chọn ảnh"}</strong>
-          <small>{file ? "Ảnh đã sẵn sàng" : `JPG, PNG, WebP hoặc AVIF · tối đa ${salesVideoFileLimits[kind] / 1024 ** 2} MB`}</small>
+          <small>{file ? "Ảnh đã sẵn sàng · kéo thả hoặc dán để thay" : `JPG, PNG, WebP hoặc AVIF · tối đa ${salesVideoFileLimits[kind] / 1024 ** 2} MB · ⌘V / Ctrl+V`}</small>
         </div>
         <div className="sales-image-input-actions">
           <button type="button" className="secondary-button compact" onClick={() => inputRef.current?.click()}>{file ? "Thay ảnh" : "Chọn ảnh"}</button>
-          {file && <button type="button" className="secondary-button compact" onClick={() => onFileChange(name)}>Xóa</button>}
+          {file && <button type="button" className="secondary-button compact" onClick={() => onFileChange(name, undefined, kind)}>Xóa</button>}
         </div>
       </div>
     </> : <>
       <input ref={inputRef} id={id} name={name} type="file" accept={salesVideoFileTypes[kind]} aria-required="true"
-        onChange={(event) => onFileChange(name, event.currentTarget.files?.[0])} />
+        onChange={(event) => onFileChange(name, event.currentTarget.files?.[0], kind)} />
       <small>Ví dụ {example} · tối đa {salesVideoFileLimits[kind] / 1024 ** 2} MB.</small>
-      {file && <button type="button" className="secondary-button compact" onClick={() => onFileChange(name)}>Xoá tệp đã chọn</button>}
+      {file && <button type="button" className="secondary-button compact" onClick={() => onFileChange(name, undefined, kind)}>Xoá tệp đã chọn</button>}
     </>}
     {preview && kind === "audio" && <audio src={preview} controls preload="metadata" style={{ width: "100%" }} />}
     {preview && kind === "video" && <video src={preview} controls playsInline preload="metadata" style={{ width: "100%", maxHeight: 180 }} />}
@@ -1136,13 +1195,33 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
     return () => window.clearTimeout(timer);
   }, [draftReady, draftOwner, busy, templateId, selectedModel, ratio, prompt, product, facts, painPoint, heroBenefit, minorFlaw, targetAudience, hookStyle, userExperience, script, productUrl, claimCategory, language, duration, sourceStart, productPromptOverride, productPromptEdited, files, mediaFields, selectedTemplate?.id]);
 
-  function updateFile(name: string, file?: File) {
+  function updateFile(name: string, file?: File, kind?: keyof typeof salesVideoFileTypes) {
+    if (file && kind) {
+      if (!file.size) {
+        setMessage(`“${file.name || "Ảnh đã dán"}” không có dữ liệu hợp lệ.`);
+        return;
+      }
+      if (kind === "image" && !isAllowedSalesVideoImage(file)) {
+        setMessage(`“${file.name || "Ảnh đã dán"}” không phải ảnh JPG, PNG, WebP hoặc AVIF hợp lệ.`);
+        return;
+      }
+      if (file.size > salesVideoFileLimits[kind]) {
+        setMessage(`Tệp ${kind === "image" ? "ảnh" : "đã chọn"} tối đa ${salesVideoFileLimits[kind] / 1024 ** 2} MB.`);
+        return;
+      }
+      const otherBytes = Object.entries(files).reduce((total, [existingName, existing]) => total + (existingName === name ? 0 : existing.size), 0);
+      if (otherBytes + file.size > 100 * 1024 ** 2) {
+        setMessage("Tổng dung lượng tệp không được vượt quá 100 MB.");
+        return;
+      }
+    }
     setFiles((current) => {
       const next = { ...current };
       if (file) next[name] = file;
       else delete next[name];
       return next;
     });
+    setMessage("");
     if (draftOwner) void saveSalesVideoDraftFile(draftOwner, templateId, name, file).then((saved) => {
       if (!saved) setDraftWarning("Trình duyệt không lưu được một số tệp nháp. Sau khi tải lại, hãy chọn lại tệp đó.");
     });
@@ -1155,9 +1234,8 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
       return;
     }
     for (const file of selected) {
-      const extensionAllowed = /\.(jpe?g|png|webp|avif)$/i.test(file.name);
-      if (!file.size || (file.type && !salesVideoImageTypes.includes(file.type) && !extensionAllowed)) {
-        setMessage(`“${file.name}” không phải ảnh JPG, PNG, WebP hoặc AVIF hợp lệ.`);
+      if (!file.size || !isAllowedSalesVideoImage(file)) {
+        setMessage(`“${file.name || "Ảnh đã dán"}” không phải ảnh JPG, PNG, WebP hoặc AVIF hợp lệ.`);
         return;
       }
       if (file.size > salesVideoFileLimits.image) {
@@ -1448,10 +1526,10 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
               {poseImageFields.length ? <>
                 <PoseImagesInput fields={poseImageFields} files={files} onFilesChange={handlePoseFilesChange}
                   onOpenLibrary={() => void openMediaLibrary()} disabled={libraryActionBusy} />
-                {creative.files.filter((field) => field.kind !== "image").map((field) => <MediaInput key={field.name} {...field} file={files[field.name]} onFileChange={updateFile}
+                {creative.files.filter((field) => field.kind !== "image").map((field) => <MediaInput key={field.name} {...field} file={files[field.name]} onFileChange={updateFile} disabled={busy || !draftReady}
                   example={mediaExample(field.name, field.kind, false)} />)}
               </> : creative.files.map((field) => <MediaInput key={field.name} {...field} file={files[field.name]} onFileChange={updateFile}
-                example={creative.workflow === "remake" && field.kind === "video" ? "cảnh quảng cáo quay gần, một người, ít cắt cảnh. Video phải đủ dài cho đoạn được chọn." : mediaExample(field.name, field.kind, false)} />)}
+                disabled={busy || !draftReady} example={creative.workflow === "remake" && field.kind === "video" ? "cảnh quảng cáo quay gần, một người, ít cắt cảnh. Video phải đủ dài cho đoạn được chọn." : mediaExample(field.name, field.kind, false)} />)}
               {creative.text && <div className="form-field full">
                 <label htmlFor="sales-video-prompt">{creative.text}{creative.defaultText ? <em>Không bắt buộc</em> : null}</label>
                 <textarea id="sales-video-prompt" name="prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)}
@@ -1461,11 +1539,12 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
             </div> : <>
               <div className="sales-form-step full"><span>01</span><div><strong>Ảnh tham chiếu</strong></div></div>
               <div className="sales-reference-assets-layout full">
-                <MediaInput name="presenter" kind="image" label="Ảnh nhân vật" file={files.presenter} onFileChange={updateFile}
+                <MediaInput name="presenter" kind="image" label="Ảnh nhân vật" file={files.presenter} onFileChange={updateFile} disabled={busy || !draftReady}
                   example="ảnh người giới thiệu sản phẩm." />
                 <ProductImagesInput mainFile={mainProductImage} additionalFiles={additionalProductImageFiles} maxCount={maxProductImages}
                   onMainFileChange={(file) => updateProductImages(file, additionalProductImageFiles)}
-                  onAdditionalFilesChange={(selected) => updateProductImages(mainProductImage, selected)} disabled={busy} />
+                  onMainFilesDrop={(selected) => updateProductImages(selected[0], [...additionalProductImageFiles, ...selected.slice(1)])}
+                  onAdditionalFilesChange={(selected) => updateProductImages(mainProductImage, selected)} disabled={busy || !draftReady} />
               </div>
               {productImagesExceedModelLimit && <p className="sales-script-warning full" role="alert">Model đã chọn chỉ nhận {maxProductImages} ảnh sản phẩm kèm ảnh nhân vật. Giảm số ảnh hoặc chọn model khác.</p>}
               <label className="form-field full">
