@@ -85,8 +85,7 @@ function updateFromMain() {
 
   const changes = capture("git", ["status", "--porcelain"]);
   if (changes) {
-    log("Local source changes were found. Skipping automatic update to preserve them.");
-    return { updated: false };
+    log("Local source changes were found. Trying a safe fast-forward; Git will stop if an update would overwrite them.");
   }
 
   const previousCommit = capture("git", ["rev-parse", "HEAD"]);
@@ -99,13 +98,14 @@ function updateFromMain() {
     windowsHide: true,
   });
   if (result.error || result.status !== 0) {
-    log(`Could not check for updates${result.error ? `: ${result.error.message}` : ". Continuing with the current version."}`);
+    log(`Could not check for updates${result.error ? `: ${result.error.message}` : ". Continuing with the current version."} Local changes were preserved; resolve or stash conflicting changes and retry.`);
     return { updated: false };
   }
 
   const currentCommit = capture("git", ["rev-parse", "HEAD"]);
   if (currentCommit !== previousCommit) log(`Updated source to ${currentCommit.slice(0, 12)}.`);
   else log("StoryAI is already up to date.");
+  if (changes) log("Local source changes remain in the working tree.");
   return { updated: currentCommit !== previousCommit };
 }
 
