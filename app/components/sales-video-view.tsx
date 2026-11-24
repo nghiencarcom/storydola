@@ -129,11 +129,11 @@ function ProductImagesInput({ mainFile, additionalFiles, maxCount, onMainFileCha
           </div>
           <div className="sales-product-primary-actions">
             <button type="button" className="secondary-button compact" onClick={() => mainInputRef.current?.click()} disabled={disabled || maxCount < 1}>
-              {mainFile ? "Thay ảnh chính" : "Tải ảnh chính"}
+              Upload ảnh
             </button>
             {mainFile && <button type="button" className="secondary-button compact" onClick={() => onMainFileChange(undefined)} disabled={disabled}>Xóa ảnh</button>}
+            <small className="sales-image-drop-hint">Kéo thả hoặc dán ảnh vào đây · ⌘V / Ctrl+V</small>
           </div>
-          <small className="sales-image-drop-hint">Kéo thả hoặc dán ảnh vào đây · ⌘V / Ctrl+V</small>
         </div>
       </section>
       <div className="sales-product-reference-title sales-product-secondary-title">
@@ -151,15 +151,15 @@ function ProductImagesInput({ mainFile, additionalFiles, maxCount, onMainFileCha
         <div className="sales-pose-image-actions">
           <input ref={additionalInputRef} type="file" accept={salesVideoFileTypes.image} multiple hidden aria-label="Chọn ảnh tham khảo phụ cho sản phẩm"
             onChange={(event) => {
-              onAdditionalFilesChange(Array.from(event.currentTarget.files || []));
+              onAdditionalFilesChange([...additionalFiles, ...Array.from(event.currentTarget.files || [])]);
               event.currentTarget.value = "";
             }} />
           <button type="button" className="secondary-button compact" onClick={() => additionalInputRef.current?.click()} disabled={disabled || maxCount < 2}>
-            {additionalFiles.length ? "Chọn lại ảnh phụ" : "Thêm ảnh phụ"}
+            Upload ảnh
           </button>
           {additionalFiles.length > 0 && <button type="button" className="secondary-button compact" onClick={() => onAdditionalFilesChange([])} disabled={disabled}>Xóa tất cả</button>}
+          <small className="sales-image-drop-hint">Kéo thả hoặc dán ảnh vào đây để thêm ảnh phụ · ⌘V / Ctrl+V</small>
         </div>
-        <small className="sales-image-drop-hint">Kéo thả hoặc dán ảnh vào vùng này để thêm ảnh phụ · ⌘V / Ctrl+V</small>
       </section>
     </div>
     {maxCount < 1 ? <small className="sales-product-image-help">Model hiện tại không nhận ảnh tham chiếu.</small>
@@ -215,11 +215,12 @@ function MediaInput({ name, label, kind, example, file, onFileChange, disabled }
         {preview ? <img className="sales-image-input-preview" src={preview} alt={label} /> : <span className="sales-image-input-empty" aria-hidden="true">Ảnh</span>}
         <div className="sales-image-input-copy">
           <strong title={file?.name}>{file?.name || "Chưa chọn ảnh"}</strong>
-          <small>{file ? "Ảnh đã sẵn sàng · kéo thả hoặc dán để thay" : `JPG, PNG, WebP hoặc AVIF · tối đa ${salesVideoFileLimits[kind] / 1024 ** 2} MB · ⌘V / Ctrl+V`}</small>
+          <small>{file ? "Ảnh đã sẵn sàng" : `JPG, PNG, WebP hoặc AVIF · tối đa ${salesVideoFileLimits[kind] / 1024 ** 2} MB`}</small>
         </div>
         <div className="sales-image-input-actions">
-          <button type="button" className="secondary-button compact" onClick={() => inputRef.current?.click()}>{file ? "Thay ảnh" : "Chọn ảnh"}</button>
+          <button type="button" className="secondary-button compact" onClick={() => inputRef.current?.click()}>Upload ảnh</button>
           {file && <button type="button" className="secondary-button compact" onClick={() => onFileChange(name, undefined, kind)}>Xóa</button>}
+          <small className="sales-image-drop-hint">Kéo thả hoặc dán ảnh vào đây · ⌘V / Ctrl+V</small>
         </div>
       </div>
     </> : <>
@@ -395,7 +396,7 @@ function SalesVideoTemplateGallery({ onSelect }: { onSelect: (id: string) => voi
   </section>;
 }
 
-type SalesVideoRoute = { templateId?: string; projectId?: string };
+type SalesVideoRoute = { templateId?: string; projectId?: string; similarProjectId?: string };
 
 function initialReviewPromptSegments(details: SalesVideoProject["details"]) {
   const duration = details?.duration || 15;
@@ -451,7 +452,8 @@ function readSalesVideoRoute(): SalesVideoRoute {
   const params = new URLSearchParams(window.location.search);
   const projectId = params.get("project") || "";
   const templateId = params.get("template") || "";
-  if (projectId || templateId) return { projectId, templateId };
+  const similarProjectId = params.get("similar") || "";
+  if (projectId || templateId || similarProjectId) return { projectId, templateId, similarProjectId };
   const legacyHash = window.location.hash.slice(1);
   if (legacyHash === "new") return {};
   if (/^[a-f0-9-]{36}$/i.test(legacyHash)) return { projectId: legacyHash };
@@ -469,7 +471,6 @@ export function SalesVideoView() {
   const [deleteError, setDeleteError] = useState("");
   const [deleteMessage, setDeleteMessage] = useState("");
   const [deletingProjects, setDeletingProjects] = useState(false);
-  const [recreatingProjectId, setRecreatingProjectId] = useState("");
   const [reviewAction, setReviewAction] = useState<SalesVideoReviewAction | null>(null);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
@@ -530,6 +531,7 @@ export function SalesVideoView() {
   }, [projects]);
 
   const selected = projects?.find((project) => project.id === route.projectId);
+  const similarProject = route.similarProjectId ? projects?.find((project) => project.id === route.similarProjectId) : undefined;
   const selectedProductTemplate = salesVideoTemplates.find(({ id }) => id === selected?.details?.templateId)
     || salesVideoTemplates.find(({ name }) => name === selected?.template);
   const videoUrl = selected ? `/api/sales-video/${selected.id}` : "";
@@ -540,12 +542,14 @@ export function SalesVideoView() {
   const activeTemplateId = route.templateId || "";
   const validTemplate = salesVideoTemplates.some(({ id }) => id === activeTemplateId)
     || salesVideoCreativeTemplates.some(({ id }) => id === activeTemplateId);
-  const showComposer = !route.projectId && Boolean(activeTemplateId) && validTemplate;
-  const showGallery = !route.projectId && !showComposer;
+  const showComposer = !route.projectId && Boolean(activeTemplateId) && validTemplate
+    && (!route.similarProjectId || Boolean(similarProject));
+  const showGallery = !route.projectId && !route.similarProjectId && !showComposer;
 
   function openTemplate(id: string) {
     const url = new URL(window.location.href);
     url.searchParams.delete("project");
+    url.searchParams.delete("similar");
     url.searchParams.set("template", id);
     url.hash = "";
     window.history.pushState(null, "", url);
@@ -556,6 +560,7 @@ export function SalesVideoView() {
     const url = new URL(window.location.href);
     url.searchParams.delete("project");
     url.searchParams.delete("template");
+    url.searchParams.delete("similar");
     url.hash = "";
     window.history.pushState(null, "", url);
     setRoute({});
@@ -564,10 +569,21 @@ export function SalesVideoView() {
   function showProject(projectId: string) {
     const url = new URL(window.location.href);
     url.searchParams.delete("template");
+    url.searchParams.delete("similar");
     url.searchParams.set("project", projectId);
     url.hash = "";
     window.history.pushState(null, "", url);
     setRoute({ projectId });
+  }
+
+  function showSimilarProject(project: SalesVideoProject, templateId: string) {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("project");
+    url.searchParams.set("template", templateId);
+    url.searchParams.set("similar", project.id);
+    url.hash = "";
+    window.history.pushState(null, "", url);
+    setRoute({ templateId, similarProjectId: project.id });
   }
 
   const deletableProjects = (projects || []).filter((project) => project.status !== "processing");
@@ -631,67 +647,6 @@ export function SalesVideoView() {
     }
   }
 
-  async function recreateProject(project: SalesVideoProject, templateId: string) {
-    if (recreatingProjectId || project.status === "processing") return;
-    const details = project.details;
-    const template = salesVideoTemplates.find(({ id }) => id === templateId);
-    if (!details || !template) return;
-    setRecreatingProjectId(project.id);
-    setError("");
-    try {
-      const productImageCount = Math.max(1, Math.min(salesVideoMaxProductImages,
-        details.productImageCount || details.references?.products?.length || 1));
-      const productReferences = Array.from({ length: productImageCount }, (_, index) =>
-        `/api/sales-video/${project.id}/references/${index === 0 ? "product" : `product-${index + 1}`}`);
-      const fetchImage = async (url: string, name: string) => {
-        const response = await fetch(url, { cache: "no-store", credentials: "same-origin" });
-        if (!response.ok) throw new Error(`Không tải lại được ảnh tham chiếu: ${name}.`);
-        const blob = await response.blob();
-        if (!blob.size) throw new Error(`Ảnh tham chiếu ${name} đang trống.`);
-        return new File([blob], name, { type: blob.type || "image/webp" });
-      };
-      const [presenter, ...productImages] = await Promise.all([
-        fetchImage(`/api/sales-video/${project.id}/references/presenter`, "nhân vật"),
-        ...productReferences.map((url, index) => fetchImage(url, `sản phẩm ${index + 1}`)),
-      ]);
-      const form = new FormData();
-      const titleSuffix = " (bản tạo lại)";
-      form.set("title", `${(project.title || details.product || template.name).slice(0, 120 - titleSuffix.length)}${titleSuffix}`);
-      form.set("template", template.id);
-      form.set("product", details.product || project.title || template.name);
-      form.set("productFacts", details.facts || "");
-      form.set("productUrl", details.productUrl || "");
-      form.set("userExperience", details.userExperience || "");
-      form.set("painPoint", details.painPoint || "");
-      form.set("heroBenefit", details.heroBenefit || "");
-      form.set("minorFlaw", details.minorFlaw || "");
-      form.set("targetAudience", details.targetAudience || "general");
-      form.set("hookStyle", details.hookStyle || "");
-      form.set("language", salesVideoLanguages.find((language) => language === details.language) || salesVideoLanguages[0]);
-      form.set("ratio", salesVideoRatios.find((ratio) => ratio === details.ratio) || salesVideoRatios[0]);
-      form.set("duration", String(Number.isInteger(details.duration) ? details.duration : 15));
-      form.set("model", details.videoModelId || "higgsfield");
-      form.set("claimCategory", details.claimCategory || (template.id === "supplements" ? "health" : "general"));
-      form.set("script", details.script || "");
-      form.set("presenter", presenter);
-      if (!productImages[0]) throw new Error("Project gốc không còn ảnh sản phẩm để tạo lại.");
-      form.set("primaryProductImage", productImages[0]);
-      productImages.slice(1).forEach((file) => form.append("additionalProductImage", file));
-
-      const response = await fetch("/api/sales-video/ugc", { method: "POST", body: form, credentials: "same-origin" });
-      const result = await response.json().catch(() => null) as { project?: SalesVideoProject; message?: string } | null;
-      const recreated = result?.project;
-      if (!response.ok || !recreated?.id) throw new Error(result?.message || "Không tạo lại được project.");
-      setProjects((current) => [recreated, ...(current || []).filter((item) => item.id !== recreated.id)]);
-      setError("");
-      showProject(recreated.id);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Không tạo lại được project.");
-    } finally {
-      setRecreatingProjectId("");
-    }
-  }
-
   return <>
     <section className={`page-heading sales-video-page-heading${showComposer ? " is-composer" : ""}${showComposer || route.projectId ? " is-sticky" : ""}`}>
       <div>
@@ -706,15 +661,17 @@ export function SalesVideoView() {
           {reviewAction?.busy ? "Đang gửi tạo video…" : "Duyệt nội dung và tạo video"}
         </button>}
         {selected && selectedProductTemplate && <button type="button" className="secondary-button"
-          onClick={() => void recreateProject(selected, selectedProductTemplate.id)}
-          disabled={selected.status === "processing" || Boolean(recreatingProjectId)}>
-          {recreatingProjectId === selected.id ? "Đang tạo lại project…" : "Tạo lại project"}
+          onClick={() => showSimilarProject(selected, selectedProductTemplate.id)}
+          disabled={selected.status === "processing"}>
+          Làm tương tự
         </button>}
         <a className="primary-button" href="/sales-video#sales-template-gallery">Tạo video mới</a>
       </div>}
     </section>
     {error && <p role="alert">{error} <button className="secondary-button" onClick={() => void refresh()}>Tải lại</button></p>}
-    {showComposer && <SalesVideoComposer key={activeTemplateId} initialTemplateId={activeTemplateId} access={access} catalog={catalog} projects={projects || []}
+    {route.similarProjectId && !projects && <p role="status">Đang tải dữ liệu project gốc…</p>}
+    {route.similarProjectId && projects && !similarProject && <p role="status">Không tìm thấy project gốc để làm tương tự. <button type="button" className="secondary-button" onClick={showTemplateGallery}>Chọn mẫu khác</button></p>}
+    {showComposer && <SalesVideoComposer key={`${activeTemplateId}:${similarProject?.id || "new"}`} initialTemplateId={activeTemplateId} access={access} catalog={catalog} projects={projects || []} similarProject={similarProject}
       onChangeTemplate={showTemplateGallery} onCreated={(project) => {
         setProjects((items) => [project, ...(items || []).filter((item) => item.id !== project.id)]);
         setError("");
@@ -963,11 +920,12 @@ function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, onReviewA
   </section>;
 }
 
-function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onChangeTemplate, onCreated }: {
+function SalesVideoComposer({ initialTemplateId, access, catalog, projects, similarProject, onChangeTemplate, onCreated }: {
   initialTemplateId: string;
   access: Access | null;
   catalog: VideoGenerationModelOption[];
   projects: SalesVideoProject[];
+  similarProject?: SalesVideoProject;
   onChangeTemplate: () => void;
   onCreated: (project: SalesVideoProject) => void;
 }) {
@@ -980,6 +938,7 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
     ? creative.files.filter((field) => field.kind === "image")
     : [];
   const draftOwner = access?.draftKey || "";
+  const draftTemplateId = similarProject ? `${templateId}:similar:${similarProject.id}` : templateId;
   const [selectedModel, setModel] = useState("");
   const [ratio, setRatio] = useState<string>(salesVideoRatios[0]);
   const [prompt, setPrompt] = useState("");
@@ -1272,12 +1231,11 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
   }
 
   useEffect(() => {
-    if (!draftOwner) return;
     let active = true;
     setDraftReady(false);
-    void loadSalesVideoDraft(draftOwner, templateId, mediaFieldNames).then((draft) => {
-      if (!active) return;
-      const saved = draft.fields;
+    setDraftWarning("");
+
+    const applySavedFields = (saved: Awaited<ReturnType<typeof loadSalesVideoDraft>>["fields"]) => {
       if (typeof saved.selectedModel === "string") setModel(saved.selectedModel);
       if (typeof saved.ratio === "string" && salesVideoRatios.includes(saved.ratio as typeof salesVideoRatios[number])) setRatio(saved.ratio);
       if (typeof saved.prompt === "string") setPrompt(saved.prompt);
@@ -1297,6 +1255,11 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
       if (typeof saved.sourceStart === "string") setSourceStart(saved.sourceStart);
       if (typeof saved.productPromptOverride === "string") setProductPromptOverride(saved.productPromptOverride);
       if (typeof saved.productPromptEdited === "boolean") setProductPromptEdited(saved.productPromptEdited);
+    };
+
+    const applySavedDraft = (draft: Awaited<ReturnType<typeof loadSalesVideoDraft>>) => {
+      const saved = draft.fields;
+      applySavedFields(saved);
       const restoredFiles = { ...draft.files };
       if (!restoredFiles[salesVideoProductImageFieldNames[0]] && restoredFiles.image) {
         restoredFiles[salesVideoProductImageFieldNames[0]] = restoredFiles.image;
@@ -1307,21 +1270,99 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
         const expectedFiles = JSON.parse(String(saved.savedFiles || "[]")) as string[];
         if (expectedFiles.some((name) => !restoredFiles[name] && !(name === "image" && restoredFiles[salesVideoProductImageFieldNames[0]]))) setDraftWarning("Không khôi phục được một số tệp đính kèm. Hãy chọn lại các tệp đó trước khi tạo video.");
       } catch { /* Older drafts do not contain a saved file list. */ }
-      setDraftReady(true);
-    }).catch(() => {
-      if (active) {
-        setDraftWarning("Không tải được bản nháp trên thiết bị này.");
-        setDraftReady(true);
+      if (similarProject) {
+        const expectedProductImages = Math.max(1, Math.min(salesVideoMaxProductImages,
+          similarProject.details?.productImageCount || similarProject.details?.references?.products?.length || 1));
+        if (!restoredFiles.presenter || Array.from({ length: expectedProductImages }, (_, index) => salesVideoProductImageFieldNames[index]).some((name) => !restoredFiles[name])) {
+          setDraftWarning("Không khôi phục được một số ảnh tham chiếu. Hãy chọn lại những ảnh còn thiếu trước khi tạo video.");
+        }
       }
+      setDraftReady(true);
+    };
+
+    const restore = async () => {
+      if (similarProject) {
+        const draft = await loadSalesVideoDraft(draftOwner, draftTemplateId, mediaFieldNames);
+        if (!active) return;
+        if (Object.keys(draft.fields).length) {
+          applySavedDraft(draft);
+          return;
+        }
+
+        const details = similarProject.details;
+        const fallbackClaimCategory = templateId === "supplements" ? "health" : "general";
+        setModel(details?.videoModelId || "higgsfield");
+        setRatio(salesVideoRatios.find((value) => value === details?.ratio) || salesVideoRatios[0]);
+        setProduct(details?.product || similarProject.title || "");
+        setFacts(details?.facts || "");
+        setPainPoint(details?.painPoint || "");
+        setHeroBenefit(details?.heroBenefit || "");
+        setMinorFlaw(details?.minorFlaw || "");
+        setTargetAudience(salesVideoTargetAudiences.find(({ id }) => id === details?.targetAudience)?.id || salesVideoTargetAudiences[0].id);
+        setHookStyle(salesVideoHookStyles.find(({ id }) => id === details?.hookStyle)?.id || salesVideoHookStyles[0].id);
+        setUserExperience(details?.userExperience || "");
+        setScript(details?.script || "");
+        setProductUrl(details?.productUrl || "");
+        setClaimCategory(salesVideoClaimCategories.find(({ id }) => id === details?.claimCategory)?.id || fallbackClaimCategory);
+        setLanguage(salesVideoLanguages.find((value) => value === details?.language) || salesVideoLanguages[0]);
+        setDuration(typeof details?.duration === "number" && Number.isInteger(details.duration) ? details.duration : 15);
+        setPrompt("");
+        setSourceStart("0");
+        setProductPromptOverride("");
+        setProductPromptEdited(false);
+
+        const productImageCount = Math.max(1, Math.min(salesVideoMaxProductImages,
+          details?.productImageCount || details?.references?.products?.length || 1));
+        const referenceRequests: Array<{ field: string; url: string; filename: string }> = [
+          { field: "presenter", url: `/api/sales-video/${similarProject.id}/references/presenter`, filename: "presenter.webp" },
+          ...Array.from({ length: productImageCount }, (_, index) => ({
+            field: salesVideoProductImageFieldNames[index],
+            url: `/api/sales-video/${similarProject.id}/references/${index === 0 ? "product" : `product-${index + 1}`}`,
+            filename: `product-${index + 1}.webp`,
+          })),
+        ];
+        const imageResults = await Promise.all(referenceRequests.map(async ({ field, url, filename }) => {
+          try {
+            const response = await fetch(url, { cache: "no-store", credentials: "same-origin" });
+            if (!response.ok) return { field, file: undefined };
+            const blob = await response.blob();
+            if (!blob.size) return { field, file: undefined };
+            return { field, file: new File([blob], filename, { type: blob.type || "image/webp" }) };
+          } catch {
+            return { field, file: undefined };
+          }
+        }));
+        if (!active) return;
+        const restoredFiles = Object.fromEntries(imageResults.flatMap(({ field, file }) => file ? [[field, file]] : [])) as Record<string, File>;
+        setFiles(restoredFiles);
+        if (imageResults.some(({ file }) => !file)) {
+          setDraftWarning("Không tải lại được một số ảnh tham chiếu. Hãy chọn lại những ảnh còn thiếu trước khi tạo video.");
+        }
+        if (draftOwner) {
+          await Promise.all(referenceRequests.map(({ field }) => saveSalesVideoDraftFile(draftOwner, draftTemplateId, field, restoredFiles[field])));
+        }
+        if (active) setDraftReady(true);
+        return;
+      }
+
+      if (!draftOwner) return;
+      const draft = await loadSalesVideoDraft(draftOwner, draftTemplateId, mediaFieldNames);
+      if (active) applySavedDraft(draft);
+    };
+
+    void restore().catch(() => {
+      if (!active) return;
+      setDraftWarning("Không tải được bản nháp trên thiết bị này.");
+      setDraftReady(true);
     });
     return () => { active = false; };
-  }, [draftOwner, templateId, mediaFieldNames.join("|")]);
+  }, [draftOwner, draftTemplateId, templateId, mediaFieldNames.join("|"), similarProject]);
 
   useEffect(() => {
     if (!draftReady || !draftOwner || busy) return;
     const timer = window.setTimeout(() => {
       const savedFiles = mediaFieldNames.filter((name) => files[name]);
-      void saveSalesVideoDraftFields(draftOwner, templateId, {
+      void saveSalesVideoDraftFields(draftOwner, draftTemplateId, {
         selectedModel,
         ratio, prompt, product, facts, userExperience,
         painPoint, heroBenefit, minorFlaw, targetAudience, hookStyle,
@@ -1331,7 +1372,7 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
       });
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [draftReady, draftOwner, busy, templateId, selectedModel, ratio, prompt, product, facts, painPoint, heroBenefit, minorFlaw, targetAudience, hookStyle, userExperience, script, productUrl, claimCategory, language, duration, sourceStart, productPromptOverride, productPromptEdited, files, mediaFields, selectedTemplate?.id]);
+  }, [draftReady, draftOwner, draftTemplateId, busy, selectedModel, ratio, prompt, product, facts, painPoint, heroBenefit, minorFlaw, targetAudience, hookStyle, userExperience, script, productUrl, claimCategory, language, duration, sourceStart, productPromptOverride, productPromptEdited, files, mediaFields, selectedTemplate?.id]);
 
   function updateFile(name: string, file?: File, kind?: keyof typeof salesVideoFileTypes) {
     if (file && kind) {
@@ -1360,7 +1401,7 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
       return next;
     });
     setMessage("");
-    if (draftOwner) void saveSalesVideoDraftFile(draftOwner, templateId, name, file).then((saved) => {
+    if (draftOwner) void saveSalesVideoDraftFile(draftOwner, draftTemplateId, name, file).then((saved) => {
       if (!saved) setDraftWarning("Trình duyệt không lưu được một số tệp nháp. Sau khi tải lại, hãy chọn lại tệp đó.");
     });
   }
@@ -1394,7 +1435,7 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
       return next;
     });
     const filesBySlot = [mainFile, ...selectedAdditional];
-    salesVideoProductImageFieldNames.forEach((name, index) => void saveSalesVideoDraftFile(draftOwner, templateId, name, filesBySlot[index]));
+    salesVideoProductImageFieldNames.forEach((name, index) => void saveSalesVideoDraftFile(draftOwner, draftTemplateId, name, filesBySlot[index]));
     setMessage("");
   }
 
@@ -1408,7 +1449,7 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
       return next;
     });
     poseImageFields.forEach((field, index) => {
-      void saveSalesVideoDraftFile(draftOwner, templateId, field.name, selected[index]).then((saved) => {
+      void saveSalesVideoDraftFile(draftOwner, draftTemplateId, field.name, selected[index]).then((saved) => {
         if (!saved) setDraftWarning("Trình duyệt không lưu được một số tệp nháp. Sau khi tải lại, hãy chọn lại tệp đó.");
       });
     });
@@ -1639,7 +1680,7 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
       if (!response.ok || typeof result?.project?.id !== "string") {
         throw new Error(result?.message || "Không nhận được video từ máy chủ.");
       }
-      if (!selectedTemplate) await clearSalesVideoDraft(draftOwner, templateId, mediaFieldNames);
+      if (!selectedTemplate) await clearSalesVideoDraft(draftOwner, draftTemplateId, mediaFieldNames);
       setQueuedProject(result.project);
       onCreated(result.project);
     } catch (error) {

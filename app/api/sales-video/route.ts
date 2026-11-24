@@ -236,10 +236,13 @@ export async function POST(request: Request) {
     { name: "presenter", kind: "image", label: "Ảnh nhân vật" },
     { name: "image", kind: "image", label: "Ảnh sản phẩm" },
   ] as const;
+  const productImageEntries = form.has("primaryProductImage") || form.has("additionalProductImage")
+    ? [form.get("primaryProductImage"), ...form.getAll("additionalProductImage")]
+    : form.getAll("image");
   const files = productTemplate
     ? [
       { name: "presenter", kind: "image" as const, label: "Ảnh nhân vật", file: form.get("presenter") },
-      ...form.getAll("image").map((file, index) => ({ name: `image-${index + 1}`, kind: "image" as const, label: `Ảnh sản phẩm ${index + 1}`, file })),
+      ...productImageEntries.map((file, index) => ({ name: `image-${index + 1}`, kind: "image" as const, label: `Ảnh sản phẩm ${index + 1}`, file })),
     ]
     : fields.map((field) => ({ ...field, file: form.get(field.name) }));
   if (productTemplate && files.length < 2) {
