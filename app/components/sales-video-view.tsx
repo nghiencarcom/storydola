@@ -818,7 +818,7 @@ function SalesVideoProjectDetail({ project, catalog, videoUrl, promptMaxLength, 
   const duration = details?.duration || 15;
   const language = details?.language || "Tiếng Việt";
   const voiceJob = details?.voiceRegeneration;
-  const videoRevision = voiceJob?.updatedAt || project.createdAt;
+  const videoRevision = [details?.stitchedAt, voiceJob?.updatedAt, project.createdAt].filter(Boolean).sort().at(-1) || project.createdAt;
   const finalVideoUrl = `${videoUrl}?v=${encodeURIComponent(videoRevision)}`;
   const postProcessingSummary = [
     project.postProcessing?.textOverlay?.cues?.length ? `Text/Emoji từ ${project.postProcessing.textOverlay.cues.length} cue Video overlay` : "",
@@ -976,12 +976,12 @@ function SalesVideoProjectDetail({ project, catalog, videoUrl, promptMaxLength, 
     }
   }
 
-  async function restitchVideo() {
+  async function restitchVideo(originalVoice = false) {
     if (!allClipsReady || stitching || retryingClips.size > 0 || voiceJob?.status === "processing") return;
     setStitching(true);
     setError("");
     try {
-      const response = await fetch(`/api/sales-video/ugc/${project.id}/stitch`, { method: "POST" });
+      const response = await fetch(`/api/sales-video/ugc/${project.id}/stitch`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ originalVoice }) });
       const result = await response.json().catch(() => null);
       if (!response.ok || !result?.project?.id) throw new Error(result?.message || "Không ghép lại được video.");
       onUpdated(result.project as SalesVideoProject);
@@ -1075,6 +1075,7 @@ function SalesVideoProjectDetail({ project, catalog, videoUrl, promptMaxLength, 
       <div className="sales-project-video-heading"><div><h2>Video đã ghép</h2><p>Bản video đầy đủ sau khi ghép các clip.</p></div>
         <div className="sales-project-video-actions">
           <a className="secondary-button compact" href={`${videoUrl}?download=1&v=${encodeURIComponent(videoRevision)}`}>Tải MP4</a>
+          <button type="button" className="secondary-button compact" onClick={() => void restitchVideo(true)} disabled={!allClipsReady || stitching || retryingClips.size > 0 || voiceJob?.status === "processing"} title="Ghép các clip với âm thanh gốc, bỏ voice đã tạo lại.">{stitching ? "Đang ghép…" : "Ghép với voice gốc"}</button>
           {details?.audio && details.subtitleSrt && <button type="button" className="secondary-button compact" onClick={() => void openVoiceDialog()}
             disabled={!maiVideoConfigured || voiceJob?.status === "processing" || stitching || !details.subtitleSrt.trim()}
             title={!maiVideoConfigured ? "Cấu hình MaiVideo API key trong Cài đặt để tạo lại voice." : undefined}>

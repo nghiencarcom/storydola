@@ -40,6 +40,7 @@ export type SalesVideoProjectDetails = {
   script?: string;
   scriptSegments?: Array<{ start: number; duration: number; script: string }>;
   subtitleSrt?: string;
+  stitchedAt?: string;
   voiceRegeneration?: {
     status: "processing" | "ready" | "failed";
     voiceId: string;

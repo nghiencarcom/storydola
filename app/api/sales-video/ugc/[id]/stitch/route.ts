@@ -1,7 +1,8 @@
+import { stat } from "node:fs/promises";
 import { NextResponse } from "next/server";
 import { readMaiVideoAuthCookie } from "../../../../../lib/maivideo-auth-shared";
 import { stitchSalesVideoSegments } from "../../../../../lib/sales-video-creative";
-import { listSalesVideoProjects, salesVideoWatermarkLogoPath, saveSalesVideoProject, type SalesVideoProject } from "../../../../../lib/sales-video-storage";
+import { listSalesVideoProjects, salesVideoSegmentPath, salesVideoWatermarkLogoPath, saveSalesVideoProject, type SalesVideoProject } from "../../../../../lib/sales-video-storage";
 import { salesVideoWorkerId } from "../../../../../lib/sales-video-runtime";
 
 export const runtime = "nodejs";
@@ -18,6 +19,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   if (project.status === "processing") return NextResponse.json({ message: "Hãy đợi clip đang xử lý hoàn tất trước khi ghép." }, { status: 409 });
   if (project.details.voiceRegeneration?.status === "processing") return NextResponse.json({ message: "Hãy đợi tạo lại voice hoàn tất trước khi ghép lại video." }, { status: 409 });
 
+  const body = await request.json().catch(() => null);
+  const originalVoice = body?.originalVoice === true;
   const details = project.details;
   const segments = details.promptSegments?.length ? details.promptSegments : details.generatedSegments || [];
   if (!segments.length || segments.length > 6) return NextResponse.json({ message: "Project không có danh sách clip hợp lệ để ghép." }, { status: 409 });
@@ -26,6 +29,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json({ message: "Hãy đợi clip đang xử lý hoàn tất trước khi ghép." }, { status: 409 });
   }
 
+  if (originalVoice && (await Promise.all(segments.map((_, index) => stat(salesVideoSegmentPath(userId, id, index)).catch(() => null)))).some((file) => !file?.isFile())) {
+    return NextResponse.json({ message: "Thiếu clip gốc. Hãy tạo lại clip còn thiếu trước khi ghép với voice gốc." }, { status: 409 });
+  }
   try {
     await stitchSalesVideoSegments(userId, id, segments, details.duration || segments.reduce((sum, segment) => sum + segment.duration, 0),
       project.postProcessing, project.postProcessing?.logo?.enabled ? salesVideoWatermarkLogoPath(userId, id) : undefined);
@@ -37,6 +43,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       error: undefined,
       details: {
         ...details,
+        stitchedAt: new Date().toISOString(),
+        voiceRegeneration: undefined,
         segmentResults: segments.map((segment, index) => ({ ...results[index], start: segment.start, duration: segment.duration, status: "ready" as const, error: undefined })),
         needsStitching: false,
       },
