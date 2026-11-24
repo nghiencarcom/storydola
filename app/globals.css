@@ -3194,5 +3194,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .sales-project-clip-model select { display: block; width: 100%; min-width: 0; max-width: 100%; height: 42px; padding: 8px 34px 8px 12px; border: 1px solid #dce4ef; border-radius: 9px; background-color: #fff; color: #35435b; font: inherit; text-overflow: ellipsis; }
 .sales-project-clip-model select:focus-visible { outline: 3px solid #cbdcff; outline-offset: 2px; }
 .sales-project-clip-download { margin-top: 2px; }
-.sales-project-clip-model + button { min-height: 40px; margin-top: 2px; }
-@media (max-width: 560px) { .sales-project-clip-model + button { width: 100%; justify-content: center; } }
+.sales-project-clip-retry-controls { display: flex; align-items: flex-end; gap: 10px; min-width: 0; }
+.sales-project-clip-retry-controls .sales-project-clip-model { flex: 1; }
+.sales-project-clip-retry-controls > button { flex: 0 0 auto; min-height: 42px; white-space: nowrap; }
