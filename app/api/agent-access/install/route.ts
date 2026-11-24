@@ -72,7 +72,7 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const ownerId = await getCurrentUserId();
-    const body = await request.json().catch(() => ({})) as { agent?: unknown };
+    const body = await request.json().catch(() => ({})) as { agent?: unknown; repairInvalidConfig?: unknown };
     const agent = body.agent;
     if (agent !== "codex" && agent !== "claude" && agent !== "antigravity") {
       return NextResponse.json({ code: "AGENT_UNSUPPORTED", message: "Chọn Codex, Claude Code hoặc Antigravity." }, { status: 400 });
@@ -91,7 +91,7 @@ export async function POST(request: Request) {
     const scriptPath = path.join(process.cwd(), "scripts", "storyai-mcp.mjs");
     const baseUrl = localBaseUrl(request);
     await verifyLocalMcp(nodePath, scriptPath, baseUrl, credentials.token);
-    const result = await installCodingAgentConfig({ agent: agent as CodingAgent, nodePath, scriptPath, baseUrl, token: credentials.token });
+    const result = await installCodingAgentConfig({ agent: agent as CodingAgent, nodePath, scriptPath, baseUrl, token: credentials.token, repairInvalidConfig: body.repairInvalidConfig === true });
     return NextResponse.json({ ...result, installed: true, connectionVerified: true, restartRequired: true }, { headers: { "Cache-Control": "no-store" } });
   } catch (cause) {
     return routeError(cause);

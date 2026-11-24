@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 export type CodingAgent = "codex" | "claude" | "antigravity";
-type AgentConfigStatus = { installed: boolean; needsUpdate?: boolean; configPath: string; error?: "INVALID_JSON" };
+type AgentConfigStatus = { installed: boolean; needsUpdate?: boolean; configPath: string; error?: "INVALID_JSON" | "CONFIG_ACCESS_FAILED" };
 
 function configPathFor(agent: CodingAgent) {
   const home = homedir();
@@ -155,8 +155,8 @@ export async function getCodingAgentConfigStatuses(currentToken?: string | null)
         || status.hasLegacyAntigravityTimeout
       );
       statuses[agent] = { installed: status.installed, ...(needsUpdate ? { needsUpdate: true } : {}), configPath };
-    } catch {
-      statuses[agent] = { installed: false, configPath, error: "INVALID_JSON" };
+    } catch (cause) {
+      statuses[agent] = { installed: false, configPath, error: cause instanceof Error && cause.message === "AGENT_CONFIG_INVALID_JSON" ? "INVALID_JSON" : "CONFIG_ACCESS_FAILED" };
     }
   }
   return statuses;
@@ -168,6 +168,7 @@ export async function installCodingAgentConfig(input: {
   scriptPath: string;
   baseUrl: string;
   token: string;
+  repairInvalidConfig?: boolean;
 }) {
   const { agent, nodePath, scriptPath, baseUrl, token } = input;
   const configPath = configPathFor(agent);
@@ -180,7 +181,13 @@ export async function installCodingAgentConfig(input: {
     return { agent, configPath, ...(backupPath ? { backupPath } : {}) };
   }
 
-  const { content, value } = await readExistingJson(configPath);
+  let existing;
+  try { existing = await readExistingJson(configPath); }
+  catch (cause) {
+    if (!input.repairInvalidConfig || !(cause instanceof Error) || cause.message !== "AGENT_CONFIG_INVALID_JSON") throw cause;
+    existing = { content: await readFile(configPath, "utf8"), value: {} };
+  }
+  const { content, value } = existing;
   const nextValue = mergeJsonServer(value, jsonAgentEntry(agent, nodePath, scriptPath, baseUrl, token));
   const next = `${JSON.stringify(nextValue, null, 2)}\n`;
   const backupPath = await writeConfig(configPath, content, next);
