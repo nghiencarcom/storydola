@@ -4,7 +4,7 @@ import { z } from "zod";
 import { getCurrentUserId } from "../../../../lib/auth-server";
 import {
   salesVideoLanguages, salesVideoProductInstruction, salesVideoRatios, salesVideoTemplates, salesVideoMaxWordCount, salesVideoWordCount,
-  salesVideoClaimGuidance, salesVideoProductScriptInstruction,
+  salesVideoProductScriptInstruction,
 } from "../../../../lib/sales-video-templates";
 
 const inputSchema = z.object({
@@ -56,7 +56,6 @@ function buildUgcPrompt(job: Job, result: z.infer<typeof outputSchema>) {
     salesVideoProductInstruction,
     `MỤC TIÊU: Quảng cáo UGC chân thực dài ${seconds} giây, khung hình ${job.input.ratio}, cho ${JSON.stringify(result.product || job.input.product)}. Ngành hàng: ${template?.name || "sản phẩm"}. ${template?.direction || ""}`,
     "LỜI THOẠI: Một người dẫn duy nhất, tự nhiên và cân bằng; không hỏi đáp, không người hỏi ngoài khung hình, không giọng thứ hai hoặc nhãn vai.",
-    salesVideoClaimGuidance(job.input.claimCategory, job.input.template),
     `NHỊP CẢNH: 0–${hookEnd}s mở bằng hook có hành động hoặc biểu cảm tự nhiên; ${hookEnd}–${demoEnd}s trình diễn rõ một thao tác thật với sản phẩm; ${demoEnd}–${seconds}s chốt bằng khung hình sản phẩm dễ nhận diện và lời kêu gọi nhẹ nhàng. Mô tả cỡ cảnh, hành động, hướng nhìn và chuyển động máy cho từng nhịp; lấp đầy thời lượng, không tua nhanh hay đổi cảnh vô cớ.`,
     "TÍNH LIÊN TỤC: Giữ cùng một người, quần áo, sản phẩm, bối cảnh, ánh sáng và hướng máy xuyên suốt. Chỉ một sản phẩm đúng ảnh tham chiếu; thao tác tay tự nhiên, không làm méo nhãn hoặc chữ. Phong cách video điện thoại đời thường, ánh sáng thật, chuyển động máy nhẹ và ổn định.",
     job.input.audio
