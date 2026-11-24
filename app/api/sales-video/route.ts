@@ -426,7 +426,7 @@ export async function POST(request: Request) {
             return {
               ...segment,
               status: keptPreviousClip ? "ready" as const : "failed" as const,
-              ...(keptPreviousClip ? { error: "Tạo lại chưa thành công; clip trước đó vẫn được giữ." } : { error: "Không tạo được clip này. Bạn có thể thử lại." }),
+              error: `${keptPreviousClip ? "Tạo lại chưa thành công; clip trước đó vẫn được giữ." : "Không tạo được clip này."} ${error instanceof Error ? error.message : "Bạn có thể thử lại."}`,
             };
           })) : segmentResults;
           const retryBaseStatus = pendingDraft?.status === "ready" ? "ready" : "failed";

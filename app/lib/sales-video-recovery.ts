@@ -34,7 +34,9 @@ export async function durableSalesVideo(input: SalesVideoRenderInput, render: Re
     let record;
     try { record = JSON.parse(await readFile(file, "utf8")); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-    if (!record || record.state === "complete") {
+    // A user retry is a new attempt. Only recovery inputs carry the run ID
+    // that permits resuming the saved provider job and its original model.
+    if (!record || record.state === "complete" || (input.onlySegmentIndex !== undefined && !input.recoveryRunId)) {
       record = { state: "pending", input: await encode({ ...input, recoveryRunId: randomUUID() }) };
       await atomic(file, record);
     }
