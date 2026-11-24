@@ -2263,3 +2263,4 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
         </div>}
       </form>
   );
+}
