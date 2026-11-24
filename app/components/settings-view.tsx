@@ -310,7 +310,7 @@ export function SettingsView() {
             const statusClass = needsFix || (!cliMissing && status?.needsUpdate) ? "needs-fix" : status?.installed && !cliMissing ? "connected" : "disconnected";
             return <article className="agent-connect-card" key={agent.id}>
               <div className="agent-connect-card-heading"><strong>{agent.label}</strong><span className={statusClass}>{statusLabel}</span></div>
-              <small>{needsFix ? "File cấu hình không hợp lệ. Sửa JSON trước khi kết nối lại." : cliMissing ? "Cài CLI này trên máy chạy StoryAI rồi tải lại trạng thái." : status?.needsUpdate ? "Token trong CLI khác với token hiện lưu ở StoryAI." : status?.installed ? "Đã tìm thấy cấu hình StoryAI MCP trong CLI." : "Cài StoryAI MCP vào CLI này để truy cập dự án và công cụ StoryAI."}</small>
+              <small>{needsFix ? "File cấu hình không hợp lệ. Sửa JSON trước khi kết nối lại." : cliMissing ? "Cài CLI này trên máy chạy StoryAI rồi tải lại trạng thái." : status?.needsUpdate ? "Cấu hình MCP cũ hoặc token kết nối cần được cập nhật." : status?.installed ? "Đã tìm thấy cấu hình StoryAI MCP trong CLI." : "Cài StoryAI MCP vào CLI này để truy cập dự án và công cụ StoryAI."}</small>
               <code className="agent-config-path">{status?.configPath || agent.configName}</code>
               <button className={status?.installed && !status?.needsUpdate ? "secondary-button compact" : "primary-button compact"} type="button"
                 onClick={() => void installAgent(agent.id)} disabled={!agentAccessStatus?.encryptionReady || agentAccessLoading || agentAccessBusy || needsFix || cliMissing}>
