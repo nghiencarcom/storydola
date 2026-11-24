@@ -659,14 +659,14 @@ export function SalesVideoView() {
       {route.projectId && <div className="sales-video-page-heading-actions">
         {selected?.status === "draft" && selected.phase === "review" && <button type="button" className="primary-button"
           onClick={() => reviewAction?.activate()} disabled={!reviewAction || reviewAction.disabled} aria-busy={reviewAction?.busy || false}>
-          {reviewAction?.busy ? "Đang gửi tạo video…" : "Duyệt nội dung và tạo video"}
+          {reviewAction?.busy ? "Đang tạo video…" : "Tạo Video"}
         </button>}
         {selected && selectedProductTemplate && <button type="button" className="secondary-button"
           onClick={() => showSimilarProject(selected, selectedProductTemplate.id)}
           disabled={selected.status === "processing"}>
           Làm tương tự
         </button>}
-        <a className="primary-button" href="/sales-video#sales-template-gallery">Tạo video mới</a>
+        <a className="primary-button" href="/sales-video#sales-template-gallery">Tạo project mới</a>
       </div>}
     </section>
     {error && <p role="alert">{error} <button className="secondary-button" onClick={() => void refresh()}>Tải lại</button></p>}
