@@ -250,4 +250,194 @@ export async function POST(request: Request) {
       { name: "presenter", kind: "image" as const, label: "Ảnh nhân vật", file: form.get("presenter") },
       ...productImageEntries.map((file, index) => ({ name: `image-${index + 1}`, kind: "image" as const, label: `Ảnh sản phẩm ${index + 1}`, file })),
     ]
-    : 
+    : fields.map((field) => ({ ...field, file: form.get(field.name) }));
+  if (productTemplate && files.length < 2) {
+    return NextResponse.json({ message: "Cần ít nhất một ảnh sản phẩm cùng ảnh nhân vật." }, { status: 400 });
+  }
+  for (const { file, kind, label } of files) {
+    if (!(file instanceof File) || !file.size || file.size > salesVideoFileLimits[kind]) {
+      return NextResponse.json({ message: `${label} là tệp bắt buộc, tối đa ${salesVideoFileLimits[kind] / 1024 ** 2} MB.` }, { status: 400 });
+    }
+  }
+  if (productTemplate && files.filter(({ name, file }) => name.startsWith("image-") && file instanceof File && file.size > 0).length > salesVideoMaxProductImages) {
+    return NextResponse.json({ message: `Tải tối đa ${salesVideoMaxProductImages} ảnh sản phẩm cho một video.` }, { status: 400 });
+  }
+  if (files.reduce((total, { file }) => total + (file instanceof File ? file.size : 0), 0) > 100 * 1024 * 1024) {
+    return NextResponse.json({ message: "Tổng dung lượng tệp vượt giới hạn 100 MB." }, { status: 413 });
+  }
+  const productImageCount = productTemplate ? files.length - 1 : 0;
+  if (productTemplate && productImageCount < 1) {
+    return NextResponse.json({ message: "Cần ít nhất một ảnh sản phẩm cùng ảnh nhân vật." }, { status: 400 });
+  }
+  const maxReferenceImages = selectedVideoModel?.maxReferenceImages || (model === "higgsfield" ? 9 : 7);
+  if (productTemplate && productImageCount + 1 > maxReferenceImages) {
+    return NextResponse.json({ message: `Model nhận tối đa ${maxReferenceImages} ảnh tham chiếu, gồm ảnh nhân vật. Hãy giảm ảnh sản phẩm.` }, { status: 400 });
+  }
+  let images: string[];
+  try {
+    images = await Promise.all(files.filter(({ kind }) => kind === "image").map(({ file }) => referenceImage(file)));
+  } catch (error) {
+    return NextResponse.json({ message: (error as Error).message }, { status: 400 });
+  }
+  try {
+    await run(process.env.STORYAI_FFMPEG_PATH || process.env.VIBE_FFMPEG_PATH || "ffmpeg", ["-version"], { timeout: 5000 });
+  } catch {
+    return NextResponse.json({ message: "Máy chủ cần FFmpeg để xuất video." }, { status: 503 });
+  }
+
+  const template = creative ?? {
+    ...productTemplate!,
+    files: [],
+    workflow: "prompt" as const,
+    instruction: salesVideoProductInstruction,
+  };
+  const productSegments = productTemplate ? salesVideoProductSegments(seconds, selectedVideoModel, videoQuality) : undefined;
+  const promptMaxLength = productTemplate ? Math.min(20_000, selectedVideoModel?.promptMaxLength || (model === "higgsfield" ? 10_000 : 5_000)) : undefined;
+  let effectiveScriptSegments = submittedScriptSegments;
+  if (productTemplate) {
+    if (!productSegments || !submittedPromptSegments || submittedPromptSegments.length !== productSegments.length) {
+      return NextResponse.json({ message: "Số prompt phải trùng với số clip video đã chia." }, { status: 400 });
+    }
+    if (submittedPromptSegments.some((segment) => segment.prompt.length > (promptMaxLength || 5_000))) {
+      return NextResponse.json({ message: `Mỗi prompt tối đa ${(promptMaxLength || 5_000).toLocaleString("vi-VN")} ký tự theo giới hạn của model đã chọn.` }, { status: 400 });
+    }
+    let offset = 0;
+    const validTimeline = submittedPromptSegments.every((segment, index) => {
+      const valid = segment.start === offset && segment.duration === productSegments[index] && segment.duration <= 15;
+      offset += segment.duration;
+      return valid;
+    });
+    if (!validTimeline || offset !== seconds) return NextResponse.json({ message: "Các prompt phải chia đúng thời lượng thành từng clip tối đa 15 giây." }, { status: 400 });
+    if (speaksInVideo) {
+      if (!submittedScriptSegments || submittedScriptSegments.length !== productSegments.length) {
+        return NextResponse.json({ message: "Hãy chia lời thoại theo từng clip 15 giây trước khi tạo video." }, { status: 400 });
+      }
+      let scriptOffset = 0;
+      const validScripts = submittedScriptSegments.every((segment, index) => {
+        const maxWords = salesVideoMaxWordCount(segment.duration, language!);
+        const valid = segment.start === scriptOffset && segment.duration === productSegments[index] && segment.duration <= 15
+          && (maxWords === null || salesVideoWordCount(segment.script, language!) <= maxWords);
+        scriptOffset += segment.duration;
+        return valid;
+      });
+      if (!validScripts || scriptOffset !== seconds) return NextResponse.json({ message: "Kiểm tra mốc thời gian và giới hạn từ trên từng clip lời thoại." }, { status: 400 });
+    } else {
+      effectiveScriptSegments = productSegments.map((duration, index) => ({
+        start: productSegments.slice(0, index).reduce((sum, item) => sum + item, 0), duration, script: "",
+      }));
+    }
+    scriptForVideo = effectiveScriptSegments?.map((segment) => segment.script).filter(Boolean).join("\n") || "";
+  }
+  const isStitched = Boolean(productSegments && productSegments.length > 1);
+  const prompt = creative
+    ? creative.text ? text || creative.defaultText || "" : ""
+    : submittedPromptSegments![0].prompt;
+  const initialSegmentResults = submittedPromptSegments?.map((segment, index) => {
+    const saved = pendingDraft?.details?.segmentResults?.[index];
+    if (retrySegmentIndex === index) return { start: segment.start, duration: segment.duration, status: "processing" as const };
+    return saved || { start: segment.start, duration: segment.duration, status: "pending" as const };
+  });
+  const project: SalesVideoProject = {
+    ...(pendingDraft || {}),
+    id: requestedProjectId || randomUUID(), title: title || product.slice(0, 120) || template.name,
+    template: template.name, model: [selectedVideoModel?.label || salesVideoModels[model], videoQuality, higgsfieldSpeed ? "Fast" : "", videoOffPeak ? "off-peak" : ""].filter(Boolean).join(" · "), createdAt: pendingDraft?.createdAt || new Date().toISOString(), status: "processing", phase: "generating", worker,
+    details: pendingDraft?.details ? {
+      ...pendingDraft.details,
+      product, facts, prompt, ...(submittedPromptSegments ? { promptSegments: submittedPromptSegments } : {}), script: scriptForVideo, language, duration: seconds, ratio,
+      ...(effectiveScriptSegments ? { scriptSegments: effectiveScriptSegments, subtitleSrt: speaksInVideo ? salesVideoDialogueToSrt(effectiveScriptSegments, language!) : "" } : {}),
+      ...(promptMaxLength ? { promptMaxLength } : {}),
+      videoModelId: requestedModel,
+      ...(initialSegmentResults ? { segmentResults: initialSegmentResults, needsStitching: true } : {}),
+      references: {
+        presenter: `/api/sales-video/${requestedProjectId}/references/presenter`,
+        product: `/api/sales-video/${requestedProjectId}/references/product`,
+        products: Array.from({ length: images.length - 1 }, (_, index) => `/api/sales-video/${requestedProjectId}/references/${index === 0 ? "product" : `product-${index + 1}`}`),
+      },
+      productImageCount: Math.max(1, images.length - 1),
+    } : pendingDraft?.details,
+  };
+  await saveSalesVideoProject(userId, project);
+  after(async () => {
+    await enqueueSalesVideoTask(async () => {
+      try {
+        const generatedSegments = await createCreativeSalesVideo({
+          id: project.id, userId, template, images, seconds, ratio, prompt, promptSegments: submittedPromptSegments, videoQuality, videoOffPeak,
+          splitDialogue: isStitched ? { script: scriptForVideo, language: language!, audio: speaksInVideo, segments: productSegments!, scriptSegments: effectiveScriptSegments } : undefined,
+          pixverseKey, voiceKey, model, maiVideoModel, gatewayVideoModel, providerAuthToken: token, sourceStart,
+          onlySegmentIndex: retrySegmentIndex, signal: AbortSignal.timeout(60 * 60_000),
+          audio: files.find(({ kind }) => kind === "audio")?.file as File | undefined,
+          video: files.find(({ kind }) => kind === "video")?.file as File | undefined,
+        });
+        if (retrySegmentIndex !== undefined && project.details) {
+          const segmentResults = (project.details.segmentResults || []).map((segment, index) => index === retrySegmentIndex
+            ? { start: segment.start, duration: segment.duration, status: "ready" as const }
+            : segment);
+          const generatedPrompts = [...(project.details.generatedSegments?.length ? project.details.generatedSegments : submittedPromptSegments || [])];
+          if (generatedSegments[0]) generatedPrompts[retrySegmentIndex] = generatedSegments[0];
+          const retriedProject: SalesVideoProject = {
+            ...project,
+            status: pendingDraft?.status === "ready" ? "ready" : "failed",
+            phase: undefined,
+            worker: undefined,
+            error: pendingDraft?.status === "ready" ? undefined : project.error,
+            details: { ...project.details, generatedSegments: generatedPrompts, segmentResults, needsStitching: true },
+          };
+          await saveSalesVideoProject(userId, retriedProject);
+          return;
+        }
+        await saveSalesVideoProject(userId, {
+          ...project,
+          status: "ready",
+          phase: undefined,
+          worker: undefined,
+          details: project.details ? {
+            ...project.details, generatedSegments,
+            segmentResults: generatedSegments.map((segment) => ({ start: segment.start, duration: segment.duration, status: "ready" as const })),
+            needsStitching: false,
+          } : undefined,
+        });
+      } catch (error) {
+        console.error("Sales video generation failed", project.id, error instanceof Error ? error.name : "UnknownError");
+        let segmentResults = project.details?.segmentResults;
+        if (retrySegmentIndex !== undefined) {
+          segmentResults = segmentResults ? await Promise.all(segmentResults.map(async (segment, index) => {
+            if (index !== retrySegmentIndex) return segment;
+            let keptPreviousClip = await stat(salesVideoSegmentPath(userId, project.id, index)).then(() => true).catch(() => false);
+            if (!keptPreviousClip && pendingDraft?.status === "ready") {
+              keptPreviousClip = await ensureSalesVideoSegmentFile(userId, project.id, index, segment.start, segment.duration)
+                .then(() => true).catch(() => false);
+            }
+            return {
+              ...segment,
+              status: keptPreviousClip ? "ready" as const : "failed" as const,
+              ...(keptPreviousClip ? { error: "Tạo lại chưa thành công; clip trước đó vẫn được giữ." } : { error: "Không tạo được clip này. Bạn có thể thử lại." }),
+            };
+          })) : segmentResults;
+          const retryBaseStatus = pendingDraft?.status === "ready" ? "ready" : "failed";
+          await saveSalesVideoProject(userId, {
+            ...project, status: retryBaseStatus, phase: undefined, worker: undefined,
+            error: retryBaseStatus === "ready" ? undefined : "Một hoặc nhiều clip cần được tạo lại hoặc ghép lại.",
+            details: project.details ? { ...project.details, segmentResults, needsStitching: true } : undefined,
+          });
+          return;
+        }
+        if (project.details?.promptSegments?.length) {
+          const failedIndex = error instanceof SalesVideoSegmentError ? error.segmentIndex : undefined;
+          segmentResults = await Promise.all(project.details.promptSegments.map(async (segment, index) => ({
+            start: segment.start,
+            duration: segment.duration,
+            status: await stat(salesVideoSegmentPath(userId, project.id, index)).then(() => "ready" as const).catch(() =>
+              failedIndex === index ? "failed" as const : "pending" as const),
+            ...(failedIndex === index ? { error: "Không tạo được clip này. Bạn có thể thử lại." } : {}),
+          })));
+        }
+        await saveSalesVideoProject(userId, {
+          ...project, status: "failed", phase: undefined, worker: undefined,
+          error: error instanceof SalesVideoInputError ? error.message : "Tạo video thất bại. Kiểm tra model, quyền tài khoản hoặc nội dung tệp rồi thử lại.",
+          details: project.details ? { ...project.details, segmentResults, needsStitching: true } : undefined,
+        });
+      }
+    });
+  });
+  return NextResponse.json({ project }, { status: 202 });
+}
