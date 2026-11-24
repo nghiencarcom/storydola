@@ -84,9 +84,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <button className="sidebar-close-button" type="button" onClick={closeMobileNav} aria-label="Đóng menu"><Icon name="close" size={19} /></button>
         </div>
         <div className="nav-label">Sản xuất</div>
-        <nav className="main-nav">{navItems.map((item) => <Link key={item.href} href={item.href} onClick={closeMobileNav} className={`nav-item ${isActive(pathname, item.href) ? "active" : ""}`}><span className="nav-icon"><Icon name={item.icon} size={18} /></span><span>{item.label}</span>{item.href === "/tasks" && queuedTaskCount > 0 && <span className="nav-count">{queuedTaskCount}</span>}</Link>)}</nav>
+        <nav className="main-nav">{navItems.map((item) => <Link key={item.href} href={item.href} onClick={(event) => {
+          closeMobileNav();
+          if (pathname.startsWith("/sales-video") && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.button === 0) {
+            event.preventDefault();
+            window.location.assign(item.href);
+          }
+        }} className={`nav-item ${isActive(pathname, item.href) ? "active" : ""}`}><span className="nav-icon"><Icon name={item.icon} size={18} /></span><span>{item.label}</span>{item.href === "/tasks" && queuedTaskCount > 0 && <span className="nav-count">{queuedTaskCount}</span>}</Link>)}</nav>
         <div className="nav-label library-label">Thư viện</div>
-        <nav className="main-nav"><Link href="/library" onClick={closeMobileNav} className={`nav-item ${isActive(pathname, "/library") ? "active" : ""}`}><span className="nav-icon"><Icon name="layers" size={18} /></span><span>Kho cảnh & preset</span></Link></nav>
+        <nav className="main-nav"><Link href="/library" onClick={(event) => { closeMobileNav(); if (pathname.startsWith("/sales-video") && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.button === 0) { event.preventDefault(); window.location.assign("/library"); } }} className={`nav-item ${isActive(pathname, "/library") ? "active" : ""}`}><span className="nav-icon"><Icon name="layers" size={18} /></span><span>Kho cảnh & preset</span></Link></nav>
       </aside>
       <main className="main-content">
         <header className="topbar">
