@@ -123,7 +123,7 @@ export const salesVideoProductExamples: Record<string, string> = {
 
 export const salesVideoHookStyles = [
   { id: "pain", label: "Vấn đề đời thường", hint: "Bắt đầu bằng sự bực bội, bất tiện hoặc thói quen sai lầm phổ biến." },
-  { id: "skeptical", label: "Hoài nghi", hint: "Bắt đầu bằng sự hoài nghi ('Tưởng phí tiền ai ngờ...', 'Đồ rẻ thế này dùng được không?')." },
+  { id: "skeptical", label: "Hoài nghi", hint: "Bắt đầu bằng sự hoài nghi ('Lúc đầu cứ sợ phí tiền...', 'Tưởng đồ rẻ dùng không ra gì ai ngờ...')." },
   { id: "curiosity", label: "Gợi tò mò", hint: "Gợi mở một chi tiết nhỏ bất ngờ tạo vòng lặp tò mò (Open Loop)." },
   { id: "visual_action", label: "Thao tác trực quan", hint: "Hành động bất ngờ, test thực tế hoặc cận cảnh chi tiết ngay giây đầu." },
 ] as const;

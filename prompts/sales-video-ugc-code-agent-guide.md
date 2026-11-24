@@ -41,9 +41,12 @@ Người xem quyết định lướt qua chỉ trong **0.8 đến 1.5 giây**. D
 ```
 
 ### 3 Nguyên tắc Hook cốt lõi:
-1. **Lớp Lời thoại (Verbal Hook) — Ưu tiên độ cuốn hút và nhạc điệu tự nhiên:**
+1. **Lớp Lời thoại (Verbal Hook) — Ưu tiên độ cuốn hút, nhịp điệu và văn nói tự nhiên:**
    - Câu thoại mở đầu đánh thẳng vào một nỗi bực mình thực tế, một sự hoài nghi hoặc một sự thật ít người biết.
-   - **Không áp đặt trần 12 từ máy móc:** Câu hook có thể dài từ 12–18 từ miễn là đọc lên mượt mà, giàu cảm xúc và cuốn hút (ví dụ: *"Mấy bà da dầu bôi kem chống nắng bóng nhẫy như chảo mỡ đúng không?"* — câu 15 từ nhưng đọc cực kỳ vào tai và giữ chân người nghe ngay lập tức).
+   - **ĐỘ DÀI & NHỊP THỞ ĐỒNG BỘ (2-Beat Cadence):** Câu hook mở đầu trong 0–3 giây có độ dài chuẩn **15–18 từ** (tương đương 2.5–3.5s đọc tự nhiên). Cấu trúc 2 vế rõ ràng ngắt bằng dấu phẩy:
+     * *Vế 1 (7–9 từ):* Nêu trực diện nỗi bức xúc / bất tiện / hoài nghi / cảnh báo.
+     * *Vế 2 (7–9 từ):* Hành động / khúc cua / điểm hé lộ (pivot / reveal) mở ra giải pháp.
+   - **TUYỆT ĐỐI CẤM TỰ HỎI RỒI TỰ TRẢ LỜI (Self-Q&A):** Cấm mọi dạng hỏi người xem rồi tự trả lời hoặc chèn dấu hỏi chấm (`?`) vào câu hook (như *"Da dầu bôi kem chống nắng bóng nhẫy như chảo mỡ? Đổi sang chất gel này...", "...đúng không? Để mình chỉ cho", "...phải không? Dùng cái này đi..."*). Đây là lối nói giả tạo của tiếp thị truyền hình (tele-shopping), khiến người xem lướt đi ngay lập tức. Bắt buộc thay bằng **lời tự sự bộc bạch, tự thú hoặc nhận định trực diện** bằng câu trần thuật.
    - *CẤM chào hỏi:* Tuyệt đối không "Xin chào mọi người", "Chào mừng đến với video", "Hôm nay mình sẽ...".
    - *CẤM nêu tên thương hiệu ngay câu đầu:* Giữ sự tò mò, chỉ giới thiệu sản phẩm sau khi đã mở nút thắt vấn đề.
    - *CẤM câu hỏi đóng Yes/No hiển nhiên:* Tránh "Bạn có muốn da đẹp không?", "Bạn có mệt mỏi vì dọn nhà không?".
@@ -52,7 +55,7 @@ Người xem quyết định lướt qua chỉ trong **0.8 đến 1.5 giây**. D
    - Chữ phủ trên video ở giây đầu tiên dành cho nhóm 80% người xem lướt không bật tiếng (silent scrollers).
    - **QUY TẮC ĐỐI TRỌNG (COUNTER-POINT):** Chữ màn hình KHÔNG được lặp lại nguyên văn lời thoại và **TUYỆT ĐỐI CẤM mô tả lại hành động mắt thấy** (Cấm: "CẦM BÌNH", "XOAY MÀN HÌNH", "MỞ NẮP"). Chữ màn hình phải đóng vai trò là "tiêu đề bài báo giật gân" hoặc tóm gọn nỗi đau bằng 2–5 từ in hoa kèm 1–2 emoji (Xem chi tiết bộ 4 công thức giật tít tại Mục 9.3).
    - *Ví dụ:*
-     * Lời thoại: "Mấy bà da dầu bôi kem chống nắng bóng nhẫy như chảo mỡ đúng không?" (15 từ, rất tự nhiên, giàu hình ảnh và giữ chân cực tốt)
+     * Lời thoại: "Da dầu sợ nhất bôi kem bóng nhẫy mặt, đổi sang chất gel này thấm ráo tức thì luôn." (17 từ, 2 vế nhịp thở dứt khoát, không câu hỏi tu từ, giữ chân người nghe ngay lập tức)
      * Chữ màn hình: `HẾT BÓNG DẦU TRONG 10S? 😱` (5 từ)
 
 ---
@@ -134,16 +137,17 @@ Lời thoại UGC phải nghe như một người bạn sành sỏi đang trò c
 
 ---
 
-### 6.2 BẢNG ĐEN: 6 Nhóm Từ Ngữ & Lối Nói Rập Khuôn Bị CẤM TUYỆT ĐỐI
+### 6.2 BẢNG ĐEN: 7 Nhóm Từ Ngữ & Lối Nói Rập Khuôn Bị CẤM TUYỆT ĐỐI
 
 | Nhóm lỗi | ❌ Mẫu câu cấm (Gượng gạo / Robot / Giọng PR) | ✅ Cách nói đời thường thay thế (Giàu nhạc điệu) |
 |---|---|---|
 | **1. Văn dịch PR & Sáo ngữ TVC** | • "Bí mật nằm ở cụm..."<br>• "Trang bị hẳn cảm biến..."<br>• "Hỗ trợ công nghệ tiên tiến..."<br>• "Mọi bước đi đều êm ru khó tin" | • "Cái gimbal này lia mượt dã man..."<br>• "Nhìn nhỏ gọn vậy thôi mà quay êm ru..."<br>• "Điểm ăn tiền nằm ở..."<br>• "Vừa đi vừa quay mà khung hình vẫn chắc nịch." |
-| **2. Lối nói Hành chính / Cảnh báo hợp đồng** | • "Nhưng có một điểm cả nhà cần lưu ý là..."<br>• "Ai để ý bao bì thì lưu tâm nhé..."<br>• "Trước khi chọn, xem kỹ hình dáng và thông tin bảo hành có hợp nhu cầu của bạn không nha." | • "Có điều em này không chống nước đâu nha, trời mưa nhớ cất túi kỹ."<br>• "Mỗi tội vỏ hộp hơi đơn giản xíu, bù lại máy bên trong cực ngon."<br>• "Bác nào hay quay vlog giống mình thì nghía thử em này xem hợp gu không nha." |
-| **3. Câu cộc lốc / Khảo sát điền form** | • "Điểm mình ưng là cảm giác cầm đầm tay."<br>• "Sản phẩm có thiết kế kim loại chắc chắn." | • "Cầm trên tay thấy đầm và chắc nịch luôn."<br>• "Phần vỏ kim loại hoàn thiện sờ mát rượi, cầm rất đã tay." |
-| **4. Copy rập khuôn câu CTA mẫu** | • "Nếu cả nhà thấy món này hợp nhu cầu thì bấm góc trái để tham khảo thêm nha." (Copy nguyên văn gây nhàm chán) | • **Gắn chặt CTA vào tình huống sản phẩm:**<br>  - "Bác nào hay quay vlog di chuyển nhiều thì nghía thử ở góc trái nha."<br>  - "Bà nào lười dọn bếp giống mình thì bấm góc trái tham khảo nghen."<br>  - "Em để sẵn link ở góc trái màn hình cho cả nhà tiện xem nè." |
-| **5. Đánh vần chữ số thô thiển (TTS distortion)** | • "bốn K hai trăm bốn mươi khung hình"<br>• "bảy trăm năm mươi mi li lít"<br>• "một inch ba trục" | • Giữ đúng số và thuật ngữ chuẩn: `quay 4K 240fps`, `bình 750ml`, `cảm biến 1 inch`, `gimbal 3 trục`. Giọng đọc AI hiện đại phát âm tự nhiên các ký hiệu này. |
-| **6. Đọc thông số kỹ thuật khô khan** | • "Dung tích 750ml, chất liệu inox 304, giữ nhiệt 24 giờ." | • "Bình 750ml to vừa đủ, sáng rót nước đá mang đi làm tới chiều đá vẫn chưa tan hết." |
+| **2. Tự hỏi rồi tự trả lời (Self-Q&A / Câu hỏi tu từ `?`)** | • "Tốn tiền mua đồ linh tinh mà vẫn bực mình? Thử xem món này..."<br>• "Dưới một mét sáu mặc quần bị lùn đi? Là do chọn sai cạp..."<br>• "Da dầu bôi kem bóng nhẫy mặt đúng không? Đổi sang gel này..."<br>• "Đồ rẻ thế này dùng được không? Ra ngã tư test..." | • "Tốn cả đống tiền mua đồ linh tinh về vứt xó, tới khi gặp em này mới thấy sáng mắt."<br>• "Chân ngắn dưới một mét sáu rất dễ bị dìm dáng, bí quyết là chọn đúng cạp cao này."<br>• "Da dầu sợ nhất bôi kem bóng nhẫy mặt, đổi sang chất gel này thấm ráo tức thì luôn."<br>• "Lúc đầu thấy giá rẻ mình không tin đâu, đem ra ngã tư test thử mới thấy bất ngờ." |
+| **3. Lối nói Hành chính / Cảnh báo hợp đồng** | • "Nhưng có một điểm cả nhà cần lưu ý là..."<br>• "Ai để ý bao bì thì lưu tâm nhé..."<br>• "Trước khi chọn, xem kỹ hình dáng và thông tin bảo hành có hợp nhu cầu của bạn không nha." | • "Có điều em này không chống nước đâu nha, trời mưa nhớ cất túi kỹ."<br>• "Mỗi tội vỏ hộp hơi đơn giản xíu, bù lại máy bên trong cực ngon."<br>• "Bác nào hay quay vlog giống mình thì nghía thử em này xem hợp gu không nha." |
+| **4. Câu cộc lốc / Khảo sát điền form** | • "Điểm mình ưng là cảm giác cầm đầm tay."<br>• "Sản phẩm có thiết kế kim loại chắc chắn." | • "Cầm trên tay thấy đầm và chắc nịch luôn."<br>• "Phần vỏ kim loại hoàn thiện sờ mát rượi, cầm rất đã tay." |
+| **5. Copy rập khuôn câu CTA mẫu** | • "Nếu cả nhà thấy món này hợp nhu cầu thì bấm góc trái để tham khảo thêm nha." (Copy nguyên văn gây nhàm chán) | • **Gắn chặt CTA vào tình huống sản phẩm:**<br>  - "Bác nào hay quay vlog di chuyển nhiều thì nghía thử ở góc trái nha."<br>  - "Bà nào lười dọn bếp giống mình thì bấm góc trái tham khảo nghen."<br>  - "Em để sẵn link ở góc trái màn hình cho cả nhà tiện xem nè." |
+| **6. Đánh vần chữ số thô thiển (TTS distortion)** | • "bốn K hai trăm bốn mươi khung hình"<br>• "bảy trăm năm mươi mi li lít"<br>• "một inch ba trục" | • Giữ đúng số và thuật ngữ chuẩn: `quay 4K 240fps`, `bình 750ml`, `cảm biến 1 inch`, `gimbal 3 trục`. Giọng đọc AI hiện đại phát âm tự nhiên các ký hiệu này. |
+| **7. Đọc thông số kỹ thuật khô khan** | • "Dung tích 750ml, chất liệu inox 304, giữ nhiệt 24 giờ." | • "Bình 750ml to vừa đủ, sáng rót nước đá mang đi làm tới chiều đá vẫn chưa tan hết." |
 
 ---
 
@@ -313,257 +317,257 @@ Mỗi ngành hàng có tệp khán giả, đại từ xưng hô, nỗi đau và 
 
 ### 10.1 Mọi sản phẩm (`general`)
 - **Xưng hô:** `mình` – `mọi người` / `cả nhà` (thân thiện, gần gũi).
-- **Hook 0–3s:**
-  * *(Nỗi đau):* "Tốn cả đống tiền mua đồ linh tinh mà vẫn bực mình? Thử xem món này cứu được không nha."
-  * *(Bóc phốt ngược):* "Lúc đầu định bỏ qua vì sợ phí tiền. Mua về dùng thử mới thấy quá đáng tiền."
-  * *(Tò mò):* "Món đồ chưa tới hai trăm nghìn nhưng có đúng một chi tiết nhỏ ai cũng mê."
+- **Hook 0–3s (Chuẩn 17–18 từ, 2 vế nhịp thở, cấm hỏi đáp):**
+  * *(Nỗi đau):* "Tốn tiền mua đồ linh tinh về vứt xó, tới khi gặp em này mới thấy sáng mắt."
+  * *(Hoài nghi):* "Lúc đầu thấy giá rẻ cứ sợ phí tiền, mua về cầm trên tay mới thấy đáng tiền."
+  * *(Tò mò):* "Món đồ chưa tới hai trăm nghìn, nhưng có đúng một chi tiết nhỏ ai nhìn cũng mê."
 - **Thân bài & Nhược điểm:**
   * *"Cầm trên tay thấy đầm và chắc nịch, hoàn thiện kim loại sờ rất đã tay."*
   * *(Honest Flaw):* *"Có điều vỏ hộp hơi đơn giản xíu, bù lại sản phẩm bên trong hoàn thiện cực kỳ ngon."*
 - **CTA tự nhiên:**
   * *"Bác nào thấy em này hợp nhu cầu thì bấm góc trái nghía thử nha."*
   * *"Ai đang tìm món tiện lợi mang đi làm thì ghé góc trái tham khảo nghen."*
-- **Bảng Đen cấm kỵ:** Cấm "Bí mật nằm ở...", "Xem kỹ thông tin bảo hành có hợp nhu cầu không".
+- **Bảng Đen cấm kỵ:** Cấm hỏi rồi tự trả lời (`?`), cấm "Bí mật nằm ở...", "Xem kỹ thông tin bảo hành có hợp nhu cầu không".
 
 ---
 
 ### 10.2 Thời trang (`fashion`)
 - **Xưng hô:** `mình` – `mấy bà` / `các nàng` / `chị em` (chia sẻ gu mặc đẹp, thân mật).
-- **Hook 0–3s:**
-  * *(Nỗi đau):* "Dưới một mét sáu mặc quần ống rộng cứ bị lùn đi? Là do chọn sai cạp quần này nha."
-  * *(Cảnh báo):* "Đừng vội mua sơ mi trắng nếu chưa kiểm tra cổ áo. Mặc hai lần là nhăn nhúm liền."
-  * *(Tò mò):* "Bụng dưới hơi tròn đổi sang chiếc váy này nhìn eo nhỏ hẳn. Nhìn khác biệt chưa."
+- **Hook 0–3s (Chuẩn 17–18 từ, 2 vế nhịp thở, cấm hỏi đáp):**
+  * *(Nỗi đau):* "Chân ngắn dưới một mét sáu dễ bị dìm dáng, bí quyết là chọn đúng cạp này nha."
+  * *(Cảnh báo):* "Đừng mua sơ mi trắng nếu chưa sờ chất vải, mặc cả ngày không lo nhăn nhúm nha."
+  * *(Tò mò):* "Bụng dưới hơi tròn đổi sang chiếc váy này, eo thon hẳn mà giấu mỡ cực kỳ đỉnh."
 - **Thân bài & Nhược điểm:**
   * *"Chất vải rũ tự nhiên, mặc lên hack chân cực kỳ, giấu nhẹm bụng dưới luôn."*
   * *(Honest Flaw):* *"Vải mới giặt lần đầu mấy bà nhớ giặt tay riêng nha, với form hơi rộng nên ai thích ôm thì lùi một size."*
 - **CTA tự nhiên:**
   * *"Bà nào muốn tìm quần hack chân mặc đi làm thì lướt góc trái xem bảng size nha."*
   * *"Mấy bà bấm góc trái xem thêm các màu khác xem có ưng không nè."*
-- **Bảng Đen cấm kỵ:** Cấm "tôn vinh vóc dáng hoàn mỹ", "đẳng cấp thời thượng", "nâng tầm phong cách".
+- **Bảng Đen cấm kỵ:** Cấm hỏi rồi tự trả lời (`?`), cấm "tôn vinh vóc dáng hoàn mỹ", "đẳng cấp thời thượng", "nâng tầm phong cách".
 
 ---
 
 ### 10.3 Gia dụng & Đời sống (`home`)
 - **Xưng hô:** `mình` – `mọi người` / `cả nhà` / `mấy bà nội trợ`.
-- **Hook 0–3s:**
-  * *(Nỗi đau):* "Hồi trước dọn bếp chà muốn gãy tay. Biết chai bọt này mới thấy mình tự làm khổ mình."
-  * *(Cảnh báo):* "Bỏ ngay cây lau nhà cũ nặng trịch đi. Chưa tới hai trăm nghìn mà cứu cái lưng cả năm."
-  * *(Tò mò):* "Tưởng máy hút mini bé xíu cho vui. Hút một lượt trên nệm ra nguyên đống bụi mịn."
+- **Hook 0–3s (Chuẩn 17–18 từ, 2 vế nhịp thở, cấm hỏi đáp):**
+  * *(Nỗi đau):* "Hồi trước dọn bếp chà muốn gãy cả tay, từ ngày có chai bọt này nhàn tênh luôn."
+  * *(Hoài nghi):* "Tưởng chiếc máy mini này chỉ để làm cảnh, hút một đường ra nguyên đống bụi mịn."
+  * *(Cảnh báo):* "Bỏ ngay cây lau nhà nặng trịch đau lưng đi, đổi sang cây tự vắt này nhẹ tênh."
 - **Thân bài & Nhược điểm:**
   * *"Xịt bọt ra để tầm ba phút, lấy khăn quẹt nhẹ một đường là cặn dầu mỡ đi sạch trơn, đỡ tốn công kỳ cọ."*
   * *(Honest Flaw):* *"Dây cắm dài tầm một mét nên hơi ngắn xíu, bác nào dùng nhớ cắm gần ổ điện nha."*
 - **CTA tự nhiên:**
   * *"Bác nào lười dọn bếp giống mình thì ghé góc trái sắm một chai dùng thử nha."*
   * *"Ai hay đau lưng vì lau nhà thì bấm góc trái tham khảo cây lau này nghen."*
-- **Bảng Đen cấm kỵ:** Cấm "giải pháp tối ưu cho không gian sống", "nâng tầm chất lượng cuộc sống", "công nghệ đột phá".
+- **Bảng Đen cấm kỵ:** Cấm hỏi rồi tự trả lời (`?`), cấm "giải pháp tối ưu cho không gian sống", "nâng tầm chất lượng cuộc sống", "công nghệ đột phá".
 
 ---
 
 ### 10.4 Đồ ăn vặt & Đồ uống (`snacks`)
 - **Xưng hô:** `mình` – `cả nhà` / `team ăn vặt` / `các bồ`.
-- **Hook 0–3s:**
-  * *(ASMR / Giác quan):* "(Tiếng cắn giòn) Nghe tiếng giòn là biết chất lượng nha. Cắn vô vị cay tê bùng lên đã thiệt."
-  * *(Bóc phốt ngược):* "Tưởng đồ ăn vặt toàn bột với đường. Ai ngờ xé bịch ra topping ngập mặt luôn."
-  * *(Tò mò):* "Nửa đêm đói bụng lỡ mở hũ này là ăn không dừng được. Nhìn lớp sốt áo đều nè."
+- **Hook 0–3s (Chuẩn 17–18 từ, 2 vế nhịp thở, cấm hỏi đáp):**
+  * *(Giác quan):* "Nghe tiếng giòn rụm là thấy đã tai rồi, cắn một miếng sốt đậm đà bùng nổ liền."
+  * *(Hoài nghi):* "Tưởng đồ ăn vặt chỉ toàn bột với đường, ai ngờ xé bịch ra topping ngập tràn luôn."
+  * *(Tò mò):* "Nửa đêm đói bụng lỡ mở hũ này ra, bảo đảm ăn hoài không thể dừng lại được."
 - **Thân bài & Nhược điểm:**
   * *"Topping giòn rụm đẫm sốt, cắn miếng nào thấm vị miếng đó, ăn cuốn dã man."*
   * *(Honest Flaw):* *"Vị hơi cay nồng nha, bác nào không ăn cay được thì nhớ cân nhắc trước khi thử."*
 - **CTA tự nhiên:**
   * *"Team hảo ngọt/hảo cay bấm góc trái đặt ăn thử xem có dính như mình không nha."*
   * *"Bác nào thèm ăn vặt đêm thì bấm góc trái rinh một hũ về nhâm nhi nghen."*
-- **Bảng Đen cấm kỵ:** Cấm "hương vị tuyệt hảo đánh thức mọi giác quan", "thực phẩm thượng hạng".
+- **Bảng Đen cấm kỵ:** Cấm hỏi rồi tự trả lời (`?`), cấm "hương vị tuyệt hảo đánh thức mọi giác quan", "thực phẩm thượng hạng".
 
 ---
 
 ### 10.5 Hàng tiêu dùng (`consumer`)
 - **Xưng hô:** `mình` – `mọi người` / `cả nhà` / `các bác`.
-- **Hook 0–3s:**
-  * *(Đánh nỗi đau / Tiết kiệm):* "Chưa tới hai nghìn một mẻ giặt mà thơm lừng cả nhà. Tháng nay bỏ luôn tiền mua nước xả."
-  * *(Cảnh báo):* "Đừng mua giấy ăn rẻ lau một cái dính đầy mặt. Nhìn mình nhúng nước tờ này nè."
-  * *(Tò mò):* "Món đồ tiêu dùng nhà nào cũng phải mua. Đổi sang loại này tiết kiệm hẳn một nửa tiền."
+- **Hook 0–3s (Chuẩn 17–18 từ, 2 vế nhịp thở, cấm hỏi đáp):**
+  * *(Nỗi đau):* "Chưa tới hai nghìn cho một mẻ giặt, áo quần thơm lừng bỏ luôn tiền mua nước xả."
+  * *(Cảnh báo):* "Đừng mua giấy ăn mỏng lau dính đầy bụi, nhìn mình nhúng nước vắt mạnh vẫn dai nguyên."
+  * *(Tò mò):* "Món đồ thiết yếu nhà nào cũng cần mua, đổi sang loại này tiết kiệm hẳn một nửa."
 - **Thân bài & Nhược điểm:**
   * *"Giấy dai dày dặn, nhúng nước vắt ráo không hề bị mủn hay dính bụi trắng lên mặt."*
   * *(Honest Flaw):* *"Gói hơi to nên ai thích bỏ túi xách nhỏ thì hơi cồng kềnh một chút nghen."*
 - **CTA tự nhiên:**
   * *"Cả nhà ai hay dùng giấy lau nhiều thì bấm góc trái gom combo cho hời nha."*
   * *"Bác nào muốn đổi loại nước giặt tiết kiệm thì nghía thử link ở góc trái nghen."*
-- **Bảng Đen cấm kỵ:** Cấm "chất lượng vượt trội hàng đầu", "sản phẩm tin dùng của triệu gia đình".
+- **Bảng Đen cấm kỵ:** Cấm hỏi rồi tự trả lời (`?`), cấm "chất lượng vượt trội hàng đầu", "sản phẩm tin dùng của triệu gia đình".
 
 ---
 
 ### 10.6 Mỹ phẩm & Chăm sóc da (`beauty`)
 - **Xưng hô:** `mình` – `mấy bà` / `các nàng` / `chị em` (tâm tình, chia sẻ skincare).
-- **Hook 0–3s:**
-  * *(Nỗi đau):* "Da dầu bôi kem chống nắng bóng nhẫy như chảo mỡ? Đổi sang chất gel này xem khác liền."
-  * *(Cảnh báo):* "Da nhạy cảm chọn sữa rửa mặt xong căng kin kít là dễ rát lắm. Đổi ngay đi nha."
-  * *(Tò mò):* "Bí quyết giữ nền da mỏng nhẹ suốt tám tiếng đi làm chỉ nằm ở đúng bước này."
+- **Hook 0–3s (Chuẩn 17–18 từ, 2 vế nhịp thở, cấm hỏi đáp):**
+  * *(Nỗi đau):* "Da dầu sợ nhất bôi kem bóng nhẫy mặt, đổi sang chất gel này thấm ráo tức thì."
+  * *(Cảnh báo):* "Da nhạy cảm rửa mặt xong mà căng rát, đổi ngay sang chai bọt dịu nhẹ này nha."
+  * *(Tò mò):* "Bí quyết giữ lớp nền ráo mịn cả ngày, thật ra chỉ nhờ đúng bước đệm nhỏ này."
 - **Thân bài & Nhược điểm:**
   * *"Chất gel mát rượi, thoa tới đâu thấm ráo tới đó, nâng tone nhẹ tênh không bị vệt trắng."*
   * *(Honest Flaw):* *"Mùi tràm trà lúc mới thoa hơi rõ một chút nha, ai nhạy cảm mùi hương thì để ý xíu nghen."*
 - **CTA tự nhiên:**
   * *"Bà nào da dầu đang tìm kcn ráo mịn thì bấm góc trái nghía thử nha."*
   * *"Chị em nào da nhạy cảm ghé góc trái xem bảng thành phần xem hợp da không nè."*
-- **Bảng Đen cấm kỵ:** Cấm "tái tạo da thần tốc", "trắng bật tông sau 1 đêm", "chữa dứt điểm mụn", "tinh chất nano thấm sâu tế bào".
+- **Bảng Đen cấm kỵ:** Cấm hỏi rồi tự trả lời (`?`), cấm "tái tạo da thần tốc", "trắng bật tông sau 1 đêm", "chữa dứt điểm mụn", "tinh chất nano thấm sâu tế bào".
 
 ---
 
 ### 10.7 Mẹ và bé (`baby`)
 - **Xưng hô:** `em` / `mình` – `các mom` / `mấy mẹ` / `ba mẹ` (đồng cảm, cẩn trọng, nhẹ nhàng).
-- **Hook 0–3s:**
-  * *(Nỗi đau):* "Ước gì biết món này sớm hơn. Đỡ hẳn cảnh mắt nhắm mắt mở canh nước pha sữa đêm."
-  * *(Cảnh báo):* "Các mom đừng mua bình tập hút rẻ dễ sặc. Nhìn van chống sặc này mới yên tâm nè."
-  * *(Tò mò):* "Đưa con ra ngoài tay xách nách mang cả đống đồ. Từ lúc có món này đi chơi nhẹ tênh."
+- **Hook 0–3s (Chuẩn 17–18 từ, 2 vế nhịp thở, cấm hỏi đáp):**
+  * *(Nỗi đau):* "Ước gì mình biết món này từ sớm, đỡ hẳn cảnh nửa đêm lục đục pha nước ấm."
+  * *(Cảnh báo):* "Các mom đừng chọn bình hút rẻ dễ sặc, nhìn van chống trào ngược này mới yên tâm."
+  * *(Tò mò):* "Đưa bé ra ngoài đồ đạc lỉnh kỉnh, có chiếc túi chia ngăn này đi lại nhẹ tênh."
 - **Thân bài & Nhược điểm:**
   * *"Bình cầm nhẹ tay, có van chống sặc một chiều nên bé nằm ti hay ngồi ti đều êm ru không lo trớ."*
   * *(Honest Flaw):* *"Bình có nhiều chi tiết chống sặc nên lúc rửa các mom chịu khó tháo ra vệ sinh kỹ một chút nghen."*
 - **CTA tự nhiên:**
   * *"Mom nào đang tìm bình tập hút chống sặc cho con thì ghé góc trái xem review nha."*
   * *"Mẹ nào sắp sinh hay chăm con nhỏ thì bấm góc trái tham khảo chiếc máy này nghen."*
-- **Bảng Đen cấm kỵ:** Cấm "an toàn tuyệt đối cho mọi trẻ em", "phát triển trí não vượt trội", "cam kết 100% không dị ứng".
+- **Bảng Đen cấm kỵ:** Cấm hỏi rồi tự trả lời (`?`), cấm "an toàn tuyệt đối cho mọi trẻ em", "phát triển trí não vượt trội", "cam kết 100% không dị ứng".
 
 ---
 
 ### 10.8 Đồ công nghệ & Phụ kiện (`tech`)
 - **Xưng hô:** `mình` – `anh em` / `các bác` / `mấy bác` (thực tế, sành sỏi, kỹ tính).
-- **Hook 0–3s:**
-  * *(Bóc phốt ngược):* "Chưa tới bốn trăm nghìn mà đòi chống ồn chủ động? Ra ngã tư test thử xem có ảo không."
-  * *(Nỗi đau):* "Ra đường dây sạc rối tung lại báo pin yếu. Thủ sẵn cục sạc nhỏ bằng bàn tay này đi."
-  * *(Tò mò):* "Tưởng phải bỏ tiền triệu mới có phím gõ êm tay. Nghe thử tiếng gõ của em bốn trăm này."
+- **Hook 0–3s (Chuẩn 17–18 từ, 2 vế nhịp thở, cấm hỏi đáp):**
+  * *(Hoài nghi):* "Lúc đầu thấy giá rẻ mình không tin, đem ra ngã tư test thử mới thấy bất ngờ."
+  * *(Nỗi đau):* "Đi làm ngoài đường sợ nhất sập nguồn máy, thủ sẵn cục sạc nhỏ bằng bao diêm này."
+  * *(Tò mò):* "Tưởng phải tốn tiền triệu mới gõ êm tay, nghe thử tiếng phím giá học sinh này nha."
 - **Thân bài & Nhược điểm:**
   * *"Gimbal ba trục vật lý lia mượt dã man, vừa bước đi vừa quay mà khung hình vẫn chắc nịch, không bị giật cục."*
   * *(Honest Flaw):* *"Có điều máy không có chuẩn kháng nước sẵn đâu nha, trời mưa bắt buộc phải dùng thêm ốp bảo vệ."*
 - **CTA tự nhiên:**
   * *"Bác nào hay quay vlog di chuyển nhiều thì ghé góc trái tham khảo nha."*
   * *"Anh em nào thích đồ công nghệ bỏ túi thì bấm góc trái xem thêm thông số nghen."*
-- **Bảng Đen cấm kỵ:** Cấm "Bí mật nằm ở cụm...", "Trang bị hẳn...", "bốn K hai trăm bốn mươi khung hình" (viết chuẩn `4K 240fps`).
+- **Bảng Đen cấm kỵ:** Cấm hỏi rồi tự trả lời (`?`), cấm "Bí mật nằm ở cụm...", "Trang bị hẳn...", "bốn K hai trăm bốn mươi khung hình" (viết chuẩn `4K 240fps`).
 
 ---
 
 ### 10.9 Phụ kiện thời trang (`accessories`)
 - **Xưng hô:** `mình` – `mấy bà` / `các nàng` / `anh em` (tùy tệp nam/nữ).
-- **Hook 0–3s:**
-  * *(Nỗi đau):* "Áo thun trắng mặc cả tuần nhìn đơn điệu? Thêm đúng điểm nhấn này nhìn có gu hẳn luôn."
-  * *(Cảnh báo):* "Mặt tròn chọn sai gọng kính nhìn mặt to thêm cả khúc. Đổi sang dáng gọng mảnh này đi."
-  * *(Tò mò):* "Chưa tới một trăm nghìn mà nhìn cả bộ đồ như bước ra từ tạp chí vậy đó."
+- **Hook 0–3s (Chuẩn 17–18 từ, 2 vế nhịp thở, cấm hỏi đáp):**
+  * *(Nỗi đau):* "Áo thun đơn giản mặc hơi đơn điệu, thêm đúng điểm nhấn nhỏ này nhìn có gu liền."
+  * *(Cảnh báo):* "Mặt tròn chọn sai gọng kính rất dễ dìm, đổi qua dáng này nhìn mặt thanh thoát hẳn."
+  * *(Tò mò):* "Món phụ kiện chưa tới một trăm nghìn, nhưng phối với set đồ nào nhìn cũng cực sang."
 - **Thân bài & Nhược điểm:**
   * *"Gọng kính nhẹ tênh, đeo cả ngày không bị cấn sống mũi hay đau vành tai."*
   * *(Honest Flaw):* *"Hộp đựng tặng kèm hơi mỏng xíu, ai hay quăng quật thì sắm thêm hộp cứng nha."*
 - **CTA tự nhiên:**
   * *"Bà nào mặt tròn muốn tìm gọng kính hack mặt thon thì bấm góc trái nghía thử nha."*
   * *"Bác nào thích phụ kiện tối giản dễ phối đồ thì ghé góc trái tham khảo nghen."*
-- **Bảng Đen cấm kỵ:** Cấm "kiệt tác thời trang", "đẳng cấp quý phái thượng lưu".
+- **Bảng Đen cấm kỵ:** Cấm hỏi rồi tự trả lời (`?`), cấm "kiệt tác thời trang", "đẳng cấp quý phái thượng lưu".
 
 ---
 
 ### 10.10 Giày dép (`footwear`)
 - **Xưng hô:** `mình` – `cả nhà` / `các bác` / `chị em` (chú trọng độ êm và thoải mái).
-- **Hook 0–3s:**
-  * *(Nỗi đau):* "Đi làm đứng nhiều sợ nhất giày mới trầy gót chân. Nhìn mình bẻ gập chiếc đế này nha."
-  * *(Cảnh báo):* "Đừng chốt vội giày online vì ảnh đẹp. Không có đệm lót êm này đi nửa tiếng là đau liền."
-  * *(Tò mò):* "Giày nhẹ tênh như đi chân trần mà vẫn ăn gian thêm bốn phân chiều cao. Quá êm."
+- **Hook 0–3s (Chuẩn 17–18 từ, 2 vế nhịp thở, cấm hỏi đáp):**
+  * *(Nỗi đau):* "Đi làm đứng nhiều sợ nhất trầy gót chân, nhìn mình bẻ gập chiếc đế siêu dẻo này."
+  * *(Cảnh báo):* "Đừng mua giày vì nhìn ảnh chụp đẹp, không có đệm êm đi nửa tiếng là đau liền."
+  * *(Tò mò):* "Đôi giày nhẹ tênh như đi chân trần, mang vô vừa êm lại ăn gian chiều cao nữa."
 - **Thân bài & Nhược điểm:**
   * *"Đế cao su dẻo bẻ gập thoải mái, đệm lót êm ái, bước đi êm ru không lo đau gót."*
   * *(Honest Flaw):* *"Form giày hơi ôm ngang một chút, bác nào chân bè thì nhớ nhích lên một size đi cho thoải mái nha."*
 - **CTA tự nhiên:**
   * *"Ai phải đứng hay đi bộ nhiều thì bấm góc trái rinh một đôi về trải nghiệm nha."*
   * *"Bác nào thích giày êm chân tôn dáng thì lướt góc trái chọn size nghen."*
-- **Bảng Đen cấm kỵ:** Cấm "bước đi uyển chuyển thần tiên", "chất liệu thượng hạng độc quyền".
+- **Bảng Đen cấm kỵ:** Cấm hỏi rồi tự trả lời (`?`), cấm "bước đi uyển chuyển thần tiên", "chất liệu thượng hạng độc quyền".
 
 ---
 
 ### 10.11 Đồ trang trí & Nội thất (`decor`)
 - **Xưng hô:** `mình` – `các bồ` / `team mê decor` / `mọi người`.
-- **Hook 0–3s:**
-  * *(Nỗi đau):* "Phòng trọ cũ nhìn chán ngắt. Đổi đúng góc đèn này tối đi làm về như vô homestay luôn."
-  * *(Cảnh báo):* "Đừng tốn mấy triệu sơn lại tường phòng trọ. Dán đúng một mảng này mười phút là khác biệt."
-  * *(Tò mò):* "Tưởng góc làm việc này tốn chục triệu. Sự thật trang trí lại hết chưa tới năm trăm nghìn."
+- **Hook 0–3s (Chuẩn 17–18 từ, 2 vế nhịp thở, cấm hỏi đáp):**
+  * *(Nỗi đau):* "Góc phòng trọ cũ nhìn tẻ nhạt chán ngắt, sắm đúng chiếc đèn vàng này về chill liền."
+  * *(Cảnh báo):* "Đừng tốn mấy triệu sơn lại tường phòng, dán mảng ốp này mười phút là đẹp như mới."
+  * *(Tò mò):* "Tưởng góc làm việc này tốn chục triệu decor, sự thật sắm đồ hết chưa tới năm trăm."
 - **Thân bài & Nhược điểm:**
   * *"Ánh sáng vàng ấm hắt tường cực chill, tối bật lên nghe nhạc hay cày phim là bao mê."*
   * *(Honest Flaw):* *"Đèn này thiên về tạo không gian thư giãn thôi nha, bác nào ngồi học hay đọc sách thì nhớ bật thêm đèn bàn."*
 - **CTA tự nhiên:**
   * *"Bồ nào muốn F5 lại góc phòng trọ giá hạt dẻ thì ghé góc trái nghía thử nha."*
   * *"Ai mê góc làm việc ấm cúng thì bấm góc trái tham khảo nghen."*
-- **Bảng Đen cấm kỵ:** Cấm "kiệt tác kiến trúc nghệ thuật", "sang trọng quý phái bậc nhất".
+- **Bảng Đen cấm kỵ:** Cấm hỏi rồi tự trả lời (`?`), cấm "kiệt tác kiến trúc nghệ thuật", "sang trọng quý phái bậc nhất".
 
 ---
 
 ### 10.12 Đồ dùng học tập & Văn phòng (`school`)
 - **Xưng hô:** `mình` – `mấy bồ` / `team học sinh sinh viên` / `các bác văn phòng`.
-- **Hook 0–3s:**
-  * *(Nỗi đau):* "Bàn học như bãi chiến trường là tụt hết hứng. Gom vô kệ xoay này xong muốn mở sách liền."
-  * *(Cảnh báo):* "Bút đánh dấu thấm qua mặt sau giấy nhìn rối mắt lắm. Quẹt thử cây này trên giấy mỏng nè."
-  * *(Tò mò):* "Sắm món nhỏ xíu này trên bàn làm việc giúp mình tập trung tăng gấp đôi luôn."
+- **Hook 0–3s (Chuẩn 17–18 từ, 2 vế nhịp thở, cấm hỏi đáp):**
+  * *(Nỗi đau):* "Bàn học bừa bộn nhìn tụt cảm hứng, gom vào kệ xoay thông minh này gọn gàng ngay."
+  * *(Cảnh báo):* "Mực bút thấm sang trang sau nhìn bẩn, quẹt thử cây ngòi khô nhanh này trên giấy mỏng."
+  * *(Tò mò):* "Món đồ nhỏ xíu trên bàn làm việc, giúp mình tập trung tăng năng suất gấp đôi luôn."
 - **Thân bài & Nhược điểm:**
   * *"Kệ chia nhiều ngăn xoay mượt mà, gom hết bút thước sổ tay vô một góc gọn gàng hẳn."*
   * *(Honest Flaw):* *"Khay đựng bút hơi nông một xíu, kéo dài thì vừa nhưng ai dùng thước ba mươi phân nhớ để góc riêng nha."*
 - **CTA tự nhiên:**
   * *"Bồ nào muốn dọn lại bàn học cho gọn gàng thì bấm góc trái rinh một em về nha."*
   * *"Ai hay làm thất lạc bút thước thì ghé góc trái tham khảo kệ này nghen."*
-- **Bảng Đen cấm kỵ:** Cấm "dụng cụ học tập chuyên nghiệp đỉnh cao", "bứt phá năng suất học tập thần tốc".
+- **Bảng Đen cấm kỵ:** Cấm hỏi rồi tự trả lời (`?`), cấm "dụng cụ học tập chuyên nghiệp đỉnh cao", "bứt phá năng suất học tập thần tốc".
 
 ---
 
 ### 10.13 Thực phẩm bổ sung (`supplements`)
 - **Xưng hô:** `mình` – `các bác` / `mọi người` / `dân văn phòng` (chân thành, có trách nhiệm, tuân thủ pháp luật).
-- **Hook 0–3s:**
-  * *(Nỗi đau):* "Dân văn phòng thức khuya ăn uống thất thường ngại pha chế? Cứ để sẵn hộp này trên bàn cho tiện."
-  * *(Cảnh báo):* "Ai ngại bổ sung chất vì sợ uống viên to khó nuốt thì đổi sang dạng gói nhỏ này nha."
-  * *(Tò mò):* "Mất đúng mười giây mỗi sáng giúp mình giữ tinh thần tỉnh táo suốt cả ngày dài."
+- **Hook 0–3s (Chuẩn 17–18 từ, 2 vế nhịp thở, cấm hỏi đáp):**
+  * *(Nỗi đau):* "Dân văn phòng thức khuya ăn uống thất thường, cứ để sẵn gói dinh dưỡng này trên bàn."
+  * *(Cảnh báo):* "Ai ngại uống viên to khó nuốt cả cổ, đổi sang dạng gói thanh mát này rất tiện."
+  * *(Tò mò):* "Mất đúng mười giây mỗi buổi sáng, giúp mình giữ tinh thần tỉnh táo suốt cả ngày."
 - **Thân bài & Nhược điểm:**
   * *"Dạng gói xé tiện lợi, vị thanh nhẹ dễ uống, uống đều đặn thấy người đỡ uể oải hẳn khi làm việc."*
   * *(Honest Flaw):* *"Vị hơi chua thanh nhẹ nha, bác nào bụng yếu thì nên uống sau ăn và pha với nước ấm nghen."*
 - **CTA tự nhiên:**
   * *"Bác nào hay làm việc khuya thức đêm giống mình thì bấm góc trái tham khảo nha."*
   * *"Ai đang tìm món bổ sung tiện lợi cho gia đình thì ghé góc trái xem hướng dẫn dùng nghen."*
-- **Bảng Đen cấm kỵ:** TUYỆT ĐỐI CẤM: "chữa dứt điểm", "trị dứt điểm bệnh", "giảm cân cấp tốc", "thay thế thuốc chữa bệnh".
+- **Bảng Đen cấm kỵ:** TUYỆT ĐỐI CẤM hỏi rồi tự trả lời (`?`); CẤM "chữa dứt điểm", "trị dứt điểm bệnh", "giảm cân cấp tốc", "thay thế thuốc chữa bệnh".
 
 ---
 
 ### 10.14 Đồ chơi trẻ em (`toys`)
 - **Xưng hô:** `mình` – `ba mẹ` / `các phụ huynh` / `cả nhà`.
-- **Hook 0–3s:**
-  * *(Nỗi đau):* "Ba mẹ đau đầu vụ con ôm tivi cả ngày? Thử bộ này đi, nhóc ngồi chơi im re cả tiếng."
-  * *(Cảnh báo):* "Đừng mua đồ chơi nhựa giòn dễ vỡ cạnh sắc. Nhìn mình thả mạnh xuống sàn xem độ bền nè."
-  * *(Tò mò):* "Món đồ chơi chưa tới hai trăm nghìn mà hai bố con thi nhau lắp ghép quên cả giờ ăn."
+- **Hook 0–3s (Chuẩn 17–18 từ, 2 vế nhịp thở, cấm hỏi đáp):**
+  * *(Nỗi đau):* "Thấy con dán mắt vào điện thoại cả ngày, đưa bộ này là bé ngồi chơi ngoan liền."
+  * *(Cảnh báo):* "Đừng mua đồ chơi nhựa giòn sắc nhọn nguy hiểm, nhìn mình thả rơi xe thử độ bền."
+  * *(Tò mò):* "Món đồ chơi chưa tới hai trăm nghìn, mà hai bố con lắp ráp quên cả giờ ăn."
 - **Thân bài & Nhược điểm:**
   * *"Nhựa dày dặn, các góc bo tròn nhẵn bóng không lo trầy xước tay con, màu sắc sinh động bé mê tít."*
   * *(Honest Flaw):* *"Bộ này có một vài chi tiết nhỏ nên bé dưới ba tuổi chơi cần có ba mẹ ngồi cùng nha."*
 - **CTA tự nhiên:**
   * *"Ba mẹ nào muốn cai tivi cho con thì ghé góc trái tham khảo bộ này nha."*
   * *"Ai đang tìm quà sinh nhật cho bé thì bấm góc trái xem thêm chi tiết nghen."*
-- **Bảng Đen cấm kỵ:** Cấm "phát triển trí tuệ thiên tài", "thần đồng nhí", "cam kết an toàn tuyệt đối 100%".
+- **Bảng Đen cấm kỵ:** Cấm hỏi rồi tự trả lời (`?`), cấm "phát triển trí tuệ thiên tài", "thần đồng nhí", "cam kết an toàn tuyệt đối 100%".
 
 ---
 
 ### 10.15 Xe cộ & Phụ kiện di chuyển (`vehicles`)
 - **Xưng hô:** `mình` – `anh em` / `các bác tài` / `anh em đi xe`.
-- **Hook 0–3s:**
-  * *(Nỗi đau):* "Đi mưa gương mờ tịt không thấy xe sau cực kỳ nguy hiểm. Thủ sẵn lọ này xử lý trong mười giây."
-  * *(Cảnh báo):* "Đừng để lốp non hơi giữa đường vắng mới cuống. Bỏ sẵn chiếc bơm mini này trong cốp đi."
-  * *(Tò mò):* "Gắn món nhỏ xíu này lên xe mất năm giây nhưng đi đường xa đỡ mỏi tay hẳn luôn."
+- **Hook 0–3s (Chuẩn 17–18 từ, 2 vế nhịp thở, cấm hỏi đáp):**
+  * *(Nỗi đau):* "Trời mưa gương chiếu hậu đọng nước mờ tịt, xịt lớp này lên nước trôi tuột tức thì."
+  * *(Cảnh báo):* "Đừng để lốp non hơi giữa đường vắng mới lo, thủ sẵn chiếc bơm mini này trong cốp."
+  * *(Tò mò):* "Gắn món nhỏ xíu này lên xe năm giây, đi đường xa liên tục đỡ mỏi tay hẳn."
 - **Thân bài & Nhược điểm:**
   * *"Xịt lên gương tạo hiệu ứng lá sen liền, nước mưa trôi tuột không đọng giọt, nhìn gương sáng rõ an tâm."*
   * *(Honest Flaw):* *"Lớp phủ duy trì tầm hai đến ba tuần thôi nha, sau đó anh em nhớ xịt lại để gương luôn rõ nghen."*
 - **CTA tự nhiên:**
   * *"Bác nào hay lái xe đường dài trời mưa thì ghé góc trái thủ sẵn một chai bỏ xe nha."*
   * *"Anh em đi xe máy hay ô tô bấm góc trái xem thêm để lái xe an toàn hơn nghen."*
-- **Bảng Đen cấm kỵ:** Cấm "phụ kiện siêu cấp tuyệt đối an toàn", "cứu nguy khẩn cấp 100%".
+- **Bảng Đen cấm kỵ:** Cấm hỏi rồi tự trả lời (`?`), cấm "phụ kiện siêu cấp tuyệt đối an toàn", "cứu nguy khẩn cấp 100%".
 
 ---
 
 ### 10.16 Phụ kiện & Chăm sóc thú cưng (`pets`)
 - **Xưng hô:** `mình` – `mấy sen` / `các con sen` / `hội nuôi boss`.
-- **Hook 0–3s:**
-  * *(Nỗi đau):* "Mùa rụng lông bám đầy quần áo nhìn muốn trầm cảm. Chiếc lược này chải một đường ra nguyên nắm."
-  * *(Cảnh báo):* "Mấy sen đừng cắt móng bằng bấm thường làm bé giật mình. Dùng loại có đèn soi mạch máu này đi."
-  * *(Tò mò):* "Tưởng mèo nhà mình chảnh không thèm chơi. Vừa thả món này xuống là vồ lấy quên luôn cả chủ."
+- **Hook 0–3s (Chuẩn 17–18 từ, 2 vế nhịp thở, cấm hỏi đáp):**
+  * *(Nỗi đau):* "Mùa lông rụng dính đầy ghế với quần áo, chải đúng một đường ra nguyên tảng lông luôn."
+  * *(Cảnh báo):* "Mấy sen đừng bấm móng bằng kìm thường làm đau bé, dùng loại có đèn soi mạch máu."
+  * *(Tò mò):* "Tưởng mèo nhà mình chảnh không thèm chơi, vừa thả món này xuống là vồ lấy liền nha."
 - **Thân bài & Nhược điểm:**
   * *"Răng lược bo tròn chải êm ru, boss nằm phơi bụng tận hưởng, bấm một nút là đẩy nguyên tảng lông ra cực tiện."*
   * *(Honest Flaw):* *"Bản chải hơi to xíu nên bé mèo con dưới hai tháng tuổi thì chải hơi cồng kềnh nghen."*
 - **CTA tự nhiên:**
   * *"Sen nào bất lực vì lông bay tứ tung trong phòng thì bấm góc trái sắm một cây chải nha."*
   * *"Hội nuôi boss ghé góc trái xem review lược chải lông rụng nè."*
-- **Bảng Đen cấm kỵ:** Cấm "dụng cụ vệ sinh thú cưng cao cấp", "đảm bảo triệt để 100% không còn lông".
+- **Bảng Đen cấm kỵ:** Cấm hỏi rồi tự trả lời (`?`), cấm "dụng cụ vệ sinh thú cưng cao cấp", "đảm bảo triệt để 100% không còn lông".
 
 ---
 
@@ -595,10 +599,11 @@ Khi nhận task từ hệ thống StoryAI:
 ```
 
 ### Bước tự kiểm duyệt ngầm (Self-Critique Check) trước khi trả kết quả:
-- [ ] Câu hook mở đầu có chào hỏi hoặc nêu tên sản phẩm không? (Nếu có -> Xóa ngay).
+- [ ] Câu hook mở đầu có chào hỏi, nêu tên sản phẩm, HOẶC TỰ HỎI RỒI TỰ TRẢ LỜI (Self-Q&A chứa dấu '?') không? (Nếu có -> Xóa bỏ ngay lập tức; chuyển thành câu trần thuật biểu cảm chuẩn 15–18 từ có 2 vế nhịp thở tự nhiên).
 - [ ] Toàn bộ lời thoại đọc lên có trôi chảy, giàu cảm xúc và cuốn hút không? (Ưu tiên câu đọc hay, có hồn, không máy móc băm cụt câu).
 - [ ] **Ngôi xưng hô có nhất quán từ đầu đến cuối không?** (Tuyệt đối không để đầu câu xưng "mình", giữa câu gọi "cả nhà", cuối câu lại phán "của bạn"; giữ đúng 1 cặp đại từ xuyên suốt).
 - [ ] **Kịch bản có dính từ ngữ thuộc BẢNG ĐEN không?**
+  * Có câu nào kiểu tự hỏi rồi tự trả lời ("...đúng không? Để mình...", "...bị lùn đi? Là do chọn sai...") không? (Bắt buộc đổi thành câu trần thuật 2 vế).
   * Có câu nào như "Bí mật nằm ở...", "Trang bị hẳn...", "Điểm mình ưng là..." không? (Thay bằng khẩu ngữ đời thường).
   * Khi nêu nhược điểm nhỏ, có bị hành chính hóa ("cần lưu ý là", "ai để ý thì lưu tâm", "xem kỹ thông tin bảo hành") không? (Thay bằng "Mỗi tội...", "Có điều...", "Duy chỉ có...").
   * Có bị đánh vần số thô ("bốn K hai trăm bốn mươi", "bảy trăm năm mươi mi li lít") không? (Giữ nguyên dạng số `4K 240fps`, `750ml`).
