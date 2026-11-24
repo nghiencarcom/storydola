@@ -11,7 +11,7 @@ import { getCodingAgentCliStatuses, type CodingAgent } from "../../lib/coding-ag
 import { readMaiVideoAuthCookie } from "../../lib/maivideo-auth-shared";
 import { getSeedanceApiKey, getSeedanceApiSessionToken } from "../../lib/seedance-accounts";
 import { createCreativeSalesVideo, ensureSalesVideoSegmentFile, SalesVideoInputError, SalesVideoSegmentError } from "../../lib/sales-video-creative";
-import { deleteSalesVideoProject, listSalesVideoProjects, salesVideoSegmentPath, salesVideoWatermarkLogoPath, saveSalesVideoProject, type SalesVideoProject } from "../../lib/sales-video-storage";
+import { deleteSalesVideoProject, listSalesVideoProjects, salesVideoSegmentPath, salesVideoWatermarkLogoPath, saveSalesVideoProject as persistSalesVideoProject, type SalesVideoProject } from "../../lib/sales-video-storage";
 import { enqueueSalesVideoTask, salesVideoWorkerId } from "../../lib/sales-video-runtime";
 import { isVideoOffPeakRequired } from "../../lib/media-generation-settings";
 import { stat } from "node:fs/promises";
@@ -20,6 +20,8 @@ import {
   salesVideoRatios, salesVideoTemplates, salesVideoCreativeTemplates, salesVideoFileLimits, salesVideoModelOptions, salesVideoMaiVideoModels, salesVideoGatewayVideoModels, salesVideoModels, salesVideoProductInstruction, salesVideoSupportsDialogue, salesVideoWordCount, salesVideoMaxWordCount, salesVideoMaxProductImages,
   salesVideoDialogueToSrt, salesVideoSplitDialogue,
 } from "../../lib/sales-video-templates";
+
+const saveSalesVideoProject = persistSalesVideoProject;
 
 export const runtime = "nodejs";
 
@@ -139,6 +141,7 @@ export async function POST(request: Request) {
   const requestedProjectId = value("projectId");
   const rawRetrySegmentIndex = value("retrySegmentIndex");
   const retrySegmentIndex = rawRetrySegmentIndex ? Number(rawRetrySegmentIndex) : undefined;
+  const saveSalesVideoProject = (owner: string, value: SalesVideoProject) => persistSalesVideoProject(owner, value, retrySegmentIndex);
   const rawPromptSegments = value("promptSegments");
   const rawScriptSegments = value("scriptSegments");
   let submittedPromptSegments: Array<{ start: number; duration: number; prompt: string }> | undefined;

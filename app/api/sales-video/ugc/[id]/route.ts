@@ -4,8 +4,10 @@ import { z } from "zod";
 import { getMaiVideoModelCatalog } from "../../../../lib/media-provider";
 import { readMaiVideoAuthCookie } from "../../../../lib/maivideo-auth-shared";
 import { salesVideoWorkerId } from "../../../../lib/sales-video-runtime";
-import { listSalesVideoProjects, salesVideoReferencePath, saveSalesVideoProject, type SalesVideoProject } from "../../../../lib/sales-video-storage";
+import { listSalesVideoProjects, salesVideoReferencePath, saveSalesVideoProject as persistSalesVideoProject, type SalesVideoProject } from "../../../../lib/sales-video-storage";
 import { salesVideoDialogueToSrt, salesVideoMaxProductImages, salesVideoMaxWordCount, salesVideoSplitDialogue, salesVideoWordCount } from "../../../../lib/sales-video-templates";
+
+const saveSalesVideoProject = persistSalesVideoProject;
 
 export const runtime = "nodejs";
 
@@ -128,6 +130,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     ? (body as Record<string, unknown>).retrySegmentIndex
     : undefined;
   const retrySegmentIndex = retrySegmentValue === undefined ? undefined : Number(retrySegmentValue);
+  const saveSalesVideoProject = (owner: string, value: SalesVideoProject) => persistSalesVideoProject(owner, value, retrySegmentIndex);
   const retrySegment = retrySegmentIndex !== undefined;
   if (retrySegment && (!Number.isInteger(retrySegmentIndex) || retrySegmentIndex! < 0 || retrySegmentIndex! > 5)) {
     return NextResponse.json({ message: "Clip cần tạo lại không hợp lệ." }, { status: 400 });
@@ -192,8 +195,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const issue = dialogueLimitError(scriptSegments, language);
     if (issue) return NextResponse.json({ message: issue }, { status: 400 });
   }
-  const pending = (await listSalesVideoProjects(userId, salesVideoWorkerId)).filter((item) => item.status === "processing").length;
-  if (pending >= 10) return NextResponse.json({ message: "Bạn đã có 10 job đang chạy hoặc chờ. Tạo thêm khi có job hoàn tất." }, { status: 429 });
+
 
   const presenterPath = salesVideoReferencePath(userId, id, "presenter");
   const productImageCount = Math.max(1, Math.min(salesVideoMaxProductImages,

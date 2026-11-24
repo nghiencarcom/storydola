@@ -62,7 +62,7 @@ export type SalesVideoProjectDetails = {
   codingQuality?: string;
   codingSpeed?: string;
   generatedSegments?: Array<{ start: number; duration: number; prompt: string }>;
-  segmentResults?: Array<{ start: number; duration: number; status: "pending" | "processing" | "ready" | "failed"; error?: string }>;
+  segmentResults?: Array<{ start: number; duration: number; status: "pending" | "processing" | "ready" | "failed"; modelId?: string; error?: string }>;
   needsStitching?: boolean;
 };
 
@@ -94,12 +94,32 @@ export type SalesVideoProject = {
 
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 
-export async function saveSalesVideoProject(userId: string, project: SalesVideoProject) {
+const projectWrites = new Map<string, Promise<unknown>>();
+export async function saveSalesVideoProject(userId: string, project: SalesVideoProject, segmentIndex?: number) {
   const directory = path.join(salesVideoOwnerDirectory(userId), "projects");
-  await mkdir(directory, { recursive: true });
   const file = path.join(directory, project.id + ".json");
-  await writeFile(file + ".tmp", JSON.stringify(project), { mode: 0o600 });
-  await rename(file + ".tmp", file);
+  const previous = projectWrites.get(file) || Promise.resolve();
+  const operation = previous.catch(() => undefined).then(async () => {
+    await mkdir(directory, { recursive: true });
+    let next = project;
+    if (segmentIndex !== undefined) {
+      const current = JSON.parse(await readFile(file, "utf8")) as SalesVideoProject;
+      if (current.details && project.details) {
+        const segmentResults = [...(current.details.segmentResults || project.details.segmentResults || [])];
+        const replacement = project.details.segmentResults?.[segmentIndex];
+        if (replacement) segmentResults[segmentIndex] = { ...segmentResults[segmentIndex], ...replacement, modelId: replacement.modelId || project.details.videoModelId };
+        const generatedSegments = [...(current.details.generatedSegments || [])];
+        const generated = project.details.generatedSegments?.[segmentIndex];
+        if (generated) generatedSegments[segmentIndex] = generated;
+        next = { ...current, details: { ...current.details, segmentResults, generatedSegments, needsStitching: true } };
+      }
+    }
+    const temporary = `${file}.${process.pid}-${Math.random().toString(16).slice(2)}.tmp`;
+    await writeFile(temporary, JSON.stringify(next), { mode: 0o600 });
+    await rename(temporary, file);
+  });
+  projectWrites.set(file, operation);
+  try { await operation; } finally { if (projectWrites.get(file) === operation) projectWrites.delete(file); }
 }
 
 export async function deleteSalesVideoProject(userId: string, id: string) {

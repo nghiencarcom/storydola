@@ -774,7 +774,8 @@ function SalesVideoProjectDetail({ project, catalog, videoUrl, promptMaxLength, 
   const [scriptSegments, setScriptSegments] = useState(() => initialReviewScriptSegments(details));
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved");
   const [generating, setGenerating] = useState(false);
-  const [retryingClip, setRetryingClip] = useState<number | null>(null);
+  const [retryingClips, setRetryingClips] = useState<Set<number>>(() => new Set());
+  const retryLocks = useRef(new Set<number>());
   const [stitching, setStitching] = useState(false);
   const [error, setError] = useState("");
   const [voiceDialogOpen, setVoiceDialogOpen] = useState(false);
@@ -924,13 +925,14 @@ function SalesVideoProjectDetail({ project, catalog, videoUrl, promptMaxLength, 
   }, [generating, tooLong, persist, promptSegments, scriptSegments, script, onUpdated]);
 
   async function regenerateClip(index: number) {
-    if (!canRegenerateClips || retryingClip !== null || stitching) return;
-    setRetryingClip(index);
+    if (!canRegenerateClips || retryLocks.current.has(index) || stitching) return;
+    retryLocks.current.add(index);
+    setRetryingClips(current => new Set(current).add(index));
     setError("");
     try {
       const response = await fetch(`/api/sales-video/ugc/${project.id}`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ retrySegmentIndex: index, model: retryModels[index] || details?.videoModelId }),
+        body: JSON.stringify({ retrySegmentIndex: index, model: retryModels[index] || details?.segmentResults?.[index]?.modelId || details?.videoModelId }),
       });
       const result = await response.json().catch(() => null);
       if (!response.ok || !result?.project?.id) throw new Error(result?.message || "Không gửi được yêu cầu tạo lại clip.");
@@ -938,12 +940,13 @@ function SalesVideoProjectDetail({ project, catalog, videoUrl, promptMaxLength, 
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Không gửi được yêu cầu tạo lại clip.");
     } finally {
-      setRetryingClip(null);
+      retryLocks.current.delete(index);
+      setRetryingClips(current => { const next = new Set(current); next.delete(index); return next; });
     }
   }
 
   async function restitchVideo() {
-    if (!allClipsReady || stitching || retryingClip !== null || voiceJob?.status === "processing") return;
+    if (!allClipsReady || stitching || retryingClips.size > 0 || voiceJob?.status === "processing") return;
     setStitching(true);
     setError("");
     try {
@@ -1052,7 +1055,7 @@ function SalesVideoProjectDetail({ project, catalog, videoUrl, promptMaxLength, 
     </section>}
     {project.status !== "draft" && videoSegments.length > 0 && <section className="sales-project-clips">
       <div className="sales-project-video-heading"><div><h2>Các clip 15 giây</h2><p>Mỗi clip có thể xem riêng và tạo lại khi cần.</p></div>
-        {details?.needsStitching && <button type="button" className="primary-button" onClick={() => void restitchVideo()} disabled={!allClipsReady || stitching || retryingClip !== null || project.status === "processing" || voiceJob?.status === "processing"}>
+        {details?.needsStitching && <button type="button" className="primary-button" onClick={() => void restitchVideo()} disabled={!allClipsReady || stitching || retryingClips.size > 0 || project.status === "processing" || voiceJob?.status === "processing"}>
           {stitching ? "Đang ghép video…" : "Ghép video lại"}
         </button>}
       </div>
@@ -1070,13 +1073,13 @@ function SalesVideoProjectDetail({ project, catalog, videoUrl, promptMaxLength, 
               <a className="secondary-button compact" href={`${clipUrl}?download=1`}>Tải clip {index + 1}</a>
             </> : <p className="sales-project-clip-message">{result.error || (result.status === "processing" ? "Model đang tạo lại clip này." : result.status === "failed" ? "Clip này chưa tạo thành công." : project.status === "processing" ? "Clip đang chờ lượt tạo." : "Chưa có file clip.")}</p>}
             {canRegenerateClips && result.status !== "processing" && <label>Model tạo lại clip {index + 1}
-              <select value={retryModels[index] || details?.videoModelId || ""} onChange={(event) => setRetryModels(current => ({ ...current, [index]: event.target.value }))} disabled={retryingClip !== null || stitching}>
-                <option value={details?.videoModelId || ""}>Model hiện tại</option>
+              <select value={retryModels[index] || details?.segmentResults?.[index]?.modelId || details?.videoModelId || ""} onChange={(event) => setRetryModels(current => ({ ...current, [index]: event.target.value }))} disabled={retryingClips.has(index) || stitching}>
+                <option value={details?.segmentResults?.[index]?.modelId || details?.videoModelId || ""}>Hiện tại: {catalog.find(model => `${model.provider || "maivideo"}:${model.id}` === (details?.segmentResults?.[index]?.modelId || details?.videoModelId))?.label || details?.segmentResults?.[index]?.modelId || project.model || details?.videoModelId}</option>
                 {catalog.map(model => <option key={`${model.provider}:${model.id}`} value={`${model.provider || "maivideo"}:${model.id}`}>{model.label || model.id}</option>)}
               </select>
             </label>}
-            {canRegenerateClips && result.status !== "processing" && <button type="button" className="secondary-button" onClick={() => void regenerateClip(index)} disabled={retryingClip !== null || stitching || voiceJob?.status === "processing"}>
-              {retryingClip === index ? "Đang gửi…" : "Tạo lại clip 15s"}
+            {canRegenerateClips && result.status !== "processing" && <button type="button" className="secondary-button" onClick={() => void regenerateClip(index)} disabled={retryingClips.has(index) || stitching || voiceJob?.status === "processing"}>
+              {retryingClips.has(index) ? "Đang gửi…" : "Tạo lại clip 15s"}
             </button>}
           </article>;
         })}
