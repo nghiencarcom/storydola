@@ -67,7 +67,21 @@ function ensureLocalConfig() {
   fs.mkdirSync(path.join(projectRoot, "data"), { recursive: true });
 }
 
+function autoUpdateEnabled() {
+  let value = process.env.STORYAI_AUTO_UPDATE;
+  if (value === undefined) {
+    const content = fs.readFileSync(path.join(projectRoot, ".env"), "utf8");
+    const match = content.match(/^\s*STORYAI_AUTO_UPDATE\s*=\s*(.*?)\s*$/m);
+    value = match?.[1].replace(/\s+#.*$/, "").replace(/^["']|["']$/g, "");
+  }
+  return !["false", "0", "off", "no"].includes((value || "").trim().toLowerCase());
+}
+
 function updateFromMain() {
+  if (!autoUpdateEnabled()) {
+    log("Automatic updates are disabled on this machine (STORYAI_AUTO_UPDATE=false). Using local source files.");
+    return { updated: false };
+  }
   const gitCommand = isWindows ? "git.exe" : "git";
   if (!commandWorks(gitCommand, ["--version"])) return { updated: false };
 
