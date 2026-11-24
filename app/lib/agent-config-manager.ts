@@ -61,7 +61,7 @@ function mergeCodexToml(current: string, nodePath: string, scriptPath: string, b
 function jsonAgentEntry(agent: Exclude<CodingAgent, "codex">, nodePath: string, scriptPath: string, baseUrl: string, token: string) {
   const env = { STORYAI_URL: baseUrl, STORYAI_MCP_TOKEN: token };
   if (agent === "claude") return { type: "stdio", command: nodePath, args: [scriptPath], env };
-  return { command: nodePath, args: [scriptPath], env, timeout: 1_800_000 };
+  return { command: nodePath, args: [scriptPath], env, timeoutSeconds: 1_800 };
 }
 
 async function readExistingJson(filePath: string) {
@@ -109,12 +109,16 @@ async function writeConfig(filePath: string, previous: string, next: string) {
   return backupPath;
 }
 
-function jsonServerToken(value: unknown) {
+function jsonServerToken(value: unknown, agent: Exclude<CodingAgent, "codex">) {
   const root = parseRecord(value);
   const servers = parseRecord(root.mcpServers);
   const entry = parseRecord(servers.storyai);
   const env = parseRecord(entry.env);
-  return { installed: Object.hasOwn(servers, "storyai"), token: typeof env.STORYAI_MCP_TOKEN === "string" ? env.STORYAI_MCP_TOKEN : "" };
+  return {
+    installed: Object.hasOwn(servers, "storyai"),
+    token: typeof env.STORYAI_MCP_TOKEN === "string" ? env.STORYAI_MCP_TOKEN : "",
+    hasLegacyAntigravityTimeout: agent === "antigravity" && Object.hasOwn(entry, "timeout"),
+  };
 }
 
 function mergeJsonServer(value: unknown, entry: Record<string, unknown>) {
@@ -145,8 +149,12 @@ export async function getCodingAgentConfigStatuses(currentToken?: string | null)
     }
     try {
       const { value } = await readExistingJson(configPath);
-      const status = jsonServerToken(value);
-      statuses[agent] = { installed: status.installed, ...(status.installed && currentToken !== undefined && status.token !== currentToken ? { needsUpdate: true } : {}), configPath };
+      const status = jsonServerToken(value, agent);
+      const needsUpdate = status.installed && (
+        (currentToken !== undefined && status.token !== currentToken)
+        || status.hasLegacyAntigravityTimeout
+      );
+      statuses[agent] = { installed: status.installed, ...(needsUpdate ? { needsUpdate: true } : {}), configPath };
     } catch {
       statuses[agent] = { installed: false, configPath, error: "INVALID_JSON" };
     }
