@@ -278,7 +278,6 @@ export async function createCreativeSalesVideo(input: {
   const run = (args: string[]) => exec(ffmpeg(), ["-nostdin", "-hide_banner", "-loglevel", "error", ...args], { signal, timeout: 120_000 });
   let seconds = input.seconds;
   await mkdir(work, { recursive: true });
-  let currentSegmentIndex: number | undefined;
   try {
     if (video || audio) {
       const file = video || audio!;
@@ -344,13 +343,10 @@ export async function createCreativeSalesVideo(input: {
     const labeledDialogueSegments = dialogue
       ? dialogue.scriptSegments?.map((segment) => segment.script) || splitLabeledDialogue(dialogue.script, durations, seconds, dialogue.language)
       : undefined;
-    let start = 0;
-    for (const [index, length] of durations.entries()) {
-      if (input.onlySegmentIndex !== undefined && index !== input.onlySegmentIndex) {
-        start += length;
-        continue;
-      }
-      currentSegmentIndex = index;
+    const results = await Promise.allSettled(durations.map(async (length, index) => {
+      if (input.onlySegmentIndex !== undefined && index !== input.onlySegmentIndex) return;
+      const start = durations.slice(0, index).reduce((sum, duration) => sum + duration, 0);
+      try {
       const pairedImages = isPairedImageWorkflow;
       const referenceImages = pairedImages ? images.slice(imageGroups[index] * 2, imageGroups[index] * 2 + 2) : images;
       const referenceIds = pairedImages ? imageIds.slice(imageGroups[index] * 2, imageGroups[index] * 2 + 2) : imageIds;
@@ -410,7 +406,7 @@ export async function createCreativeSalesVideo(input: {
           continuity,
           segmentDialogue,
         ].filter(Boolean).join("\n\n"));
-      generatedSegments.push({ start, duration: length, prompt: segmentPrompt });
+      generatedSegments[index] = { start, duration: length, prompt: segmentPrompt };
       const rendered = path.join(work, `rendered-${index}.mp4`);
       if (pixverse) {
         await download(await pixverse.generate({
@@ -455,14 +451,17 @@ export async function createCreativeSalesVideo(input: {
       const segmentOutput = salesVideoSegmentPath(userId, id, index);
       await mkdir(path.dirname(segmentOutput), { recursive: true });
       await copyFile(path.join(work, segment), segmentOutput);
-      segments.push(segment);
-      start += length;
-      currentSegmentIndex = undefined;
-    }
+      segments[index] = segment;
+      } catch (error) {
+        throw new SalesVideoSegmentError(index, error instanceof Error ? error.message : "Không tạo được clip.");
+      }
+    }));
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
 
     if (input.onlySegmentIndex !== undefined) {
       await rm(work, { recursive: true, force: true });
-      return generatedSegments;
+      return generatedSegments.filter(Boolean);
     }
 
     const manifest = path.join(work, "segments.txt");
@@ -487,12 +486,9 @@ export async function createCreativeSalesVideo(input: {
       await rename(final, output);
     }
     await rm(work, { recursive: true, force: true });
-    return generatedSegments;
+    return generatedSegments.filter(Boolean);
   } catch (error) {
     await rm(work, { recursive: true, force: true }).catch(() => undefined);
-    if (currentSegmentIndex !== undefined) {
-      throw new SalesVideoSegmentError(currentSegmentIndex, error instanceof Error ? error.message : "Không tạo được clip.");
-    }
     throw error;
   }
 }
