@@ -13,7 +13,7 @@ import { getSeedanceApiKey, getSeedanceApiSessionToken } from "../../lib/seedanc
 import { createCreativeSalesVideo, ensureSalesVideoSegmentFile, SalesVideoInputError, SalesVideoSegmentError } from "../../lib/sales-video-creative";
 import { deleteSalesVideoProject, listSalesVideoProjects, salesVideoSegmentPath, salesVideoWatermarkLogoPath, saveSalesVideoProject as persistSalesVideoProject, type SalesVideoProject } from "../../lib/sales-video-storage";
 import { enqueueSalesVideoTask, salesVideoWorkerId } from "../../lib/sales-video-runtime";
-import { isVideoOffPeakRequired } from "../../lib/media-generation-settings";
+import { HIGGSFIELD_SEEDANCE_MODEL_ID, isVideoOffPeakRequired } from "../../lib/media-generation-settings";
 import { stat } from "node:fs/promises";
 import {
   salesVideoDurationOptions, salesVideoProductSegments, salesVideoImageLimit, salesVideoLanguages, salesVideoNameLimit,
@@ -193,6 +193,7 @@ export async function POST(request: Request) {
   const requestedModel = value("model") || models[0] || "";
   let maiVideoModel: VideoGenerationModelOption | undefined;
   let gatewayVideoModel: VideoGenerationModelOption | undefined;
+  let higgsfieldVideoModel: VideoGenerationModelOption | undefined;
   if (requestedModel.startsWith("maivideo:")) {
     const pixverseReferenceWorkflow = creative?.workflow === "remake" || creative?.workflow === "background";
     if (!pixverseReferenceWorkflow && !await getMaiVideoApiKey(userId).catch(() => "")) {
@@ -212,10 +213,19 @@ export async function POST(request: Request) {
         .find((item) => item.provider === provider && item.id === modelId)
       : undefined;
   }
-  const model = maiVideoModel || gatewayVideoModel ? "higgsfield" : models.find((item) => item === requestedModel);
+  if (requestedModel.startsWith("higgsfield:")) {
+    const modelId = requestedModel.slice("higgsfield:".length);
+    if (modelId !== HIGGSFIELD_SEEDANCE_MODEL_ID) {
+      return NextResponse.json({ message: "Model Higgsfield Seedance 2.0 không được hỗ trợ." }, { status: 400 });
+    }
+    const catalog = await getMaiVideoModelCatalog(userId).catch(() => null);
+    higgsfieldVideoModel = catalog?.videoModels.find((item) => item.provider === "higgsfield" && item.id === modelId);
+    if (!higgsfieldVideoModel) return NextResponse.json({ message: "Không lấy được cấu hình Seedance 2.0 · Higgsfield." }, { status: 503 });
+  }
+  const model = maiVideoModel || gatewayVideoModel || higgsfieldVideoModel ? "higgsfield" : models.find((item) => item === requestedModel);
   if (!model) return NextResponse.json({ message: "Model không hỗ trợ đầu vào hoặc khung hình của mẫu này." }, { status: 400 });
-  const selectedVideoModel = maiVideoModel || gatewayVideoModel;
-  const higgsfieldSpeed = !selectedVideoModel && model === "higgsfield" ? "fast" as const : undefined;
+  const selectedVideoModel = maiVideoModel || gatewayVideoModel || higgsfieldVideoModel;
+  const higgsfieldSpeed = higgsfieldVideoModel || (!selectedVideoModel && model === "higgsfield") ? "fast" as const : undefined;
   const fixedPixverseQuality = !maiVideoModel && model !== "higgsfield" ? "720p" : "";
   const videoQuality = higgsfieldSpeed ? "720p" : fixedPixverseQuality || (selectedVideoModel?.qualities.includes("720p") ? "720p" : selectedVideoModel?.qualities[0] || "");
   const videoOffPeak = Boolean(maiVideoModel && isVideoOffPeakRequired(maiVideoModel.id, maiVideoModel.label));
@@ -338,7 +348,7 @@ export async function POST(request: Request) {
     : submittedPromptSegments![0].prompt;
   const initialSegmentResults = submittedPromptSegments?.map((segment, index) => {
     const saved = pendingDraft?.details?.segmentResults?.[index];
-    if (retrySegmentIndex === index) return { start: segment.start, duration: segment.duration, status: "processing" as const };
+    if (retrySegmentIndex === index) return { start: segment.start, duration: segment.duration, status: "processing" as const, modelId: requestedModel };
     return saved || { start: segment.start, duration: segment.duration, status: "pending" as const };
   });
   const project: SalesVideoProject = {

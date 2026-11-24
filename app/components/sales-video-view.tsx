@@ -14,7 +14,10 @@ import {
 import { clearSalesVideoDraft, loadSalesVideoDraft, saveSalesVideoDraftFields, saveSalesVideoDraftFile } from "../lib/sales-video-drafts";
 
 import type { VideoGenerationModelOption } from "../lib/project-types";
-import { isVideoOffPeakRequired, SALES_VIDEO_GATEWAY_VIDEO_MODEL_OPTIONS } from "../lib/media-generation-settings";
+import {
+  HIGGSFIELD_SEEDANCE_MODEL_ID, isVideoOffPeakRequired, PIXVERSE_SEEDANCE_2_FAST_MODEL_ID,
+  SALES_VIDEO_GATEWAY_VIDEO_MODEL_OPTIONS,
+} from "../lib/media-generation-settings";
 import type { SalesVideoProject } from "../lib/sales-video-storage";
 import type { OmniVoiceOption } from "../lib/omnivoice";
 import { voiceLanguageLabel } from "../lib/omnivoice";
@@ -39,7 +42,33 @@ function projectStatusLabel(project: SalesVideoProject) {
   return project.phase === "writing" ? "Code Agent đang soạn" : "Model đang tạo video";
 }
 function isSalesVideoProjectBusy(project: SalesVideoProject) {
-  return project.status === "processing" || project.details?.voiceRegeneration?.status === "processing";
+  return project.status === "processing"
+    || project.details?.voiceRegeneration?.status === "processing"
+    || project.details?.segmentResults?.some((segment) => segment.status === "processing") === true;
+}
+
+const PIXVERSE_SEEDANCE_RETRY_KEY = `maivideo:${PIXVERSE_SEEDANCE_2_FAST_MODEL_ID}`;
+const HIGGSFIELD_SEEDANCE_RETRY_KEY = `higgsfield:${HIGGSFIELD_SEEDANCE_MODEL_ID}`;
+const PIXVERSE_SEEDANCE_RETRY_LABEL = "Seedance 2.0 · PixVerse · 720p Fast (lỗi voice tiếng Việt)";
+const HIGGSFIELD_SEEDANCE_RETRY_LABEL = "Seedance 2.0 · Higgsfield · 720p Fast (lỗi voice tiếng Việt)";
+
+function normalizeSalesVideoRetryModelId(modelId: string) {
+  if (/seedance/i.test(modelId)
+    && modelId !== PIXVERSE_SEEDANCE_RETRY_KEY
+    && modelId !== HIGGSFIELD_SEEDANCE_RETRY_KEY) return PIXVERSE_SEEDANCE_RETRY_KEY;
+  return modelId;
+}
+
+function isSupportedSalesVideoSeedanceRetryModel(model: VideoGenerationModelOption) {
+  const key = `${model.provider || "maivideo"}:${model.id}`;
+  return key === PIXVERSE_SEEDANCE_RETRY_KEY || key === HIGGSFIELD_SEEDANCE_RETRY_KEY;
+}
+
+function salesVideoRetryModelLabel(model: VideoGenerationModelOption) {
+  const key = `${model.provider || "maivideo"}:${model.id}`;
+  if (key === PIXVERSE_SEEDANCE_RETRY_KEY) return PIXVERSE_SEEDANCE_RETRY_LABEL;
+  if (key === HIGGSFIELD_SEEDANCE_RETRY_KEY) return HIGGSFIELD_SEEDANCE_RETRY_LABEL;
+  return model.label || model.id;
 }
 const salesVideoProductFields = [
   { name: "presenter", label: "Ảnh nhân vật", kind: "image" },
@@ -930,9 +959,11 @@ function SalesVideoProjectDetail({ project, catalog, videoUrl, promptMaxLength, 
     setRetryingClips(current => new Set(current).add(index));
     setError("");
     try {
+      const storedModelId = details?.segmentResults?.[index]?.modelId || details?.videoModelId || "";
+      const requestedModelId = normalizeSalesVideoRetryModelId(retryModels[index] || storedModelId);
       const response = await fetch(`/api/sales-video/ugc/${project.id}`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ retrySegmentIndex: index, model: retryModels[index] || details?.segmentResults?.[index]?.modelId || details?.videoModelId }),
+        body: JSON.stringify({ retrySegmentIndex: index, model: requestedModelId }),
       });
       const result = await response.json().catch(() => null);
       if (!response.ok || !result?.project?.id) throw new Error(result?.message || "Không gửi được yêu cầu tạo lại clip.");
@@ -1065,6 +1096,13 @@ function SalesVideoProjectDetail({ project, catalog, videoUrl, promptMaxLength, 
           const result = videoSegmentResults[index];
           const clipUrl = `/api/sales-video/${project.id}/segments/${index}`;
           const statusLabel = result.status === "ready" ? "Đã tạo" : result.status === "processing" ? "Đang tạo lại" : result.status === "failed" ? "Tạo thất bại" : "Chưa tạo";
+          const storedModelId = details?.segmentResults?.[index]?.modelId || details?.videoModelId || "";
+          const currentModelId = normalizeSalesVideoRetryModelId(storedModelId);
+          const currentModel = catalog.find(model => `${model.provider || "maivideo"}:${model.id}` === currentModelId);
+          const retryCatalog = catalog.filter(model => !/seedance/i.test(`${model.id} ${model.label}`) || isSupportedSalesVideoSeedanceRetryModel(model));
+          const currentModelLabel = storedModelId !== currentModelId
+            ? `Mặc định: ${PIXVERSE_SEEDANCE_RETRY_LABEL}`
+            : `Hiện tại: ${currentModel ? salesVideoRetryModelLabel(currentModel) : storedModelId || project.model || details?.videoModelId}`;
           return <article className="sales-project-clip" key={`${segment.start}-${index}`}>
             <div className="sales-project-clip-heading"><strong>Clip {index + 1} · giây {segment.start}–{segment.start + segment.duration}</strong><span className={`sales-project-clip-status is-${result.status}`}>{statusLabel}</span></div>
             {result.status === "ready" ? <>
@@ -1073,9 +1111,9 @@ function SalesVideoProjectDetail({ project, catalog, videoUrl, promptMaxLength, 
               <a className="secondary-button compact sales-project-clip-download" href={`${clipUrl}?download=1`}>Tải clip {index + 1}</a>
             </> : <p className="sales-project-clip-message">{result.error || (result.status === "processing" ? "Model đang tạo lại clip này." : result.status === "failed" ? "Clip này chưa tạo thành công." : project.status === "processing" ? "Clip đang chờ lượt tạo." : "Chưa có file clip.")}</p>}
             {canRegenerateClips && result.status !== "processing" && <div className="sales-project-clip-retry-controls"><label className="sales-project-clip-model">Model tạo lại clip {index + 1}
-              <select value={retryModels[index] || details?.segmentResults?.[index]?.modelId || details?.videoModelId || ""} onChange={(event) => setRetryModels(current => ({ ...current, [index]: event.target.value }))} disabled={retryingClips.has(index) || stitching}>
-                <option value={details?.segmentResults?.[index]?.modelId || details?.videoModelId || ""}>Hiện tại: {catalog.find(model => `${model.provider || "maivideo"}:${model.id}` === (details?.segmentResults?.[index]?.modelId || details?.videoModelId))?.label || details?.segmentResults?.[index]?.modelId || project.model || details?.videoModelId}</option>
-                {catalog.map(model => <option key={`${model.provider}:${model.id}`} value={`${model.provider || "maivideo"}:${model.id}`}>{model.label || model.id}</option>)}
+              <select value={retryModels[index] || currentModelId} onChange={(event) => setRetryModels(current => ({ ...current, [index]: event.target.value }))} disabled={retryingClips.has(index) || stitching}>
+                <option value={currentModelId}>{currentModelLabel}</option>
+                {retryCatalog.map(model => <option key={`${model.provider || "maivideo"}:${model.id}`} value={`${model.provider || "maivideo"}:${model.id}`}>{salesVideoRetryModelLabel(model)}</option>)}
               </select>
             </label>
             <button type="button" className="secondary-button" onClick={() => void regenerateClip(index)} disabled={retryingClips.has(index) || stitching || voiceJob?.status === "processing"}>

@@ -7,7 +7,7 @@ import { z } from "zod";
 import { getCodingAgentCliStatuses, generateWithCodingAgent, type CodingAgent } from "../../../lib/coding-agent-cli";
 import { getCodingAgentPreference } from "../../../lib/coding-agent-preferences";
 import type { CodingAgentEffort, CodingAgentSpeed } from "../../../lib/coding-agent-models";
-import { isVideoOffPeakRequired } from "../../../lib/media-generation-settings";
+import { HIGGSFIELD_SEEDANCE_MODEL_ID, isVideoOffPeakRequired } from "../../../lib/media-generation-settings";
 import { getMaiVideoApiKey } from "../../../lib/maivideo-api-keys";
 import { getMaiVideoModelCatalog } from "../../../lib/media-provider";
 import type { VideoGenerationModelOption } from "../../../lib/project-types";
@@ -496,6 +496,7 @@ export async function POST(request: Request) {
   const modelOptions = salesVideoModelOptions();
   let maiVideoModel: VideoGenerationModelOption | undefined;
   let gatewayVideoModel: VideoGenerationModelOption | undefined;
+  let higgsfieldVideoModel: VideoGenerationModelOption | undefined;
   if (requestedModel.startsWith("maivideo:")) {
     if (!await getMaiVideoApiKey(userId).catch(() => "")) {
       return NextResponse.json({ message: "Thêm khóa MaiVideo trong Cài đặt để dùng model này." }, { status: 503 });
@@ -515,14 +516,23 @@ export async function POST(request: Request) {
         .find((item) => item.provider === provider && item.id === modelId)
       : undefined;
   }
-  const model = maiVideoModel || gatewayVideoModel ? "higgsfield" : modelOptions.find((item) => item === requestedModel);
+  if (requestedModel.startsWith("higgsfield:")) {
+    const modelId = requestedModel.slice("higgsfield:".length);
+    if (modelId !== HIGGSFIELD_SEEDANCE_MODEL_ID) {
+      return NextResponse.json({ message: "Model Higgsfield Seedance 2.0 không được hỗ trợ." }, { status: 400 });
+    }
+    const catalog = await getMaiVideoModelCatalog(userId).catch(() => null);
+    higgsfieldVideoModel = catalog?.videoModels.find((item) => item.provider === "higgsfield" && item.id === modelId);
+    if (!higgsfieldVideoModel) return NextResponse.json({ message: "Không lấy được cấu hình Seedance 2.0 · Higgsfield." }, { status: 503 });
+  }
+  const model = maiVideoModel || gatewayVideoModel || higgsfieldVideoModel ? "higgsfield" : modelOptions.find((item) => item === requestedModel);
   if (!model) return NextResponse.json({ message: "Model đã chọn không hỗ trợ ảnh tham chiếu hoặc tỷ lệ này." }, { status: 400 });
-  const selectedVideoModel = maiVideoModel || gatewayVideoModel;
+  const selectedVideoModel = maiVideoModel || gatewayVideoModel || higgsfieldVideoModel;
   const maxReferenceImages = selectedVideoModel?.maxReferenceImages || (model === "higgsfield" ? 9 : 7);
   if (productBytes.length + 1 > maxReferenceImages) {
     return NextResponse.json({ message: `Model ${selectedVideoModel?.label || requestedModel} nhận tối đa ${maxReferenceImages} ảnh tham chiếu, gồm ảnh nhân vật. Hãy giảm ảnh sản phẩm.` }, { status: 400 });
   }
-  const higgsfieldSpeed = !selectedVideoModel && model === "higgsfield" ? "fast" as const : undefined;
+  const higgsfieldSpeed = higgsfieldVideoModel || (!selectedVideoModel && model === "higgsfield") ? "fast" as const : undefined;
   const videoQuality = higgsfieldSpeed ? "720p" : selectedVideoModel?.qualities.includes("720p") ? "720p" : selectedVideoModel?.qualities[0] || "";
   const videoOffPeak = Boolean(maiVideoModel && isVideoOffPeakRequired(maiVideoModel.id, maiVideoModel.label));
   const durationOptions = salesVideoDurationOptions(selectedVideoModel, undefined, true, selectedVideoModel?.id || requestedModel, videoQuality);

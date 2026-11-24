@@ -165,6 +165,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   if (retrySegment && currentSegmentResults[retrySegmentIndex!]?.status === "processing") {
     return NextResponse.json({ message: "Clip này đang được tạo lại." }, { status: 409 });
   }
+  const retryModelId = retrySegment && typeof body?.model === "string" ? body.model : details.videoModelId || "";
   const promptMaxLength = await promptLimitForProject(userId, details);
   if (!promptSegments.length || promptSegments.some((segment) => !segment.prompt.trim())) {
     return NextResponse.json({ message: "Mỗi clip cần một prompt riêng trước khi tạo video." }, { status: 400 });
@@ -208,14 +209,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
   const updated: SalesVideoProject = {
     ...project,
-    ...(retrySegment ? {} : { status: "processing" as const, phase: "generating" as const, worker: salesVideoWorkerId }),
+    ...(retrySegment ? { worker: salesVideoWorkerId } : { status: "processing" as const, phase: "generating" as const, worker: salesVideoWorkerId }),
     error: retrySegment ? project.error : undefined,
     details: {
       ...details, prompt: promptSegments[0].prompt, promptMaxLength, promptSegments, script,
       scriptSegments, subtitleSrt: details.audio ? salesVideoDialogueToSrt(scriptSegments, language) : "",
       ...(retrySegment ? {
         segmentResults: currentSegmentResults.map((segment, index) => index === retrySegmentIndex
-          ? { start: segment.start, duration: segment.duration, status: "processing" as const }
+          ? { start: segment.start, duration: segment.duration, status: "processing" as const, modelId: retryModelId }
           : segment),
         needsStitching: true,
       } : {}),
@@ -234,7 +235,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   form.set("language", language);
   form.set("duration", String(duration));
   form.set("ratio", details.ratio || "9:16");
-  form.set("model", retrySegment && typeof body?.model === "string" ? body.model : details.videoModelId || "");
+  form.set("model", retryModelId);
   form.set("claimCategory", details.claimCategory || "general");
   form.set("prompt", promptSegments[0].prompt);
   form.set("promptSegments", JSON.stringify(promptSegments));
@@ -262,11 +263,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       const failedMessage = result.message || "Không gửi được yêu cầu tạo video.";
       if (retrySegment) {
         await saveSalesVideoProject(userId, {
-          ...updated, error: project.error,
+          ...updated, worker: undefined, error: project.error,
           details: updated.details ? {
             ...updated.details,
             segmentResults: currentSegmentResults.map((segment, index) => index === retrySegmentIndex
-              ? { ...segment, error: failedMessage }
+              ? { ...segment, modelId: retryModelId, error: failedMessage }
               : segment),
             needsStitching: details.needsStitching ?? false,
           } : undefined,
@@ -281,11 +282,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const failedMessage = "StoryAI không kết nối được dịch vụ tạo video.";
     if (retrySegment) {
       await saveSalesVideoProject(userId, {
-        ...updated, error: project.error,
+        ...updated, worker: undefined, error: project.error,
         details: updated.details ? {
           ...updated.details,
           segmentResults: currentSegmentResults.map((segment, index) => index === retrySegmentIndex
-            ? { ...segment, error: failedMessage }
+            ? { ...segment, modelId: retryModelId, error: failedMessage }
             : segment),
           needsStitching: details.needsStitching ?? false,
         } : undefined,

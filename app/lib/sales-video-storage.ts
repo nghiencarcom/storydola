@@ -112,6 +112,8 @@ export async function saveSalesVideoProject(userId: string, project: SalesVideoP
         const generated = project.details.generatedSegments?.[segmentIndex];
         if (generated) generatedSegments[segmentIndex] = generated;
         next = { ...current, details: { ...current.details, segmentResults, generatedSegments, needsStitching: true } };
+        if (project.worker) next.worker = project.worker;
+        else if (!segmentResults.some((segment) => segment.status === "processing")) delete next.worker;
       }
     }
     const temporary = `${file}.${process.pid}-${Math.random().toString(16).slice(2)}.tmp`;
@@ -164,6 +166,14 @@ export async function listSalesVideoProjects(userId: string, worker: string) {
           : segment);
         project.details.needsStitching = true;
       }
+      delete project.worker;
+      await saveSalesVideoProject(userId, project);
+    }
+    if (project.status !== "processing" && project.details?.segmentResults?.some((segment) => segment.status === "processing") && project.worker !== worker) {
+      project.details.segmentResults = project.details.segmentResults.map((segment) => segment.status === "processing"
+        ? { ...segment, status: "failed" as const, error: "Tác vụ bị gián đoạn. Hãy tạo lại clip này." }
+        : segment);
+      project.details.needsStitching = true;
       delete project.worker;
       await saveSalesVideoProject(userId, project);
     }
