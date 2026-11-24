@@ -1168,7 +1168,7 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
   const [userExperience, setUserExperience] = useState("");
   const [script, setScript] = useState("");
   const [productUrl, setProductUrl] = useState("");
-  const [postProcessTextOverlayEnabled, setPostProcessTextOverlayEnabled] = useState(false);
+  const [postProcessTextOverlayEnabled, setPostProcessTextOverlayEnabled] = useState(true);
   const [postProcessMovingWatermarkEnabled, setPostProcessMovingWatermarkEnabled] = useState(false);
   const [postProcessWatermarkText, setPostProcessWatermarkText] = useState("StoryAI");
   const [postProcessLogoEnabled, setPostProcessLogoEnabled] = useState(false);
@@ -1531,7 +1531,7 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
         setUserExperience(details?.userExperience || "");
         setScript(details?.script || "");
         setProductUrl(details?.productUrl || "");
-        setPostProcessTextOverlayEnabled(Boolean(similarProject.postProcessing?.textOverlay?.enabled || similarProject.postProcessing?.textOverlay?.cues?.length || similarProject.postProcessing?.textOverlay?.text));
+        setPostProcessTextOverlayEnabled(similarProject.postProcessing?.textOverlay?.enabled ?? true);
         setPostProcessMovingWatermarkEnabled(Boolean(similarProject.postProcessing?.movingWatermark?.enabled));
         setPostProcessWatermarkText(similarProject.postProcessing?.movingWatermark?.text || "StoryAI");
         setPostProcessLogoEnabled(Boolean(similarProject.postProcessing?.logo?.enabled));

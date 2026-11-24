@@ -436,7 +436,7 @@ export async function POST(request: Request) {
   const claimCategory = salesVideoClaimCategories.some((category) => category.id === requestedClaimCategory)
     ? requestedClaimCategory : template?.id === "supplements" ? "health" : "general";
   const requestedModel = text(form, "model");
-  const postProcessTextOverlayEnabled = text(form, "postProcessTextOverlayEnabled") === "1";
+  const postProcessTextOverlayEnabled = text(form, "postProcessTextOverlayEnabled") !== "0";
   const postProcessMovingWatermarkEnabled = text(form, "postProcessMovingWatermarkEnabled") === "1";
   const postProcessWatermarkText = text(form, "postProcessWatermarkText") || "StoryAI";
   const postProcessLogoEnabled = text(form, "postProcessLogoEnabled") === "1";
