@@ -1932,7 +1932,7 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
               <div><small>MẪU ĐÃ CHỌN</small><strong>{selectedTemplate?.name || creative?.name}</strong></div>
               <button type="button" className="secondary-button" onClick={onChangeTemplate}>Đổi mẫu</button>
             </div>
-            {creative ? <div key={creative.id} className="form-grid full" style={{ gridColumn: "1 / -1", marginTop: 0 }}>
+            {creative ? <div key={creative.id} className="form-grid full">
               <div className="sales-form-step full"><span>01</span><div><strong>Tệp đầu vào</strong></div></div>
               {poseImageFields.length ? <>
                 <PoseImagesInput fields={poseImageFields} files={files} onFilesChange={handlePoseFilesChange}

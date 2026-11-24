@@ -95,7 +95,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 export function normalizeVoiceOption(value: unknown): OmniVoiceOption | null {
   const item = asRecord(value);
   if (!item) return null;
-  const id = String(item.id ?? item.voice_id ?? item.profile_id ?? "").trim();
+  const id = String(item.voice_id ?? item.id ?? item.profile_id ?? "").trim();
   const name = String(item.name ?? item.display_name ?? item.label ?? id).trim();
   const language = String(item.language ?? item.lang ?? item.locale ?? "").trim();
   if (!id || !name || !language) return null;
