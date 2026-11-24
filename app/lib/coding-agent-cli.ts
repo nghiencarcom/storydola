@@ -8,7 +8,7 @@ import { codingAgentModelPresets, type CodingAgentEffort, type CodingAgentId, ty
 
 export type CodingAgent = CodingAgentId;
 export type CodingAgentCliStatus = { id: CodingAgent; label: string; available: boolean; models: CodingAgentModelOption[] };
-type AgentCommand = { executable: string };
+type AgentCommand = { executable: string; requiresShell: boolean };
 const execFileAsync = promisify(execFile);
 
 const AGENT_LABELS: Record<CodingAgent, string> = {
@@ -23,30 +23,57 @@ function commandNames(agent: CodingAgent) {
   return ["agy"];
 }
 
-function commandFileNames(agent: CodingAgent) {
+function commandFileNames(agent: CodingAgent, scriptsOnly = false) {
   const names = commandNames(agent);
-  return process.platform === "win32"
-    ? names.flatMap((name) => [name, `${name}.exe`, `${name}.cmd`, `${name}.bat`])
-    : names;
+  if (process.platform !== "win32") return names;
+  return scriptsOnly
+    ? names.flatMap((name) => [`${name}.cmd`, `${name}.bat`])
+    : names.flatMap((name) => [name, `${name}.exe`]);
 }
 
 function commandSearchPaths(agent: CodingAgent) {
   const pathEntries = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
   const home = homedir();
+  const npmPrefix = process.env.NPM_CONFIG_PREFIX?.trim() || process.env.npm_config_prefix?.trim();
+  const localAppData = process.env.LOCALAPPDATA?.trim() || path.join(home, "AppData", "Local");
+  const programFiles = process.env.ProgramFiles?.trim() || "C:\\Program Files";
   const knownPaths = process.platform === "win32"
-    ? [path.join(home, "AppData", "Roaming", "npm"), path.join(home, ".local", "bin")]
+    ? [
+      path.join(home, "AppData", "Roaming", "npm"),
+      path.join(home, ".local", "bin"),
+      ...(npmPrefix ? [npmPrefix] : []),
+    ]
     : [path.join(home, ".local", "bin"), path.join(home, ".npm-global", "bin"), "/opt/homebrew/bin", "/usr/local/bin", "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS"];
-  const agentSpecificPaths = agent === "antigravity" ? [path.join(home, ".gemini", "bin")] : [];
-  return [...new Set([...pathEntries, ...knownPaths, ...agentSpecificPaths])];
+  const agentSpecificPaths = agent === "antigravity"
+    ? process.platform === "win32"
+      ? [path.join(localAppData, "agy", "bin"), path.join(programFiles, "Google", "antigravity-cli"), path.join(home, ".gemini", "bin")]
+      : [path.join(home, ".gemini", "bin")]
+    : [];
+  const directories = [...knownPaths, ...agentSpecificPaths, ...pathEntries];
+  const seen = new Set<string>();
+  return directories.filter((entry) => {
+    const key = process.platform === "win32" ? entry.toLowerCase() : entry;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 async function resolveAgentCommand(agent: CodingAgent): Promise<AgentCommand | undefined> {
   const override = process.env[`STORYAI_${agent.toUpperCase()}_CLI_PATH`]?.trim();
-  const candidates = override ? [override] : commandSearchPaths(agent).flatMap((directory) => commandFileNames(agent).map((name) => path.join(directory, name)));
+  const directories = commandSearchPaths(agent);
+  const candidates = override
+    ? [override]
+    : process.platform === "win32"
+      ? [
+        ...directories.flatMap((directory) => commandFileNames(agent).map((name) => path.join(directory, name))),
+        ...directories.flatMap((directory) => commandFileNames(agent, true).map((name) => path.join(directory, name))),
+      ]
+      : directories.flatMap((directory) => commandFileNames(agent).map((name) => path.join(directory, name)));
   for (const executable of candidates) {
     try {
       await access(executable, process.platform === "win32" ? constants.F_OK : constants.X_OK);
-      return { executable };
+      return { executable, requiresShell: process.platform === "win32" && /\.(?:cmd|bat)$/iu.test(executable) };
     } catch {
       // Continue through PATH and common user-local install folders.
     }
@@ -71,7 +98,13 @@ async function getCodingAgentModels(agent: CodingAgent, command: AgentCommand): 
   if (agent === "claude") return codingAgentModelPresets.claude;
   try {
     const args = agent === "codex" ? ["debug", "models"] : ["models"];
-    const { stdout } = await execFileAsync(command.executable, args, { timeout: 15_000, encoding: "utf8", maxBuffer: 8_388_608 });
+    const { stdout } = await execFileAsync(command.executable, args, {
+      timeout: 15_000,
+      encoding: "utf8",
+      maxBuffer: 8_388_608,
+      shell: command.requiresShell,
+      env: agentEnvironment(agent),
+    });
     if (agent === "codex") {
       const catalog = JSON.parse(stdout) as { models?: Array<{
         slug?: unknown;
@@ -156,27 +189,60 @@ function extractAgentText(agent: CodingAgent, stdout: string): string {
       if (cause instanceof Error && cause.message.startsWith("AGENT_RUN_FAILED")) throw cause;
     }
   }
+  if (agent === "antigravity") {
+    let response = "";
+    for (const line of stdout.split(/\r?\n/u)) {
+      if (!line.trim()) continue;
+      try {
+        const event = JSON.parse(line) as { event?: string; result?: { status?: unknown; response?: unknown; error?: unknown } };
+        if (event.event !== "result" || !event.result) continue;
+        const status = typeof event.result.status === "string" ? event.result.status.toLowerCase() : "";
+        if (status && !["success", "completed"].includes(status)) {
+          const error = new Error(`AGENT_RUN_FAILED: Antigravity reported ${status}${typeof event.result.error === "string" ? `: ${event.result.error}` : "."}`);
+          error.name = "AGENT_RUN_FAILED";
+          throw error;
+        }
+        if (typeof event.result.response === "string") response = event.result.response;
+      } catch (cause) {
+        if (cause instanceof Error && cause.message.startsWith("AGENT_RUN_FAILED")) throw cause;
+      }
+    }
+    if (response) return response;
+  }
   const trimmed = stdout.trim();
   if (!trimmed) throw new Error("AGENT_OUTPUT_EMPTY: Coding agent returned an empty response.");
   return trimmed;
 }
 
-function agentEnvironment(): NodeJS.ProcessEnv {
+function agentEnvironment(agent: CodingAgent): NodeJS.ProcessEnv {
   const allowed = new Set([
-    "PATH", "HOME", "USERPROFILE", "SystemRoot", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL",
+    "PATH", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "SystemRoot", "WINDIR", "ComSpec", "PATHEXT", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL",
     "CODEX_HOME", "CLAUDE_CONFIG_DIR", "GEMINI_CLI_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS",
   ]);
+  const providerEnvironment: Record<CodingAgent, string[]> = {
+    codex: ["OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORG_ID", "OPENAI_PROJECT_ID"],
+    claude: [
+      "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL",
+      "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+      "AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+      "ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION",
+    ],
+    antigravity: ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"],
+  };
+  for (const name of providerEnvironment[agent]) allowed.add(name);
   const forwarded = Object.fromEntries(Object.entries(process.env).filter(([key, value]) => allowed.has(key) && value !== undefined)) as Record<string, string>;
   return { ...forwarded, NODE_ENV: process.env.NODE_ENV || "production" };
 }
 
-function runProcess(executable: string, args: string[], cwd: string, stdinText: string, timeoutMs: number) {
+function runProcess(agent: CodingAgent, executable: string, args: string[], cwd: string, stdinText: string, timeoutMs: number, requiresShell: boolean) {
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
     const child = spawn(executable, args, {
       cwd,
-      env: agentEnvironment(),
+      env: agentEnvironment(agent),
       stdio: ["pipe", "pipe", "pipe"],
+      shell: requiresShell,
       windowsHide: true,
     });
     let stdout = "";
@@ -240,15 +306,26 @@ export async function generateWithCodingAgent(agent: CodingAgent, prompt: string
       "\n--- STORYAI TASK ---\n",
       prompt,
     ].join("\n");
-    const modelArgs = model.trim() ? ["--model", model.trim()] : [];
+    const normalizedModel = model.trim();
+    if (normalizedModel && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$/u.test(normalizedModel)) {
+      throw new Error("AGENT_MODEL_INVALID: Model ID contains unsupported characters.");
+    }
+    const modelArgs = normalizedModel ? ["--model", normalizedModel] : [];
+    const claudePrompt = "Use the complete StoryAI task supplied through stdin as your instruction. Return only the requested JSON object, without markdown or commentary.";
     const args = agent === "codex"
       ? ["exec", ...modelArgs, ...(quality !== "auto" ? ["--config", `model_reasoning_effort=${quality}`] : []), ...(speed === "fast" ? ["--config", "service_tier=fast"] : []), "--json", "--sandbox", "read-only", "--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--color", "never", ...(promptOnlyJson ? [] : ["--output-schema", outputSchemaPath]), "--cd", workDir, "-"]
       : agent === "claude"
-        ? ["-p", "--safe-mode", "--output-format", "json", ...modelArgs, ...(quality !== "auto" ? ["--effort", quality] : []), ...(promptOnlyJson ? [] : ["--json-schema", JSON.stringify({ type: "object" })]), "--max-turns", "1", "--tools", "", "--disallowedTools", "mcp__*", "--no-session-persistence", "--", textOnlyInstruction]
-        : ["--sandbox", "--mode", "default", ...modelArgs, "-p", textOnlyInstruction, "--print-timeout", "15m"];
+        ? ["-p", "--safe-mode", "--output-format", "json", ...modelArgs, ...(quality !== "auto" ? ["--effort", quality] : []), ...(promptOnlyJson ? [] : ["--json-schema", JSON.stringify({ type: "object" })]), "--max-turns", "1", "--tools", "", "--disallowedTools", "mcp__*", "--no-session-persistence", "--", claudePrompt]
+        : command.requiresShell
+          ? ["--sandbox", ...modelArgs, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", "15m"]
+          : ["--sandbox", ...modelArgs, "-p", textOnlyInstruction, "--print-timeout", "15m"];
     const timeoutMs = 15 * 60_000;
-    const stdinText = agent === "codex" ? textOnlyInstruction : "";
-    const { stdout } = await runProcess(command.executable, args, workDir, stdinText, timeoutMs);
+    const stdinText = agent === "codex" || agent === "claude"
+      ? textOnlyInstruction
+      : command.requiresShell
+        ? `${JSON.stringify({ event: "user", message: { content: textOnlyInstruction } })}\n`
+        : "";
+    const { stdout } = await runProcess(agent, command.executable, args, workDir, stdinText, timeoutMs, command.requiresShell);
     const output = extractAgentText(agent, stdout);
     return { model: model.trim() ? `${AGENT_LABELS[agent]} · ${model.trim()}` : AGENT_LABELS[agent], result: parseJsonOutput(output) };
   } finally {
