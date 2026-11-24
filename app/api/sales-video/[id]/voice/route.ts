@@ -4,7 +4,7 @@ import { getOmniVoiceCatalog } from "../../../../lib/omnivoice-server";
 import { readMaiVideoAuthCookie } from "../../../../lib/maivideo-auth-shared";
 import { salesVideoPath, listSalesVideoProjects, saveSalesVideoProject, type SalesVideoProject } from "../../../../lib/sales-video-storage";
 import { enqueueSalesVideoTask, salesVideoWorkerId } from "../../../../lib/sales-video-runtime";
-import { regenerateSalesVideoVoice } from "../../../../lib/sales-video-voice";
+import { parseSalesVideoSrt, regenerateSalesVideoVoice } from "../../../../lib/sales-video-voice";
 
 export const runtime = "nodejs";
 
@@ -20,6 +20,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   if (project.status !== "ready" || !project.details.audio || !project.details.subtitleSrt?.trim()) {
     return NextResponse.json({ message: "Chỉ tạo lại voice được khi video đã ghép và có phụ đề SRT." }, { status: 409 });
   }
+  if (project.details.needsStitching || project.details.segmentResults?.some(segment => segment.status === "processing")) {
+    return NextResponse.json({ message: "Hãy tạo xong các clip và ghép lại video trước khi tạo voice." }, { status: 409 });
+  }
+  try { parseSalesVideoSrt(project.details.subtitleSrt, project.details.duration || 15); }
+  catch (error) { return NextResponse.json({ message: error instanceof Error ? error.message : "SRT không hợp lệ." }, { status: 400 }); }
   if (project.details.voiceRegeneration?.status === "processing") {
     return NextResponse.json({ message: "Voice của project đang được tạo lại." }, { status: 409 });
   }

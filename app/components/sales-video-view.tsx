@@ -1070,9 +1070,9 @@ function SalesVideoProjectDetail({ project, catalog, videoUrl, promptMaxLength, 
             {result.status === "ready" ? <>
               <video controls playsInline preload="metadata" src={clipUrl} />
               {result.error && <p className="sales-project-clip-message" role="status">{result.error}</p>}
-              <a className="secondary-button compact" href={`${clipUrl}?download=1`}>Tải clip {index + 1}</a>
+              <a className="secondary-button compact sales-project-clip-download" href={`${clipUrl}?download=1`}>Tải clip {index + 1}</a>
             </> : <p className="sales-project-clip-message">{result.error || (result.status === "processing" ? "Model đang tạo lại clip này." : result.status === "failed" ? "Clip này chưa tạo thành công." : project.status === "processing" ? "Clip đang chờ lượt tạo." : "Chưa có file clip.")}</p>}
-            {canRegenerateClips && result.status !== "processing" && <label>Model tạo lại clip {index + 1}
+            {canRegenerateClips && result.status !== "processing" && <label className="sales-project-clip-model">Model tạo lại clip {index + 1}
               <select value={retryModels[index] || details?.segmentResults?.[index]?.modelId || details?.videoModelId || ""} onChange={(event) => setRetryModels(current => ({ ...current, [index]: event.target.value }))} disabled={retryingClips.has(index) || stitching}>
                 <option value={details?.segmentResults?.[index]?.modelId || details?.videoModelId || ""}>Hiện tại: {catalog.find(model => `${model.provider || "maivideo"}:${model.id}` === (details?.segmentResults?.[index]?.modelId || details?.videoModelId))?.label || details?.segmentResults?.[index]?.modelId || project.model || details?.videoModelId}</option>
                 {catalog.map(model => <option key={`${model.provider}:${model.id}`} value={`${model.provider || "maivideo"}:${model.id}`}>{model.label || model.id}</option>)}

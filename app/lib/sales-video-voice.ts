@@ -12,23 +12,27 @@ type SubtitleCue = { start: number; end: number; text: string };
 
 function timeToSeconds(value: string) {
   const match = value.trim().match(/^(\d{2,}):(\d{2}):(\d{2})[,.](\d{3})$/u);
-  if (!match) return Number.NaN;
+  if (!match || Number(match[2]) > 59 || Number(match[3]) > 59) return Number.NaN;
   return Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]) + Number(match[4]) / 1000;
 }
 
 export function parseSalesVideoSrt(srt: string, duration: number): SubtitleCue[] {
+  if (!Number.isFinite(duration) || duration <= 0) throw new Error("Thời lượng video không hợp lệ.");
   const cues = srt.replace(/^\uFEFF/u, "").split(/\r?\n\s*\r?\n/u).flatMap((block) => {
     const lines = block.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
     const timeIndex = lines.findIndex((line) => line.includes("-->"));
-    if (timeIndex < 0) return [];
+    if (timeIndex < 0) throw new Error("SRT có khối thiếu mốc thời gian.");
     const [startText, endText] = lines[timeIndex].split("-->").map((value) => value.trim().split(/\s+/u)[0]);
     const start = timeToSeconds(startText || "");
     const end = timeToSeconds(endText || "");
     const text = lines.slice(timeIndex + 1).join(" ").replace(/<[^>]*>/gu, "").replace(/&nbsp;/giu, " ").trim();
-    if (!text || !Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || start >= duration) return [];
+    if (!text || !Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || start >= duration || end > duration + 0.05) throw new Error("SRT có cue lỗi hoặc vượt thời lượng video.");
     return [{ start, end: Math.min(end, duration), text }];
   });
   if (!cues.length || cues.length > 120) throw new Error("SRT không có cue hợp lệ hoặc vượt quá 120 câu thoại.");
+  for (let index = 1; index < cues.length; index++) {
+    if (cues[index].start < cues[index - 1].end) throw new Error("Các cue SRT bị chồng thời gian hoặc sai thứ tự.");
+  }
   return cues;
 }
 
