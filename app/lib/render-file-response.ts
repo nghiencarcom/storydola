@@ -1,7 +1,6 @@
 import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { Readable } from "node:stream";
 import { NextResponse } from "next/server";
 
 export type RenderFileKind = "video" | "subtitle" | "manifest" | "blend";
@@ -15,6 +14,47 @@ function contentType(kind: RenderFileKind) {
 
 function safeFilename(value: string) {
   return value.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120) || "render";
+}
+
+function createFileBody(filePath: string, start: number, end: number, signal: AbortSignal) {
+  const source = createReadStream(filePath, { start, end });
+  const iterator = source[Symbol.asyncIterator]();
+  let cancelled = false;
+  let finished = false;
+
+  const cleanup = () => signal.removeEventListener("abort", cancel);
+  const cancel = () => {
+    if (cancelled || finished) return;
+    cancelled = true;
+    cleanup();
+    source.destroy();
+  };
+
+  signal.addEventListener("abort", cancel, { once: true });
+  if (signal.aborted) cancel();
+
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (cancelled || finished) return;
+      try {
+        const next = await iterator.next();
+        if (cancelled || finished) return;
+        if (next.done) {
+          finished = true;
+          cleanup();
+          controller.close();
+          return;
+        }
+        controller.enqueue(next.value);
+      } catch (error) {
+        if (cancelled || finished) return;
+        finished = true;
+        cleanup();
+        controller.error(error);
+      }
+    },
+    cancel,
+  });
 }
 
 export async function renderFileResponse(request: Request, options: {
@@ -73,8 +113,7 @@ export async function renderFileResponse(request: Request, options: {
       }
     }
     if (start > end || start >= details.size) return new NextResponse(null, { status: 416, headers: { "Content-Range": `bytes */${details.size}` } });
-    const stream = createReadStream(resolvedPath, { start, end });
-    return new NextResponse(Readable.toWeb(stream) as unknown as BodyInit, {
+    return new NextResponse(createFileBody(resolvedPath, start, end, request.signal), {
       status,
       headers: {
         "Content-Type": contentType(options.kind),
