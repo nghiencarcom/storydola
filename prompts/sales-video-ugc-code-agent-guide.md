@@ -1,11 +1,11 @@
 ---
 name: storyai-sales-video-ugc
-description: Write truthful, high-retention, natural UGC sales scripts and timed per-clip video prompts using StoryAI's product and reference inputs.
+description: Write high-retention, natural UGC sales scripts and timed per-clip video prompts using StoryAI's product and reference inputs.
 ---
 
 # StoryAI — Hướng dẫn Code Agent viết kịch bản UGC bán hàng tối ưu giữ chân (Audience Retention)
 
-Tài liệu này là hướng dẫn nền tảng bắt buộc dùng cho Code Agent khi soạn kịch bản và prompt video bán hàng ngắn (TikTok, Reels, Shorts). Đọc và áp dụng đúng module ngành hàng theo `templateId` được gửi trong yêu cầu. Hướng dẫn cụ thể của người dùng được ưu tiên khi không mâu thuẫn với tính trung thực và an toàn chính sách. Đầu ra cuối cùng phải tuân thủ nghiêm ngặt schema JSON của StoryAI.
+Tài liệu này là hướng dẫn nền tảng bắt buộc dùng cho Code Agent khi soạn kịch bản và prompt video bán hàng ngắn (TikTok, Reels, Shorts). Đọc và áp dụng đúng module ngành hàng theo `templateId` được gửi trong yêu cầu. Hướng dẫn cụ thể của người dùng được ưu tiên khi không mâu thuẫn với schema JSON và chính sách hiện hành. Đầu ra cuối cùng phải tuân thủ nghiêm ngặt schema JSON của StoryAI.
 
 ---
 
@@ -14,12 +14,12 @@ Tài liệu này là hướng dẫn nền tảng bắt buộc dùng cho Code Age
 Video ngắn thành công không bắt đầu bằng việc bán hàng, mà bắt đầu bằng việc **giành giật 3 giây đầu tiên (Thumb-Stop)** và **duy trì sự tò mò liên tục (Audience Retention)** để người xem không lướt qua.
 
 ### Thứ tự ưu tiên bắt buộc:
-1. **Tính đúng sự thật & An toàn chính sách:** Bảo toàn hình ảnh người dẫn và sản phẩm tham chiếu, an toàn sức khỏe/tài chính, tuyệt đối không bịa đặt claim.
+1. **An toàn chính sách và hình ảnh tham chiếu:** Bảo toàn hình ảnh người dẫn và sản phẩm tham chiếu, tuân thủ quy định với nội dung sức khỏe/tài chính.
 2. **Kỹ thuật giữ chân người xem (Retention Engineering):** Hook 3 lớp trong 0–3 giây đầu, bẻ góc nhìn (Pattern Interrupt) ở điểm rơi giây thứ 8–12, nhịp câu văn nói đời thường.
 3. **Khử mùi quảng cáo (Tỷ lệ 80/20):** 80% thời lượng cho tình huống đời sống, minh họa thực tế hoặc trải nghiệm thật; chỉ 20% cho thông tin sản phẩm và kêu gọi hành động (CTA) nhẹ nhàng.
 4. **Đúng định dạng và lịch clip:** Tuân thủ schema JSON, thời lượng từng clip và quy cách prompt độc lập của StoryAI.
 
-Tuyệt đối không hy sinh tính chân thực, an toàn chính sách hoặc tính nhất quán hình ảnh để tạo hook giật gân rẻ tiền.
+Tuyệt đối không hy sinh an toàn chính sách hoặc tính nhất quán hình ảnh để tạo hook giật gân rẻ tiền.
 
 ---
 
@@ -119,17 +119,53 @@ Kết thúc clip cuối bằng một lời mời click/bấm góc trái để th
 
 ---
 
-## 6. Mạch lời thoại video bán hàng
+## 6. Nghệ thuật viết lời thoại UGC cuốn hút & Tự nhiên (Natural Conversational Dialogue)
 
 Mỗi video có thoại chỉ dùng **một người dẫn duy nhất** là nhân vật tham chiếu. Không tạo người hỏi ngoài khung hình, đối thoại hai vai, giọng thứ hai hoặc nhãn vai.
 
-- Mở bằng một câu hook gắn với nhu cầu, tình huống hoặc hoài nghi thật; không chào hỏi hay đọc tên sản phẩm.
-- Nối tình huống với một thao tác hoặc chi tiết sản phẩm có thể quan sát/xác minh, rồi giải thích giá trị thực tế bằng lời tự nhiên.
-- Nêu điều người xem cần cân nhắc khi có căn cứ; nếu chưa có trải nghiệm thật thì không giả nhận đã mua hoặc sử dụng.
-- Câu thoại cuối cùng của video phải là CTA ngắn, mời người xem click/bấm góc trái để tham khảo thêm nếu sản phẩm hợp nhu cầu; đặt CTA trong clip cuối cùng. Ví dụ: “Nếu các bác thấy em này hợp nhu cầu thì click góc trái để tham khảo thêm nhé.”
-- Xưng hô trong CTA phải khớp tệp khán giả đã chọn: ví dụ “các mom” với gia đình có con nhỏ, “các bác” với nam giới/công nghệ, “mấy bà” với dân văn phòng, “cả nhà” với đại chúng. Ví dụ: “Các mom thấy em nó phù hợp thì click góc trái để xem thêm nha.”
-- Nếu lời thoại người dùng cung cấp đã có CTA đúng ý, chỉ giữ một CTA ở cuối. Không thúc ép mua và không hứa hẹn kết quả ngoài dữ kiện.
-- Dùng mạch kể linh hoạt, không đọc tên công thức, không biến lời thoại thành danh sách thông số hoặc phần giải thích cho khán giả.
+Lời thoại UGC phải nghe như một người bạn sành sỏi đang trò chuyện trực tiếp trước camera điện thoại — giàu nhạc điệu, giàu hơi thở đời thường, loại bỏ 100% giọng đọc TV commercial, văn bản hành chính hay văn dịch từ tiếng Anh.
+
+### 6.1 Quy tắc Nhất quán Ngôi Xưng Hô (Persona & Pronoun Consistency)
+**CẤM TUYỆT ĐỐI NHẢY ĐẠI TỪ XƯNG HÔ GIỮA CHỪNG:**
+- Nếu mở đầu xưng `mình` và gọi khán giả là `các bác` (công nghệ) -> Suốt từ đầu đến cuối clip phải giữ đúng cặp `mình` – `các bác`.
+- Nếu mở đầu gọi `mấy bà` / `các bồ` (làm đẹp, văn phòng) -> Giữ xuyên suốt `mình` – `mấy bà` / `các bồ`.
+- Nếu gọi `các mom` / `mấy mẹ` (mẹ và bé) -> Giữ xuyên suốt `em` / `mình` – `các mom`.
+- ❌ **CẤM:** Đầu clip xưng `mình`, giữa clip gọi `cả nhà`, cuối clip lại phán `nhu cầu của bạn` hoặc `các bác`.
+
+---
+
+### 6.2 BẢNG ĐEN: 6 Nhóm Từ Ngữ & Lối Nói Rập Khuôn Bị CẤM TUYỆT ĐỐI
+
+| Nhóm lỗi | ❌ Mẫu câu cấm (Gượng gạo / Robot / Giọng PR) | ✅ Cách nói đời thường thay thế (Giàu nhạc điệu) |
+|---|---|---|
+| **1. Văn dịch PR & Sáo ngữ TVC** | • "Bí mật nằm ở cụm..."<br>• "Trang bị hẳn cảm biến..."<br>• "Hỗ trợ công nghệ tiên tiến..."<br>• "Mọi bước đi đều êm ru khó tin" | • "Cái gimbal này lia mượt dã man..."<br>• "Nhìn nhỏ gọn vậy thôi mà quay êm ru..."<br>• "Điểm ăn tiền nằm ở..."<br>• "Vừa đi vừa quay mà khung hình vẫn chắc nịch." |
+| **2. Lối nói Hành chính / Cảnh báo hợp đồng** | • "Nhưng có một điểm cả nhà cần lưu ý là..."<br>• "Ai để ý bao bì thì lưu tâm nhé..."<br>• "Trước khi chọn, xem kỹ hình dáng và thông tin bảo hành có hợp nhu cầu của bạn không nha." | • "Có điều em này không chống nước đâu nha, trời mưa nhớ cất túi kỹ."<br>• "Mỗi tội vỏ hộp hơi đơn giản xíu, bù lại máy bên trong cực ngon."<br>• "Bác nào hay quay vlog giống mình thì nghía thử em này xem hợp gu không nha." |
+| **3. Câu cộc lốc / Khảo sát điền form** | • "Điểm mình ưng là cảm giác cầm đầm tay."<br>• "Sản phẩm có thiết kế kim loại chắc chắn." | • "Cầm trên tay thấy đầm và chắc nịch luôn."<br>• "Phần vỏ kim loại hoàn thiện sờ mát rượi, cầm rất đã tay." |
+| **4. Copy rập khuôn câu CTA mẫu** | • "Nếu cả nhà thấy món này hợp nhu cầu thì bấm góc trái để tham khảo thêm nha." (Copy nguyên văn gây nhàm chán) | • **Gắn chặt CTA vào tình huống sản phẩm:**<br>  - "Bác nào hay quay vlog di chuyển nhiều thì nghía thử ở góc trái nha."<br>  - "Bà nào lười dọn bếp giống mình thì bấm góc trái tham khảo nghen."<br>  - "Em để sẵn link ở góc trái màn hình cho cả nhà tiện xem nè." |
+| **5. Đánh vần chữ số thô thiển (TTS distortion)** | • "bốn K hai trăm bốn mươi khung hình"<br>• "bảy trăm năm mươi mi li lít"<br>• "một inch ba trục" | • Giữ đúng số và thuật ngữ chuẩn: `quay 4K 240fps`, `bình 750ml`, `cảm biến 1 inch`, `gimbal 3 trục`. Giọng đọc AI hiện đại phát âm tự nhiên các ký hiệu này. |
+| **6. Đọc thông số kỹ thuật khô khan** | • "Dung tích 750ml, chất liệu inox 304, giữ nhiệt 24 giờ." | • "Bình 750ml to vừa đủ, sáng rót nước đá mang đi làm tới chiều đá vẫn chưa tan hết." |
+
+---
+
+### 6.3 Bộ Chuyển Ý Khẩu Ngữ Đời Thường (Natural Conversational Connectors)
+
+- **Chuyển sang hoài nghi / thử thách (giây 3–5):**
+  * *"Lúc đầu nhìn cũng nghi nghi, sợ mua về phí tiền..."*
+  * *"Thoạt nhìn cứ tưởng đồ chơi cho vui..."*
+  * *"Trước giờ mình cứ nghĩ phải vác máy cơ cồng kềnh..."*
+- **Chuyển sang trải nghiệm thực tế / khoảnh khắc "Wow" (giây 6–10):**
+  * *"Mà công nhận, cầm vô cái là thấy khác bọt liền..."*
+  * *"Bật máy lên lia thử một đường mà êm ru..."*
+  * *"Thử một phát là ưng cái bụng ngay..."*
+- **Chuyển sang nhược điểm thật (Khử mùi quảng cáo — giây 10–14):**
+  * *"Nói đi cũng phải nói lại, có một điểm trừ nhỏ là..."*
+  * *"Mỗi tội em này..."*
+  * *"Có điều bác nào hay đi mưa nhớ lưu ý..."*
+  * *"Duy chỉ có một điểm là..."*
+- **Chuyển sang CTA nhẹ nhàng (cuối video):**
+  * *"Bác nào đang tìm một em nhỏ gọn bỏ túi thì ghé góc trái tham khảo nha."*
+  * *"Ai thấy hợp nhu cầu thì bấm góc trái xem thêm chi tiết nè."*
+  * *"Em ghim sẵn ở góc trái cho mấy bà dễ tìm nghen."*
 
 ---
 
@@ -401,7 +437,12 @@ Khi nhận task từ hệ thống StoryAI:
 ### Bước tự kiểm duyệt ngầm (Self-Critique Check) trước khi trả kết quả:
 - [ ] Câu hook mở đầu có chào hỏi hoặc nêu tên sản phẩm không? (Nếu có -> Xóa ngay).
 - [ ] Toàn bộ lời thoại đọc lên có trôi chảy, giàu cảm xúc và cuốn hút không? (Ưu tiên câu đọc hay, có hồn, không máy móc băm cụt câu).
-- [ ] Kịch bản có chứa từ sáo rỗng trong Bảng Đen không? (Nếu có -> Thay bằng khẩu ngữ đời thường).
+- [ ] **Ngôi xưng hô có nhất quán từ đầu đến cuối không?** (Tuyệt đối không để đầu câu xưng "mình", giữa câu gọi "cả nhà", cuối câu lại phán "của bạn"; giữ đúng 1 cặp đại từ xuyên suốt).
+- [ ] **Kịch bản có dính từ ngữ thuộc BẢNG ĐEN không?**
+  * Có câu nào như "Bí mật nằm ở...", "Trang bị hẳn...", "Điểm mình ưng là..." không? (Thay bằng khẩu ngữ đời thường).
+  * Khi nêu nhược điểm nhỏ, có bị hành chính hóa ("cần lưu ý là", "ai để ý thì lưu tâm", "xem kỹ thông tin bảo hành") không? (Thay bằng "Mỗi tội...", "Có điều...", "Duy chỉ có...").
+  * Có bị đánh vần số thô ("bốn K hai trăm bốn mươi", "bảy trăm năm mươi mi li lít") không? (Giữ nguyên dạng số `4K 240fps`, `750ml`).
+- [ ] **Câu CTA cuối có bị copy rập khuôn nguyên văn mẫu không?** (Cấm chép y nguyên "Nếu cả nhà thấy món này hợp nhu cầu thì bấm góc trái để tham khảo thêm nha"; bắt buộc phải gắn CTA vào bối cảnh sản phẩm và cách xưng hô của tệp).
 - [ ] Chữ trong `VIDEO OVERLAY TIMELINE` có bị rơi vào bẫy mô tả lại hành động mắt thấy (như "XOAY MÀN HÌNH", "CẦM BÌNH", "MỞ NẮP", "BẤM NÚT") không? HOẶC có bị trùng nguyên văn lời thoại không? (Nếu có -> BẮT BUỘC đổi thành tiêu đề giật tít 2–5 từ in hoa + emoji nêu lợi ích tốc độ, nỗi đau nhột tai hoặc sự thật tò mò: ví dụ "BẬT MÁY 1 GIÂY ⚡", "VLOG RUNG NHƯ ĐỘNG ĐẤT? 📳", "CỰC KỲ ĐẦM TAY! 🏆").
 - [ ] Ở giây thứ 8–12 có chi tiết bẻ lái (Micro-test / Khuyết điểm nhỏ có thật) để giữ chân người xem không?
 - [ ] Đã khóa đúng `@Image1` cho người dẫn và `@Image2` cho sản phẩm chưa?
