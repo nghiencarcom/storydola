@@ -115,8 +115,8 @@ async function renderSalesVideoTextOverlay(
     await sharp(Buffer.from(watermarkSvg)).png().toFile(image);
     overlays.push({
       image, start: 0, end: duration,
-      x: `(W-w)*abs(sin(floor(t/2)*12.9898+${seed + 31.7}))`,
-      y: `(H-h)*abs(sin(floor(t/2)*78.233+${seed + 17.4}))`,
+      x: `(W-w)*(0.5+0.26*sin(t*0.91+${seed + 31.7})+0.22*sin(t*1.73+${seed + 7.1}))`,
+      y: `(H-h)*(0.5+0.27*sin(t*0.73+${seed + 17.4})+0.21*sin(t*1.37+${seed + 3.2}))`,
     });
   }
   if (postProcessing.logo?.enabled && logoPath) {

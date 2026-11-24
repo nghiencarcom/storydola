@@ -731,6 +731,7 @@ export function SalesVideoView() {
     </>}
     {route.projectId && !projects ? <p role="status">Đang tải dự án…</p> : selected ? (
       <SalesVideoProjectDetail key={`${selected.id}-${selected.phase || selected.status}`} project={selected} videoUrl={videoUrl}
+        catalog={catalog}
         promptMaxLength={selectedPromptMaxLength}
         maiVideoConfigured={Boolean(access?.maiVideo)}
         onReviewActionChange={setReviewAction}
@@ -758,8 +759,9 @@ export function SalesVideoView() {
   </>;
 }
 
-function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, maiVideoConfigured, onReviewActionChange, onUpdated }: {
+function SalesVideoProjectDetail({ project, catalog, videoUrl, promptMaxLength, maiVideoConfigured, onReviewActionChange, onUpdated }: {
   project: SalesVideoProject;
+  catalog: VideoGenerationModelOption[];
   videoUrl: string;
   promptMaxLength: number;
   maiVideoConfigured: boolean;
@@ -767,6 +769,7 @@ function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, maiVideoC
   onUpdated: (project: SalesVideoProject) => void;
 }) {
   const details = project.details;
+  const [retryModels, setRetryModels] = useState<Record<number, string>>({});
   const [promptSegments, setPromptSegments] = useState(() => initialReviewPromptSegments(details));
   const [scriptSegments, setScriptSegments] = useState(() => initialReviewScriptSegments(details));
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved");
@@ -927,7 +930,7 @@ function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, maiVideoC
     try {
       const response = await fetch(`/api/sales-video/ugc/${project.id}`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ retrySegmentIndex: index }),
+        body: JSON.stringify({ retrySegmentIndex: index, model: retryModels[index] || details?.videoModelId }),
       });
       const result = await response.json().catch(() => null);
       if (!response.ok || !result?.project?.id) throw new Error(result?.message || "Không gửi được yêu cầu tạo lại clip.");
@@ -1066,6 +1069,12 @@ function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, maiVideoC
               {result.error && <p className="sales-project-clip-message" role="status">{result.error}</p>}
               <a className="secondary-button compact" href={`${clipUrl}?download=1`}>Tải clip {index + 1}</a>
             </> : <p className="sales-project-clip-message">{result.error || (result.status === "processing" ? "Model đang tạo lại clip này." : result.status === "failed" ? "Clip này chưa tạo thành công." : project.status === "processing" ? "Clip đang chờ lượt tạo." : "Chưa có file clip.")}</p>}
+            {canRegenerateClips && result.status !== "processing" && <label>Model tạo lại clip {index + 1}
+              <select value={retryModels[index] || details?.videoModelId || ""} onChange={(event) => setRetryModels(current => ({ ...current, [index]: event.target.value }))} disabled={retryingClip !== null || stitching}>
+                <option value={details?.videoModelId || ""}>Model hiện tại</option>
+                {catalog.map(model => <option key={`${model.provider}:${model.id}`} value={`${model.provider || "maivideo"}:${model.id}`}>{model.label || model.id}</option>)}
+              </select>
+            </label>}
             {canRegenerateClips && result.status !== "processing" && <button type="button" className="secondary-button" onClick={() => void regenerateClip(index)} disabled={retryingClip !== null || stitching || voiceJob?.status === "processing"}>
               {retryingClip === index ? "Đang gửi…" : "Tạo lại clip 15s"}
             </button>}

@@ -232,7 +232,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   form.set("language", language);
   form.set("duration", String(duration));
   form.set("ratio", details.ratio || "9:16");
-  form.set("model", details.videoModelId || "");
+  form.set("model", retrySegment && typeof body?.model === "string" ? body.model : details.videoModelId || "");
   form.set("claimCategory", details.claimCategory || "general");
   form.set("prompt", promptSegments[0].prompt);
   form.set("promptSegments", JSON.stringify(promptSegments));
