@@ -2740,6 +2740,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .sales-video-template-selected .secondary-button { white-space: nowrap; }
 .sales-video-page-heading.is-composer { align-items: flex-start; margin-bottom: 16px; }
 .sales-video-page-heading.is-composer > div { display: grid; justify-items: start; gap: 8px; }
+.sales-video-page-heading-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
 .sales-video-page-heading.is-composer h1 { font-size: clamp(27px, 2.6vw, 34px); }
 .sales-video-page-heading.is-sticky {
   position: sticky;

@@ -112,8 +112,9 @@ Khi kịch bản có lồng ghép 1 nhược điểm nhỏ có thật, độ tin
 - *Lưu ý:* Chỉ nêu nhược điểm khi người dùng cung cấp hoặc có nguồn kiểm chứng đáng tin cậy. Nếu chưa rõ, nêu một điểm người mua cần lưu ý kiểm tra; tuyệt đối không bịa nhược điểm.
 
 ### Kêu gọi hành động (CTA) tự nhiên, áp lực thấp (Low-friction CTA):
-Kết thúc video bằng một lời khuyên chân thành hoặc gợi ý tình huống thực tế, không nài ép mua:
-- *Nên dùng:* "Nghĩ xem tuần này bạn sẽ dùng món này lúc nào nha.", "Ai hay gặp cảnh này thì lưu lại để kiểm tra nhé.", "Đọc kỹ phần phân loại trước khi chọn."
+Kết thúc clip cuối bằng một lời mời click/bấm góc trái để tham khảo thêm **nếu sản phẩm hợp nhu cầu**. Dùng cách xưng hô theo đúng tệp khán giả, nói ngắn gọn, thân thiện và không nài ép mua:
+- *Nên dùng:* "Nếu các bác thấy em này hợp nhu cầu thì click góc trái để tham khảo thêm nhé.", "Các mom thấy em nó phù hợp thì click góc trái để xem thêm nha."
+- Nếu video dùng ngôn ngữ khác tiếng Việt, diễn đạt lời mời tương đương bằng ngôn ngữ đó và giữ cách xưng hô tự nhiên với tệp khán giả.
 - *Tránh dùng:* "Mua ngay", "Chốt đơn đi", "Số lượng có hạn".
 
 ---
@@ -125,14 +126,16 @@ Mỗi video có thoại chỉ dùng **một người dẫn duy nhất** là nhâ
 - Mở bằng một câu hook gắn với nhu cầu, tình huống hoặc hoài nghi thật; không chào hỏi hay đọc tên sản phẩm.
 - Nối tình huống với một thao tác hoặc chi tiết sản phẩm có thể quan sát/xác minh, rồi giải thích giá trị thực tế bằng lời tự nhiên.
 - Nêu điều người xem cần cân nhắc khi có căn cứ; nếu chưa có trải nghiệm thật thì không giả nhận đã mua hoặc sử dụng.
-- Kết bằng lời mời cân nhắc, kiểm tra hoặc so sánh nhẹ nhàng. Không gây áp lực mua.
+- Câu thoại cuối cùng của video phải là CTA ngắn, mời người xem click/bấm góc trái để tham khảo thêm nếu sản phẩm hợp nhu cầu; đặt CTA trong clip cuối cùng. Ví dụ: “Nếu các bác thấy em này hợp nhu cầu thì click góc trái để tham khảo thêm nhé.”
+- Xưng hô trong CTA phải khớp tệp khán giả đã chọn: ví dụ “các mom” với gia đình có con nhỏ, “các bác” với nam giới/công nghệ, “mấy bà” với dân văn phòng, “cả nhà” với đại chúng. Ví dụ: “Các mom thấy em nó phù hợp thì click góc trái để xem thêm nha.”
+- Nếu lời thoại người dùng cung cấp đã có CTA đúng ý, chỉ giữ một CTA ở cuối. Không thúc ép mua và không hứa hẹn kết quả ngoài dữ kiện.
 - Dùng mạch kể linh hoạt, không đọc tên công thức, không biến lời thoại thành danh sách thông số hoặc phần giải thích cho khán giả.
 
 ---
 
 ## 7. Chân dung khán giả, đại từ xưng hô & Ngôn ngữ tự nhiên
 
-Chọn cách xưng hô phù hợp với tệp khách hàng của ngành hàng để tạo sự đồng cảm tức thì. Dùng thưa gửi tự nhiên, thường 1 lần ở đầu câu chuyện:
+Chọn cách xưng hô phù hợp với tệp khách hàng của ngành hàng để tạo sự đồng cảm tức thì. Dùng thưa gửi tự nhiên, thường 1 lần ở đầu câu chuyện; ở CTA cuối, tiếp tục dùng đúng tệp xưng hô đã chọn:
 
 - **Dân văn phòng / Chị em làm đẹp & thời trang:** Dùng *mấy bà, các bồ, các chị* (giọng thân mật, chia sẻ mẹo, gần gũi).
 - **Mẹ và bé / Gia đình chăm con:** Dùng *các mom, mấy mẹ, các mẹ* (giọng đồng cảm, ấm áp, cẩn trọng).
@@ -189,7 +192,7 @@ Mọi mốc giây dưới đây là ví dụ cho clip 15 giây. Luôn tính lạ
 3. **Clip cuối (Clip n) — Demo Payoff & Soft CTA:**
    - **Góc máy & Cỡ cảnh:** Lùi máy quay hoặc reframing mượt mà trở lại góc trung (Medium Shot) ấm áp, bố cục thoáng đãng và dễ thở.
    - **Hành động & Cảm xúc:** Nối tiếp thao tác đã minh họa; biểu cảm phù hợp với hình ảnh, không giả nhận đã sử dụng hoặc tạo kết quả trải nghiệm chưa được cung cấp. Giơ sản phẩm hoặc đặt đứng vững chắc trên bàn.
-   - **Kêu gọi hành động áp lực thấp:** Kết thúc bằng nụ cười thân thiện, tư thế tự nhiên, tuyệt đối không tạo cảm giác nài ép mua hàng rẻ tiền.
+   - **Kêu gọi hành động áp lực thấp:** Trong lời thoại cuối, mời người xem click góc trái để tham khảo thêm nếu sản phẩm hợp nhu cầu, dùng đúng đại từ theo tệp khán giả. Kết thúc bằng nụ cười thân thiện; có thể liếc hoặc hướng tay nhẹ về góc trái, không dựng nút hay giao diện giả và không nài ép mua.
 
 ### 9.2 Cấu trúc 5 khối chuẩn của một Prompt Video AI (Clean Prompt Architecture):
 

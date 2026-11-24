@@ -468,6 +468,7 @@ export function SalesVideoView() {
   const [deleteError, setDeleteError] = useState("");
   const [deleteMessage, setDeleteMessage] = useState("");
   const [deletingProjects, setDeletingProjects] = useState(false);
+  const [recreatingProjectId, setRecreatingProjectId] = useState("");
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -527,6 +528,8 @@ export function SalesVideoView() {
   }, [projects]);
 
   const selected = projects?.find((project) => project.id === route.projectId);
+  const selectedProductTemplate = salesVideoTemplates.find(({ id }) => id === selected?.details?.templateId)
+    || salesVideoTemplates.find(({ name }) => name === selected?.template);
   const videoUrl = selected ? `/api/sales-video/${selected.id}` : "";
   const selectedVideoModelId = selected?.details?.videoModelId || "";
   const selectedPromptMaxLength = selected?.details?.promptMaxLength
@@ -626,6 +629,67 @@ export function SalesVideoView() {
     }
   }
 
+  async function recreateProject(project: SalesVideoProject, templateId: string) {
+    if (recreatingProjectId || project.status === "processing") return;
+    const details = project.details;
+    const template = salesVideoTemplates.find(({ id }) => id === templateId);
+    if (!details || !template) return;
+    setRecreatingProjectId(project.id);
+    setError("");
+    try {
+      const productImageCount = Math.max(1, Math.min(salesVideoMaxProductImages,
+        details.productImageCount || details.references?.products?.length || 1));
+      const productReferences = Array.from({ length: productImageCount }, (_, index) =>
+        `/api/sales-video/${project.id}/references/${index === 0 ? "product" : `product-${index + 1}`}`);
+      const fetchImage = async (url: string, name: string) => {
+        const response = await fetch(url, { cache: "no-store", credentials: "same-origin" });
+        if (!response.ok) throw new Error(`Không tải lại được ảnh tham chiếu: ${name}.`);
+        const blob = await response.blob();
+        if (!blob.size) throw new Error(`Ảnh tham chiếu ${name} đang trống.`);
+        return new File([blob], name, { type: blob.type || "image/webp" });
+      };
+      const [presenter, ...productImages] = await Promise.all([
+        fetchImage(`/api/sales-video/${project.id}/references/presenter`, "nhân vật"),
+        ...productReferences.map((url, index) => fetchImage(url, `sản phẩm ${index + 1}`)),
+      ]);
+      const form = new FormData();
+      const titleSuffix = " (bản tạo lại)";
+      form.set("title", `${(project.title || details.product || template.name).slice(0, 120 - titleSuffix.length)}${titleSuffix}`);
+      form.set("template", template.id);
+      form.set("product", details.product || project.title || template.name);
+      form.set("productFacts", details.facts || "");
+      form.set("productUrl", details.productUrl || "");
+      form.set("userExperience", details.userExperience || "");
+      form.set("painPoint", details.painPoint || "");
+      form.set("heroBenefit", details.heroBenefit || "");
+      form.set("minorFlaw", details.minorFlaw || "");
+      form.set("targetAudience", details.targetAudience || "general");
+      form.set("hookStyle", details.hookStyle || "");
+      form.set("language", salesVideoLanguages.find((language) => language === details.language) || salesVideoLanguages[0]);
+      form.set("ratio", salesVideoRatios.find((ratio) => ratio === details.ratio) || salesVideoRatios[0]);
+      form.set("duration", String(Number.isInteger(details.duration) ? details.duration : 15));
+      form.set("model", details.videoModelId || "higgsfield");
+      form.set("claimCategory", details.claimCategory || (template.id === "supplements" ? "health" : "general"));
+      form.set("script", details.script || "");
+      form.set("presenter", presenter);
+      if (!productImages[0]) throw new Error("Project gốc không còn ảnh sản phẩm để tạo lại.");
+      form.set("primaryProductImage", productImages[0]);
+      productImages.slice(1).forEach((file) => form.append("additionalProductImage", file));
+
+      const response = await fetch("/api/sales-video/ugc", { method: "POST", body: form, credentials: "same-origin" });
+      const result = await response.json().catch(() => null) as { project?: SalesVideoProject; message?: string } | null;
+      const recreated = result?.project;
+      if (!response.ok || !recreated?.id) throw new Error(result?.message || "Không tạo lại được project.");
+      setProjects((current) => [recreated, ...(current || []).filter((item) => item.id !== recreated.id)]);
+      setError("");
+      showProject(recreated.id);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Không tạo lại được project.");
+    } finally {
+      setRecreatingProjectId("");
+    }
+  }
+
   return <>
     <section className={`page-heading sales-video-page-heading${showComposer ? " is-composer" : ""}${showComposer || route.projectId ? " is-sticky" : ""}`}>
       <div>
@@ -634,7 +698,14 @@ export function SalesVideoView() {
           : route.projectId && <a className="secondary-button" href="/sales-video#sales-template-gallery">← Video bán hàng</a>}
         <h1>{showComposer ? "Tạo dự án video bán hàng" : route.projectId ? selected?.title || "Dự án video bán hàng" : "Video bán hàng"}</h1>
       </div>
-      {route.projectId && <a className="primary-button" href="/sales-video#sales-template-gallery">Tạo video mới</a>}
+      {route.projectId && <div className="sales-video-page-heading-actions">
+        {selected && selectedProductTemplate && <button type="button" className="secondary-button"
+          onClick={() => void recreateProject(selected, selectedProductTemplate.id)}
+          disabled={selected.status === "processing" || Boolean(recreatingProjectId)}>
+          {recreatingProjectId === selected.id ? "Đang tạo lại project…" : "Tạo lại project"}
+        </button>}
+        <a className="primary-button" href="/sales-video#sales-template-gallery">Tạo video mới</a>
+      </div>}
     </section>
     {error && <p role="alert">{error} <button className="secondary-button" onClick={() => void refresh()}>Tải lại</button></p>}
     {showComposer && <SalesVideoComposer key={activeTemplateId} initialTemplateId={activeTemplateId} access={access} catalog={catalog} projects={projects || []}
