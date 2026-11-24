@@ -777,7 +777,6 @@ function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, maiVideoC
   const [voiceId, setVoiceId] = useState("");
   const timer = useRef<number | undefined>(undefined);
   const pendingSave = useRef<Promise<void> | null>(null);
-  const generateAction = useRef<() => void>(() => undefined);
   const duration = details?.duration || 15;
   const language = details?.language || "Tiếng Việt";
   const voiceJob = details?.voiceRegeneration;
@@ -895,7 +894,7 @@ function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, maiVideoC
     return () => window.clearTimeout(timer.current);
   }, [persist, project.status, project.phase]);
 
-  async function generate() {
+  const generate = useCallback(async () => {
     if (generating || tooLong) return;
     setGenerating(true);
     setError("");
@@ -914,7 +913,7 @@ function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, maiVideoC
     } finally {
       setGenerating(false);
     }
-  }
+  }, [generating, tooLong, persist, promptSegments, scriptSegments, script, onUpdated]);
 
   async function regenerateClip(index: number) {
     if (!canRegenerateClips || retryingClip !== null || stitching) return;
@@ -951,19 +950,17 @@ function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, maiVideoC
     }
   }
 
-  generateAction.current = () => { void generate(); };
-
   useEffect(() => {
     if (project.status === "draft" && project.phase === "review" && details) {
       onReviewActionChange({
         disabled: generating || saveState === "error" || tooLong || !promptsReady,
         busy: generating,
-        activate: () => generateAction.current(),
+        activate: () => { void generate(); },
       });
     } else {
       onReviewActionChange(null);
     }
-  }, [details, generating, onReviewActionChange, project.phase, project.status, promptsReady, saveState, tooLong]);
+  }, [details, generate, generating, onReviewActionChange, project.phase, project.status, promptsReady, saveState, tooLong]);
 
   useEffect(() => () => onReviewActionChange(null), [onReviewActionChange]);
 
