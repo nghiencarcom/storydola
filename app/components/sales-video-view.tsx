@@ -895,6 +895,9 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
   const [painPoint, setPainPoint] = useState("");
   const [heroBenefit, setHeroBenefit] = useState("");
   const [minorFlaw, setMinorFlaw] = useState("");
+  const [productAnalysisBusy, setProductAnalysisBusy] = useState(false);
+  const [productAnalysisMessage, setProductAnalysisMessage] = useState("");
+  const [productAnalysisError, setProductAnalysisError] = useState("");
   const [targetAudience, setTargetAudience] = useState<string>(salesVideoTargetAudiences[0].id);
   const [hookStyle, setHookStyle] = useState<string>(salesVideoHookStyles[0].id);
   const [userExperience, setUserExperience] = useState("");
@@ -945,6 +948,48 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
       setFacts("Chất liệu cao cấp đã kiểm định, dung tích tiêu chuẩn, bảo hành chính hãng.");
     }
     setMessage("");
+  }
+
+  async function analyzeProductLink() {
+    if (productAnalysisBusy || busy || !productUrl.trim()) return;
+    setProductAnalysisBusy(true);
+    setProductAnalysisMessage("");
+    setProductAnalysisError("");
+    try {
+      const response = await fetch("/api/sales-video/ugc/analyze-product", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        credentials: "same-origin",
+        cache: "no-store",
+        body: JSON.stringify({ productUrl: productUrl.trim(), product: product.trim(), facts: facts.trim(), templateId }),
+      });
+      const payload: unknown = await response.json().catch(() => null);
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        throw new Error("Không đọc được phản hồi phân tích.");
+      }
+      const data = payload as { message?: unknown; suggestions?: unknown };
+      if (!response.ok) {
+        throw new Error(typeof data.message === "string" ? data.message : "Chưa phân tích được link sản phẩm.");
+      }
+      if (!data.suggestions || typeof data.suggestions !== "object" || Array.isArray(data.suggestions)) {
+        throw new Error("Code Agent chưa trả về đủ gợi ý.");
+      }
+      const suggestions = data.suggestions as Record<string, unknown>;
+      const suggestedPainPoint = typeof suggestions.painPoint === "string" ? suggestions.painPoint.trim().slice(0, 300) : "";
+      const suggestedHeroBenefit = typeof suggestions.heroBenefit === "string" ? suggestions.heroBenefit.trim().slice(0, 300) : "";
+      const suggestedMinorFlaw = typeof suggestions.minorFlaw === "string" ? suggestions.minorFlaw.trim().slice(0, 300) : "";
+      const hasSuggestion = Boolean(suggestedPainPoint || suggestedHeroBenefit || suggestedMinorFlaw);
+      if (suggestedPainPoint) setPainPoint((current) => current.trim() ? current : suggestedPainPoint);
+      if (suggestedHeroBenefit) setHeroBenefit((current) => current.trim() ? current : suggestedHeroBenefit);
+      if (suggestedMinorFlaw) setMinorFlaw((current) => current.trim() ? current : suggestedMinorFlaw);
+      setProductAnalysisMessage(hasSuggestion
+        ? "Đã phân tích link và điền gợi ý vào các ô còn trống. Nội dung bạn đã nhập được giữ nguyên; nhược điểm chỉ được gợi ý khi trang có căn cứ."
+        : "Đã đọc trang nhưng chưa tìm thấy gợi ý đủ căn cứ. Bạn có thể bổ sung thông số sản phẩm hoặc nhập nội dung thủ công.");
+    } catch (cause) {
+      setProductAnalysisError(cause instanceof Error ? cause.message : "Không phân tích được link sản phẩm.");
+    } finally {
+      setProductAnalysisBusy(false);
+    }
   }
 
   async function copyManualJobData() {
@@ -1431,7 +1476,7 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
     : mediaFields.every((field) => Boolean(files[field.name]?.size));
   const requiredPromptReady = !creative?.text || Boolean(creative.defaultText) || Boolean(prompt.trim());
   const canSubmit = Boolean(draftReady && !libraryOpen && !libraryActionBusy && requiredFilesReady && (creative || product.trim()) && requiredPromptReady
-    && model?.available && durationOptions.length && !scriptTooLong
+    && model?.available && durationOptions.length && !scriptTooLong && !productAnalysisBusy
     && (!selectedTemplate || Boolean(access?.codingAgent) || manualPromptsReady) && (creative?.workflow !== "narration" || access?.voice)
     && (!selectedTemplate || !productImagesExceedModelLimit));
   const example = salesVideoTextExamples[templateId];
@@ -1556,7 +1601,11 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
                 <label className="form-field">
                   <span>Link sản phẩm <em>Tùy chọn</em></span>
                   <input type="text" inputMode="url" value={productUrl}
-                    onChange={(event) => setProductUrl(event.target.value)} maxLength={2000}
+                    onChange={(event) => {
+                      setProductUrl(event.target.value);
+                      setProductAnalysisMessage("");
+                      setProductAnalysisError("");
+                    }} maxLength={2000} disabled={productAnalysisBusy}
                     placeholder="https://…" />
                 </label>
                 <label className="form-field">
@@ -1564,6 +1613,16 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
                   <input type="text" name="productFacts" value={facts} onChange={(event) => setFacts(event.target.value.slice(0, 1000))}
                     placeholder="Ví dụ: Inox 304, giữ nhiệt 24h, nắp chống tràn..." maxLength={1000} />
                 </label>
+              </div>
+              <div className="sales-product-analysis-actions full">
+                <button type="button" className="secondary-button compact" onClick={() => void analyzeProductLink()}
+                  disabled={!draftReady || busy || productAnalysisBusy || !productUrl.trim() || !access?.codingAgent}
+                  aria-busy={productAnalysisBusy}>
+                  {productAnalysisBusy ? "Đang đọc và phân tích…" : "Đọc link & gợi ý nội dung"}
+                </button>
+                <small>{access?.codingAgent ? "Gợi ý bằng Code Agent đang chọn. Thông tin đã nhập sẽ được giữ nguyên." : "Cần cài và cấu hình Code Agent CLI để phân tích link."}</small>
+                {productAnalysisMessage && <p className="sales-product-analysis-status" role="status">{productAnalysisMessage}</p>}
+                {productAnalysisError && <p className="sales-product-analysis-status sales-script-warning" role="alert">{productAnalysisError}</p>}
               </div>
               <div className="sales-form-step full">
                 <span>02</span>
@@ -1600,7 +1659,7 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, onCh
               </label>
               <div className="form-field full sales-retention-flaw-card">
                 <label style={{ display: "grid", gap: 6 }}>
-                  <span>Điểm cần cân nhắc <em>Tùy chọn</em></span>
+                  <span>Nhược điểm cần cân nhắc <em>Tùy chọn</em></span>
                   <input type="text" name="minorFlaw" value={minorFlaw} onChange={(event) => setMinorFlaw(event.target.value.slice(0, 300))}
                     placeholder={salesVideoFlawExamples[templateId] || "Ví dụ: Hộp đóng gói hơi đơn giản, nhưng chất lượng bên trong rất đầm tay."} maxLength={300} />
                 </label>
