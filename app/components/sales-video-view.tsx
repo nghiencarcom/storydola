@@ -1099,7 +1099,8 @@ function SalesVideoProjectDetail({ project, catalog, videoUrl, promptMaxLength, 
           const storedModelId = details?.segmentResults?.[index]?.modelId || details?.videoModelId || "";
           const currentModelId = normalizeSalesVideoRetryModelId(storedModelId);
           const currentModel = catalog.find(model => `${model.provider || "maivideo"}:${model.id}` === currentModelId);
-          const retryCatalog = catalog.filter(model => !/seedance/i.test(`${model.id} ${model.label}`) || isSupportedSalesVideoSeedanceRetryModel(model));
+          const retryCatalog = catalog.filter(model => `${model.provider || "maivideo"}:${model.id}` !== currentModelId
+            && (!/seedance/i.test(`${model.id} ${model.label}`) || isSupportedSalesVideoSeedanceRetryModel(model)));
           const currentModelLabel = storedModelId !== currentModelId
             ? `Mặc định: ${PIXVERSE_SEEDANCE_RETRY_LABEL}`
             : `Hiện tại: ${currentModel ? salesVideoRetryModelLabel(currentModel) : storedModelId || project.model || details?.videoModelId}`;
@@ -2262,4 +2263,3 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
         </div>}
       </form>
   );
-}
