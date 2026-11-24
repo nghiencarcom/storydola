@@ -21,8 +21,8 @@ function routeError(cause: unknown) {
   if (code === "AGENT_ACCESS_ROTATE_REQUIRED") {
     return NextResponse.json({ code, message: "Token MCP cũ chưa hỗ trợ cài tự động. Hãy tạo token MCP mới rồi kết nối lại agent." }, { status: 409 });
   }
-  if (code === "AGENT_CONFIG_INVALID_JSON") {
-    return NextResponse.json({ code, message: "File cấu hình agent đang sai định dạng JSON. StoryAI chưa thay đổi file; hãy sửa JSON rồi thử lại." }, { status: 409 });
+  if (code === "AGENT_CONFIG_INVALID_JSON" || code === "AGENT_CONFIG_INVALID_TOML") {
+    return NextResponse.json({ code, message: "File cấu hình agent đang sai định dạng JSON/TOML. StoryAI chưa thay đổi file; hãy sửa JSON rồi thử lại." }, { status: 409 });
   }
   if (code === "STORYAI_MCP_CHECK_FAILED") {
     return NextResponse.json({ code, message: "StoryAI chưa vượt qua kiểm tra MCP local. Kiểm tra app đang chạy và phiên MaiVideo còn hiệu lực, rồi thử lại." }, { status: 503 });

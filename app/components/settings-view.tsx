@@ -17,7 +17,7 @@ type AgentAccessPayload = {
   nodePath: string;
   platform: string;
 };
-type AgentConfigStatus = { installed: boolean; needsUpdate?: boolean; configPath: string; error?: "INVALID_JSON" | "CONFIG_ACCESS_FAILED" };
+type AgentConfigStatus = { installed: boolean; needsUpdate?: boolean; configPath: string; error?: "INVALID_JSON" | "INVALID_TOML" | "CONFIG_ACCESS_FAILED" };
 type CodingAgentEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 type CodingAgentModel = { id: string; label: string; reasoningEffortLevels?: CodingAgentEffort[]; defaultReasoningEffort?: CodingAgentEffort; speedTiers?: "fast"[] };
 type CodingAgentCliStatus = { id: CodingAgentId; label: string; available: boolean; models: CodingAgentModel[] };
@@ -215,7 +215,7 @@ export function SettingsView() {
 
   async function installAgent(agent: CodingAgentId) {
     if (agentAccessBusy || !agentAccessStatus?.encryptionReady) return;
-    const repairInvalidConfig = agentConfigStatuses[agent]?.error === "INVALID_JSON";
+    const repairInvalidConfig = ["INVALID_JSON", "INVALID_TOML"].includes(agentConfigStatuses[agent]?.error || "");
     if (repairInvalidConfig && !window.confirm("StoryAI sẽ sao lưu file cấu hình lỗi rồi tạo lại cấu hình StoryAI MCP. Các MCP khác cần khôi phục từ bản sao lưu. Tiếp tục?")) return;
     setAgentAccessBusy(true);
     setAgentAccessNotice(null);
@@ -305,14 +305,14 @@ export function SettingsView() {
         <div className="agent-connect-grid">
           {codingAgents.map((agent) => {
             const status = agentConfigStatuses[agent.id];
-            const needsFix = status?.error === "INVALID_JSON";
+            const needsFix = ["INVALID_JSON", "INVALID_TOML"].includes(status?.error || "");
             const cliAvailable = codingAgentCliStatuses.find((item) => item.id === agent.id)?.available ?? false;
             const cliMissing = !agentAccessLoading && codingAgentCliStatuses.length > 0 && !cliAvailable;
             const statusLabel = agentAccessLoading ? "Đang kiểm tra" : needsFix ? "Cần sửa cấu hình" : cliMissing ? "CLI chưa cài" : status?.needsUpdate ? "Cần cập nhật" : status?.installed ? "Đã cài" : "Chưa kết nối";
             const statusClass = needsFix || (!cliMissing && status?.needsUpdate) ? "needs-fix" : status?.installed && !cliMissing ? "connected" : "disconnected";
             return <article className="agent-connect-card" key={agent.id}>
               <div className="agent-connect-card-heading"><strong>{agent.label}</strong><span className={statusClass}>{statusLabel}</span></div>
-              <small>{status?.error === "CONFIG_ACCESS_FAILED" ? "Không đọc được file cấu hình. Kiểm tra quyền truy cập của tài khoản chạy StoryAI." : needsFix ? "File JSON bị lỗi. Nhấn bên dưới để sao lưu và tạo lại cấu hình." : cliMissing ? "Cài CLI này trên máy chạy StoryAI rồi tải lại trạng thái." : status?.needsUpdate ? "Cấu hình MCP cũ hoặc token kết nối cần được cập nhật." : status?.installed ? "Đã tìm thấy cấu hình StoryAI MCP trong CLI." : "Cài StoryAI MCP vào CLI này để truy cập dự án và công cụ StoryAI."}</small>
+              <small>{status?.error === "CONFIG_ACCESS_FAILED" ? "Không đọc được file cấu hình. Kiểm tra quyền truy cập của tài khoản chạy StoryAI." : needsFix ? "File cấu hình bị lỗi. Nhấn bên dưới để sao lưu và tạo lại cấu hình." : cliMissing ? "Cài CLI này trên máy chạy StoryAI rồi tải lại trạng thái." : status?.needsUpdate ? "Cấu hình MCP cũ hoặc token kết nối cần được cập nhật." : status?.installed ? "Đã tìm thấy cấu hình StoryAI MCP trong CLI." : "Cài StoryAI MCP vào CLI này để truy cập dự án và công cụ StoryAI."}</small>
               <code className="agent-config-path">{status?.configPath || agent.configName}</code>
               <button className={status?.installed && !status?.needsUpdate ? "secondary-button compact" : "primary-button compact"} type="button"
                 onClick={() => void installAgent(agent.id)} disabled={!agentAccessStatus?.encryptionReady || agentAccessLoading || agentAccessBusy || status?.error === "CONFIG_ACCESS_FAILED" || cliMissing}>
