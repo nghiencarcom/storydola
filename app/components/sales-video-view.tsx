@@ -24,6 +24,7 @@ type ManualUgcJobData = {
   segments: ManualUgcPromptSegment[];
   script: string;
 };
+type SalesVideoReviewAction = { disabled: boolean; busy: boolean; activate: () => void };
 const labels = { processing: "Đang xử lý", draft: "Chờ bạn duyệt", ready: "Hoàn tất", failed: "Thất bại" };
 function projectStatusLabel(project: SalesVideoProject) {
   if (project.status !== "processing") return labels[project.status];
@@ -469,6 +470,7 @@ export function SalesVideoView() {
   const [deleteMessage, setDeleteMessage] = useState("");
   const [deletingProjects, setDeletingProjects] = useState(false);
   const [recreatingProjectId, setRecreatingProjectId] = useState("");
+  const [reviewAction, setReviewAction] = useState<SalesVideoReviewAction | null>(null);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -699,6 +701,10 @@ export function SalesVideoView() {
         <h1>{showComposer ? "Tạo dự án video bán hàng" : route.projectId ? selected?.title || "Dự án video bán hàng" : "Video bán hàng"}</h1>
       </div>
       {route.projectId && <div className="sales-video-page-heading-actions">
+        {selected?.status === "draft" && selected.phase === "review" && <button type="button" className="primary-button"
+          onClick={() => reviewAction?.activate()} disabled={!reviewAction || reviewAction.disabled} aria-busy={reviewAction?.busy || false}>
+          {reviewAction?.busy ? "Đang gửi tạo video…" : "Duyệt nội dung và tạo video"}
+        </button>}
         {selected && selectedProductTemplate && <button type="button" className="secondary-button"
           onClick={() => void recreateProject(selected, selectedProductTemplate.id)}
           disabled={selected.status === "processing" || Boolean(recreatingProjectId)}>
@@ -754,6 +760,7 @@ export function SalesVideoView() {
     {route.projectId && !projects ? <p role="status">Đang tải dự án…</p> : selected ? (
       <SalesVideoProjectDetail key={`${selected.id}-${selected.phase || selected.status}`} project={selected} videoUrl={videoUrl}
         promptMaxLength={selectedPromptMaxLength}
+        onReviewActionChange={setReviewAction}
         onUpdated={(next) => setProjects((items) => (items || []).map((item) => item.id === next.id ? next : item))} />
     ) : route.projectId && projects ? (
       <p role="status">Không tìm thấy dự án.</p>
@@ -778,10 +785,11 @@ export function SalesVideoView() {
   </>;
 }
 
-function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, onUpdated }: {
+function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, onReviewActionChange, onUpdated }: {
   project: SalesVideoProject;
   videoUrl: string;
   promptMaxLength: number;
+  onReviewActionChange: (action: SalesVideoReviewAction | null) => void;
   onUpdated: (project: SalesVideoProject) => void;
 }) {
   const details = project.details;
@@ -792,6 +800,7 @@ function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, onUpdated
   const [error, setError] = useState("");
   const timer = useRef<number | undefined>(undefined);
   const pendingSave = useRef<Promise<void> | null>(null);
+  const generateAction = useRef<() => void>(() => undefined);
   const duration = details?.duration || 15;
   const language = details?.language || "Tiếng Việt";
   const script = scriptSegments.map((segment) => segment.script).filter(Boolean).join("\n");
@@ -855,6 +864,22 @@ function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, onUpdated
     }
   }
 
+  generateAction.current = () => { void generate(); };
+
+  useEffect(() => {
+    if (project.status === "draft" && project.phase === "review" && details) {
+      onReviewActionChange({
+        disabled: generating || saveState === "error" || tooLong || !promptsReady,
+        busy: generating,
+        activate: () => generateAction.current(),
+      });
+    } else {
+      onReviewActionChange(null);
+    }
+  }, [details, generating, onReviewActionChange, project.phase, project.status, promptsReady, saveState, tooLong]);
+
+  useEffect(() => () => onReviewActionChange(null), [onReviewActionChange]);
+
   return <section className="form-section panel-card sales-project-detail">
     <div className="sales-project-status-row">
       <span className={`sales-project-status is-${project.status}`} role="status">{projectStatusLabel(project)}</span>
@@ -915,9 +940,6 @@ function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, onUpdated
         </label>)}
       </div>
       {error && <p role="alert" className="sales-form-error">{error}</p>}
-      <button type="button" className="primary-button" disabled={generating || saveState === "error" || tooLong || !promptsReady} onClick={() => void generate()}>
-        {generating ? "Đang gửi tạo video…" : "Duyệt nội dung và tạo video"}
-      </button>
     </div>}
     {project.status === "ready" && <>
       <video key={videoUrl} controls playsInline preload="metadata" src={videoUrl} />
