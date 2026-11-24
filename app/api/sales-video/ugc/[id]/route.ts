@@ -138,6 +138,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json({ message: "Job chưa có bản nháp sẵn sàng để tạo video." }, { status: 409 });
   }
   const details = project.details;
+  if (details.voiceRegeneration?.status === "processing") {
+    return NextResponse.json({ message: "Hãy đợi tạo lại voice hoàn tất trước khi tạo lại clip." }, { status: 409 });
+  }
   const parsed = editSchema.safeParse(body);
   const parsedData = parsed.success ? parsed.data : undefined;
   if (!retrySegment && !parsedData) {

@@ -2,10 +2,10 @@ import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { getMaiVideoApiBaseUrl, getMaiVideoApiKey } from "./maivideo-api-keys";
 
-export async function synthesizeOmniVoice(text: string, voiceId: string, language: string, outputPath: string) {
+export async function synthesizeOmniVoice(text: string, voiceId: string, language: string, outputPath: string, userId?: string, signal?: AbortSignal) {
   const baseUrl = getMaiVideoApiBaseUrl();
   const timeoutMs = Math.max(30_000, Math.min(7_200_000, Number(process.env.STORYAI_TTS_TIMEOUT_MS) || 7_200_000));
-  const apiKey = await getMaiVideoApiKey();
+  const apiKey = await getMaiVideoApiKey(userId);
   if (!apiKey) throw new Error("Chưa lưu API key MaiVideo. Hãy thêm key trong Cài đặt để tạo voice.");
   const normalizedText = text.trim();
   if (!normalizedText) throw new Error("Nội dung tạo voice đang trống.");
@@ -35,7 +35,7 @@ export async function synthesizeOmniVoice(text: string, voiceId: string, languag
         pause_comma: 150,
         pause_period: 400,
       }),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: signal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), signal]) : AbortSignal.timeout(timeoutMs),
     });
   } catch (cause) {
     if (cause instanceof Error && cause.name === "TimeoutError") throw new Error("Tạo TTS quá thời gian chờ. Hãy thử lại.");
@@ -58,7 +58,7 @@ export async function synthesizeOmniVoice(text: string, voiceId: string, languag
 
   const audioResponse = await fetch(resolvedAudioUrl, {
     headers: { Accept: "audio/wav", "X-API-Key": apiKey },
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: signal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), signal]) : AbortSignal.timeout(timeoutMs),
   });
   if (!audioResponse.ok) throw new Error(`Không tải được audio MaiVideo (HTTP ${audioResponse.status}).`);
 

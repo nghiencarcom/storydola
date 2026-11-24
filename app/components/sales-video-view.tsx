@@ -14,12 +14,17 @@ import { clearSalesVideoDraft, loadSalesVideoDraft, saveSalesVideoDraftFields, s
 import type { VideoGenerationModelOption } from "../lib/project-types";
 import { isVideoOffPeakRequired, SALES_VIDEO_GATEWAY_VIDEO_MODEL_OPTIONS } from "../lib/media-generation-settings";
 import type { SalesVideoProject } from "../lib/sales-video-storage";
+import type { OmniVoiceOption } from "../lib/omnivoice";
+import { voiceLanguageLabel } from "../lib/omnivoice";
 import { SalesVideoTemplateArtwork } from "./sales-video-template-artwork";
 import { Icon } from "./ui-icon";
 
 type Access = { maiVideo: boolean; seedanceGateway: boolean; pixverse: boolean; voice: boolean; draftKey: string; codingAgent: { id: string; label: string; model: string; saved: boolean } | null };
 type SalesVideoLibraryImage = { id: string; name: string; fileName: string; previewUrl: string; source: string };
-type ManualUgcPromptSegment = { start: number; duration: number; prompt: string };
+type ManualUgcPromptSegment = {
+  start: number; duration: number; prompt: string;
+  video_overlays?: Array<{ start: number; end: number; text: string; position?: "top" | "center" | "bottom" }>;
+};
 type ManualUgcJobData = {
   segments: ManualUgcPromptSegment[];
   script: string;
@@ -27,8 +32,12 @@ type ManualUgcJobData = {
 type SalesVideoReviewAction = { disabled: boolean; busy: boolean; activate: () => void };
 const labels = { processing: "Đang xử lý", draft: "Chờ bạn duyệt", ready: "Hoàn tất", failed: "Thất bại" };
 function projectStatusLabel(project: SalesVideoProject) {
+  if (project.details?.voiceRegeneration?.status === "processing") return "Đang tạo lại voice";
   if (project.status !== "processing") return labels[project.status];
   return project.phase === "writing" ? "Code Agent đang soạn" : "Model đang tạo video";
+}
+function isSalesVideoProjectBusy(project: SalesVideoProject) {
+  return project.status === "processing" || project.details?.voiceRegeneration?.status === "processing";
 }
 const salesVideoProductFields = [
   { name: "presenter", label: "Ảnh nhân vật", kind: "image" },
@@ -509,7 +518,7 @@ export function SalesVideoView() {
     };
   }, [refresh]);
 
-  const pending = projects?.some((project) => project.status === "processing") ?? false;
+  const pending = projects?.some(isSalesVideoProjectBusy) ?? false;
   useEffect(() => {
     if (!pending) return;
     const controller = new AbortController();
@@ -524,7 +533,7 @@ export function SalesVideoView() {
 
   useEffect(() => {
     if (!projects) return;
-    const deletableIds = new Set(projects.filter((project) => project.status !== "processing").map((project) => project.id));
+    const deletableIds = new Set(projects.filter((project) => !isSalesVideoProjectBusy(project)).map((project) => project.id));
     setSelectedProjectIds((current) => {
       const next = new Set([...current].filter((id) => deletableIds.has(id)));
       return next.size === current.size ? current : next;
@@ -587,9 +596,9 @@ export function SalesVideoView() {
     setRoute({ templateId, similarProjectId: project.id });
   }
 
-  const deletableProjects = (projects || []).filter((project) => project.status !== "processing");
+  const deletableProjects = (projects || []).filter((project) => !isSalesVideoProjectBusy(project));
   const selectedProjects = (projects || []).filter((project) => selectedProjectIds.has(project.id));
-  const deletableSelectedProjects = selectedProjects.filter((project) => project.status !== "processing");
+  const deletableSelectedProjects = selectedProjects.filter((project) => !isSalesVideoProjectBusy(project));
   const allDeletableProjectsSelected = deletableProjects.length > 0
     && deletableProjects.every((project) => selectedProjectIds.has(project.id));
 
@@ -696,7 +705,7 @@ export function SalesVideoView() {
             const selectedProject = selectedProjectIds.has(project.id);
             return <article key={project.id} className={`panel-card sales-project-card${selectedProject ? " is-selected" : ""}`}>
               <label className="sales-project-select">
-                <input type="checkbox" checked={selectedProject} disabled={deletingProjects || project.status === "processing"} onChange={() => toggleProjectSelection(project.id)} aria-label={`Chọn dự án ${project.title}`} />
+                <input type="checkbox" checked={selectedProject} disabled={deletingProjects || isSalesVideoProjectBusy(project)} onChange={() => toggleProjectSelection(project.id)} aria-label={`Chọn dự án ${project.title}`} />
               </label>
               <a href={`/sales-video?project=${project.id}`} onClick={(event) => {
                 if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -718,6 +727,7 @@ export function SalesVideoView() {
     {route.projectId && !projects ? <p role="status">Đang tải dự án…</p> : selected ? (
       <SalesVideoProjectDetail key={`${selected.id}-${selected.phase || selected.status}`} project={selected} videoUrl={videoUrl}
         promptMaxLength={selectedPromptMaxLength}
+        maiVideoConfigured={Boolean(access?.maiVideo)}
         onReviewActionChange={setReviewAction}
         onUpdated={(next) => setProjects((items) => (items || []).map((item) => item.id === next.id ? next : item))} />
     ) : route.projectId && projects ? (
@@ -743,10 +753,11 @@ export function SalesVideoView() {
   </>;
 }
 
-function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, onReviewActionChange, onUpdated }: {
+function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, maiVideoConfigured, onReviewActionChange, onUpdated }: {
   project: SalesVideoProject;
   videoUrl: string;
   promptMaxLength: number;
+  maiVideoConfigured: boolean;
   onReviewActionChange: (action: SalesVideoReviewAction | null) => void;
   onUpdated: (project: SalesVideoProject) => void;
 }) {
@@ -758,13 +769,25 @@ function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, onReviewA
   const [retryingClip, setRetryingClip] = useState<number | null>(null);
   const [stitching, setStitching] = useState(false);
   const [error, setError] = useState("");
+  const [voiceDialogOpen, setVoiceDialogOpen] = useState(false);
+  const [voiceLoading, setVoiceLoading] = useState(false);
+  const [voiceSubmitting, setVoiceSubmitting] = useState(false);
+  const [voiceError, setVoiceError] = useState("");
+  const [voiceOptions, setVoiceOptions] = useState<OmniVoiceOption[]>([]);
+  const [voiceId, setVoiceId] = useState("");
   const timer = useRef<number | undefined>(undefined);
   const pendingSave = useRef<Promise<void> | null>(null);
   const generateAction = useRef<() => void>(() => undefined);
   const duration = details?.duration || 15;
   const language = details?.language || "Tiếng Việt";
-  const textOverlayPositionLabel = project.postProcessing?.textOverlay?.position === "top" ? "phía trên"
-    : project.postProcessing?.textOverlay?.position === "center" ? "ở giữa" : "phía dưới";
+  const voiceJob = details?.voiceRegeneration;
+  const videoRevision = voiceJob?.updatedAt || project.createdAt;
+  const finalVideoUrl = `${videoUrl}?v=${encodeURIComponent(videoRevision)}`;
+  const postProcessingSummary = [
+    project.postProcessing?.textOverlay?.cues?.length ? `Text/Emoji từ ${project.postProcessing.textOverlay.cues.length} cue Video overlay` : "",
+    project.postProcessing?.movingWatermark?.enabled ? `watermark di chuyển “${project.postProcessing.movingWatermark.text}”` : "",
+    project.postProcessing?.logo?.enabled ? "logo" : "",
+  ].filter(Boolean).join(" · ");
   const script = scriptSegments.map((segment) => segment.script).filter(Boolean).join("\n");
   const words = salesVideoWordCount(script, language);
   const maxWords = salesVideoMaxWordCount(duration, language);
@@ -794,7 +817,59 @@ function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, onReviewA
     error: undefined,
   });
   const allClipsReady = videoSegmentResults.length > 0 && videoSegmentResults.every((segment) => segment.status === "ready");
-  const canRegenerateClips = Boolean(details?.references?.presenter) && (project.status === "ready" || project.status === "failed");
+  const canRegenerateClips = Boolean(details?.references?.presenter) && (project.status === "ready" || project.status === "failed")
+    && voiceJob?.status !== "processing";
+
+  async function openVoiceDialog() {
+    setVoiceDialogOpen(true);
+    setVoiceError("");
+    if (voiceOptions.length) return;
+    setVoiceLoading(true);
+    try {
+      const response = await fetch("/api/omnivoice/voices", { cache: "no-store" });
+      const result = await response.json().catch(() => null);
+      if (!response.ok || !Array.isArray(result?.voices)) throw new Error(result?.message || "Không tải được danh sách voice MaiVideo.");
+      const loaded = result.voices as OmniVoiceOption[];
+      setVoiceOptions(loaded);
+      const languageCode = /việt|vietnam/i.test(language) ? "vi"
+        : /english|tiếng anh/i.test(language) ? "en"
+          : /thái|thai/i.test(language) ? "th"
+            : /nhật|japanese/i.test(language) ? "ja"
+              : /hàn|korean/i.test(language) ? "ko"
+                : /trung|chinese/i.test(language) ? "zh"
+                  : /pháp|french/i.test(language) ? "fr"
+                    : /đức|german/i.test(language) ? "de"
+                      : /tây ban nha|spanish/i.test(language) ? "es" : "";
+      const defaultVoice = loaded.find((voice) => voice.id === voiceJob?.voiceId)
+        || loaded.find((voice) => voice.language.toLowerCase().replace(/_/g, "-").split("-")[0] === languageCode)
+        || loaded[0];
+      setVoiceId(defaultVoice?.id || "");
+    } catch (cause) {
+      setVoiceError(cause instanceof Error ? cause.message : "Không tải được danh sách voice MaiVideo.");
+    } finally {
+      setVoiceLoading(false);
+    }
+  }
+
+  async function regenerateVoice(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!voiceId || voiceSubmitting) return;
+    setVoiceSubmitting(true);
+    setVoiceError("");
+    try {
+      const response = await fetch(`/api/sales-video/${project.id}/voice`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ voiceId }),
+      });
+      const result = await response.json().catch(() => null);
+      if (!response.ok || !result?.project?.id) throw new Error(result?.message || "Không gửi được yêu cầu tạo voice.");
+      setVoiceDialogOpen(false);
+      onUpdated(result.project as SalesVideoProject);
+    } catch (cause) {
+      setVoiceError(cause instanceof Error ? cause.message : "Không gửi được yêu cầu tạo voice.");
+    } finally {
+      setVoiceSubmitting(false);
+    }
+  }
 
   const persist = useCallback(async () => {
     setSaveState("saving");
@@ -861,7 +936,7 @@ function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, onReviewA
   }
 
   async function restitchVideo() {
-    if (!allClipsReady || stitching || retryingClip !== null) return;
+    if (!allClipsReady || stitching || retryingClip !== null || voiceJob?.status === "processing") return;
     setStitching(true);
     setError("");
     try {
@@ -899,9 +974,10 @@ function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, onReviewA
       <a className="secondary-button compact" href="/sales-video#sales-template-gallery">Tạo job khác</a>
     </div>
     {project.error && <p role="alert">{project.error}</p>}
-    {project.postProcessing?.textOverlay && <p className="sales-project-post-processing-note">
-      Text/Emoji hậu kỳ: <strong>{project.postProcessing.textOverlay.text}</strong> · vị trí {textOverlayPositionLabel} · được chèn bằng FFmpeg sau khi ghép.
-    </p>}
+    {postProcessingSummary && <p className="sales-project-post-processing-note">Hậu kỳ FFmpeg: {postProcessingSummary}.</p>}
+    {voiceJob?.status === "processing" && <p className="sales-project-post-processing-note" role="status">Đang tạo voice {voiceJob.voiceName} từ SRT; video và các lớp FFmpeg sẽ được giữ nguyên.</p>}
+    {voiceJob?.status === "ready" && <p className="sales-project-post-processing-note" role="status">Đã tạo lại voice bằng MaiVideo · {voiceJob.voiceName}.</p>}
+    {voiceJob?.status === "failed" && <p className="sales-form-error" role="alert">Tạo lại voice thất bại: {voiceJob.error || "Hãy thử lại."}</p>}
     {project.status === "processing" && project.phase === "writing" && <div className="sales-project-waiting" role="status">
       <strong>Code Agent đang chuẩn bị prompt và lời thoại</strong>
     </div>}
@@ -958,13 +1034,20 @@ function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, onReviewA
     </div>}
     {project.status === "ready" && <section className="sales-project-stitched-video">
       <div className="sales-project-video-heading"><div><h2>Video đã ghép</h2><p>Bản video đầy đủ sau khi ghép các clip.</p></div>
-        <a className="secondary-button compact" href={videoUrl + "?download=1"}>Tải MP4</a>
+        <div className="sales-project-video-actions">
+          <a className="secondary-button compact" href={`${videoUrl}?download=1&v=${encodeURIComponent(videoRevision)}`}>Tải MP4</a>
+          {details?.audio && details.subtitleSrt && <button type="button" className="secondary-button compact" onClick={() => void openVoiceDialog()}
+            disabled={!maiVideoConfigured || voiceJob?.status === "processing" || stitching || !details.subtitleSrt.trim()}
+            title={!maiVideoConfigured ? "Cấu hình MaiVideo API key trong Cài đặt để tạo lại voice." : undefined}>
+            {voiceJob?.status === "processing" ? "Đang tạo voice…" : voiceJob?.status === "failed" ? "Thử tạo lại voice" : "Tạo lại voice"}
+          </button>}
+        </div>
       </div>
-      <video className="sales-project-final-video" key={videoUrl} controls playsInline preload="metadata" src={videoUrl} />
+      <video className="sales-project-final-video" key={finalVideoUrl} controls playsInline preload="metadata" src={finalVideoUrl} />
     </section>}
     {project.status !== "draft" && videoSegments.length > 0 && <section className="sales-project-clips">
       <div className="sales-project-video-heading"><div><h2>Các clip 15 giây</h2><p>Mỗi clip có thể xem riêng và tạo lại khi cần.</p></div>
-        {details?.needsStitching && <button type="button" className="primary-button" onClick={() => void restitchVideo()} disabled={!allClipsReady || stitching || retryingClip !== null || project.status === "processing"}>
+        {details?.needsStitching && <button type="button" className="primary-button" onClick={() => void restitchVideo()} disabled={!allClipsReady || stitching || retryingClip !== null || project.status === "processing" || voiceJob?.status === "processing"}>
           {stitching ? "Đang ghép video…" : "Ghép video lại"}
         </button>}
       </div>
@@ -981,7 +1064,7 @@ function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, onReviewA
               {result.error && <p className="sales-project-clip-message" role="status">{result.error}</p>}
               <a className="secondary-button compact" href={`${clipUrl}?download=1`}>Tải clip {index + 1}</a>
             </> : <p className="sales-project-clip-message">{result.error || (result.status === "processing" ? "Model đang tạo lại clip này." : result.status === "failed" ? "Clip này chưa tạo thành công." : project.status === "processing" ? "Clip đang chờ lượt tạo." : "Chưa có file clip.")}</p>}
-            {canRegenerateClips && result.status !== "processing" && <button type="button" className="secondary-button" onClick={() => void regenerateClip(index)} disabled={retryingClip !== null || stitching}>
+            {canRegenerateClips && result.status !== "processing" && <button type="button" className="secondary-button" onClick={() => void regenerateClip(index)} disabled={retryingClip !== null || stitching || voiceJob?.status === "processing"}>
               {retryingClip === index ? "Đang gửi…" : "Tạo lại clip 15s"}
             </button>}
           </article>;
@@ -990,6 +1073,12 @@ function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, onReviewA
       {error && <p role="alert" className="sales-form-error">{error}</p>}
     </section>}
     {project.status === "ready" && <>
+      {project.postProcessing?.textOverlay?.cues?.length ? <details className="sales-project-output-details">
+        <summary>Video overlay được chèn bằng FFmpeg</summary>
+        <ol className="sales-project-overlay-cues">{project.postProcessing.textOverlay.cues.map((cue, index) => <li key={`${cue.start}-${index}`}>
+          <span>{cue.start.toFixed(1)}–{cue.end.toFixed(1)}s</span><strong>{cue.text}</strong><small>{cue.position || "bottom"}</small>
+        </li>)}</ol>
+      </details> : null}
       {(details?.promptSegments?.length || details?.generatedSegments?.length || details?.prompt) && <details className="sales-project-output-details"><summary>Xem prompt và lời thoại đã tạo</summary>
         <h3>Prompt gửi riêng cho từng clip</h3><div className="sales-project-segment-prompts">
           {(details.generatedSegments?.length ? details.generatedSegments : details.promptSegments?.length ? details.promptSegments : [{ start: 0, duration, prompt: details.prompt || "" }]).map((segment, index) => <details key={`${segment.start}-${index}`}>
@@ -1006,6 +1095,27 @@ function SalesVideoProjectDetail({ project, videoUrl, promptMaxLength, onReviewA
     {project.status === "failed" && (details?.prompt || details?.promptSegments?.length) && <details className="sales-project-output-details"><summary>Xem bản nháp và ảnh tham chiếu</summary>
       <h3>Prompt clip</h3>{(details.promptSegments?.length ? details.promptSegments : [{ start: 0, duration, prompt: details.prompt || "" }]).map((segment, index) => <details key={`${segment.start}-${index}`}><summary>Clip {index + 1} · giây {segment.start}–{segment.start + segment.duration}</summary><pre>{segment.prompt}</pre></details>)}<h3>Lời thoại</h3><pre>{details.script}</pre>
     </details>}
+    {voiceDialogOpen && <div className="sales-video-voice-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !voiceSubmitting) setVoiceDialogOpen(false); }}>
+      <form className="sales-video-voice-dialog" role="dialog" aria-modal="true" aria-labelledby="sales-video-voice-title" onSubmit={(event) => void regenerateVoice(event)}>
+        <header><div><span className="section-kicker">MAIVIDEO · SRT TO AUDIO</span><h2 id="sales-video-voice-title">Tạo lại voice</h2></div>
+          <button type="button" aria-label="Đóng" onClick={() => setVoiceDialogOpen(false)} disabled={voiceSubmitting}>×</button></header>
+        <p>Tạo giọng đọc mới từ phụ đề SRT hiện có, thay audio trong MP4 và giữ nguyên hình ảnh, Text/Emoji, watermark, logo.</p>
+        <label className="form-field"><span>Giọng đọc</span>
+          <select value={voiceId} onChange={(event) => setVoiceId(event.target.value)} disabled={voiceLoading || voiceSubmitting || !voiceOptions.length}>
+            {voiceLoading ? <option value="">Đang tải danh sách giọng…</option>
+              : voiceOptions.length ? voiceOptions.map((voice) => <option key={voice.id} value={voice.id}>
+                {voice.name} · {voiceLanguageLabel(voice.language)}{voice.gender ? ` · ${voice.gender}` : ""}
+              </option>) : <option value="">Không có giọng khả dụng</option>}
+          </select>
+        </label>
+        {!maiVideoConfigured && <small>Cấu hình MaiVideo API key trong Cài đặt trước khi tạo lại voice.</small>}
+        {voiceError && <p role="alert" className="sales-form-error">{voiceError}</p>}
+        <footer><button type="button" className="secondary-button" onClick={() => setVoiceDialogOpen(false)} disabled={voiceSubmitting}>Hủy</button>
+          <button type="submit" className="primary-button" disabled={!maiVideoConfigured || voiceLoading || voiceSubmitting || !voiceId}>
+            {voiceSubmitting ? "Đang gửi…" : "Tạo voice từ SRT"}
+          </button></footer>
+      </form>
+    </div>}
   </section>;
 }
 
@@ -1022,7 +1132,7 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
   const selectedTemplate = salesVideoTemplates.find(({ id }) => id === templateId);
   const creative = salesVideoCreativeTemplates.find(({ id }) => id === templateId);
   const mediaFields = creative?.files ?? salesVideoProductFields;
-  const mediaFieldNames = creative ? mediaFields.map(({ name }) => name) : ["presenter", "image", ...salesVideoProductImageFieldNames];
+  const mediaFieldNames = useMemo(() => creative ? mediaFields.map(({ name }) => name) : ["presenter", "image", ...salesVideoProductImageFieldNames, "watermarkLogo"], [creative, mediaFields]);
   const poseImageFields = creative && (creative.workflow === "poses" || creative.workflow === "narration")
     ? creative.files.filter((field) => field.kind === "image")
     : [];
@@ -1045,8 +1155,9 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
   const [script, setScript] = useState("");
   const [productUrl, setProductUrl] = useState("");
   const [postProcessTextOverlayEnabled, setPostProcessTextOverlayEnabled] = useState(false);
-  const [postProcessTextOverlayText, setPostProcessTextOverlayText] = useState("");
-  const [postProcessTextOverlayPosition, setPostProcessTextOverlayPosition] = useState<"top" | "center" | "bottom">("bottom");
+  const [postProcessMovingWatermarkEnabled, setPostProcessMovingWatermarkEnabled] = useState(false);
+  const [postProcessWatermarkText, setPostProcessWatermarkText] = useState("StoryAI");
+  const [postProcessLogoEnabled, setPostProcessLogoEnabled] = useState(false);
   const [claimCategory, setClaimCategory] = useState<string>(templateId === "supplements" ? "health" : "general");
   const [queuedProject, setQueuedProject] = useState<SalesVideoProject>();
   const [productPromptOverride, setProductPromptOverride] = useState("");
@@ -1307,8 +1418,15 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
     const parsedSegments = importedSegments.flatMap((item): ManualUgcPromptSegment[] => {
       if (!item || typeof item !== "object") return [];
       const segment = item as Record<string, unknown>;
+      const overlays = Array.isArray(segment.video_overlays) ? segment.video_overlays.flatMap((item) => {
+        if (!item || typeof item !== "object") return [];
+        const cue = item as Record<string, unknown>;
+        if (typeof cue.start !== "number" || typeof cue.end !== "number" || typeof cue.text !== "string" || !cue.text.trim()) return [];
+        const position: "top" | "center" | "bottom" = cue.position === "top" || cue.position === "center" || cue.position === "bottom" ? cue.position : "bottom";
+        return [{ start: cue.start, end: cue.end, text: cue.text.trim(), position }];
+      }) : [];
       return Number.isInteger(segment.start) && Number.isInteger(segment.duration) && typeof segment.prompt === "string" && segment.prompt.trim()
-        ? [{ start: segment.start as number, duration: segment.duration as number, prompt: segment.prompt.trim() }]
+        ? [{ start: segment.start as number, duration: segment.duration as number, prompt: segment.prompt.trim(), video_overlays: overlays }]
         : [];
     });
     const importedScript = getString(imported, "script") ?? getString(importedCreative, "script") ?? "";
@@ -1342,10 +1460,9 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
       if (typeof saved.script === "string") setScript(saved.script);
       if (typeof saved.productUrl === "string") setProductUrl(saved.productUrl);
       if (typeof saved.postProcessTextOverlayEnabled === "boolean") setPostProcessTextOverlayEnabled(saved.postProcessTextOverlayEnabled);
-      if (typeof saved.postProcessTextOverlayText === "string") setPostProcessTextOverlayText(saved.postProcessTextOverlayText);
-      if (saved.postProcessTextOverlayPosition === "top" || saved.postProcessTextOverlayPosition === "center" || saved.postProcessTextOverlayPosition === "bottom") {
-        setPostProcessTextOverlayPosition(saved.postProcessTextOverlayPosition);
-      }
+      if (typeof saved.postProcessMovingWatermarkEnabled === "boolean") setPostProcessMovingWatermarkEnabled(saved.postProcessMovingWatermarkEnabled);
+      if (typeof saved.postProcessWatermarkText === "string") setPostProcessWatermarkText(saved.postProcessWatermarkText);
+      if (typeof saved.postProcessLogoEnabled === "boolean") setPostProcessLogoEnabled(saved.postProcessLogoEnabled);
       if (typeof saved.claimCategory === "string" && salesVideoClaimCategories.some(({ id }) => id === saved.claimCategory)) setClaimCategory(saved.claimCategory);
       if (typeof saved.language === "string" && salesVideoLanguages.includes(saved.language as typeof salesVideoLanguages[number])) setLanguage(saved.language);
       if (typeof saved.duration === "number") setDuration(saved.duration);
@@ -1400,9 +1517,10 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
         setUserExperience(details?.userExperience || "");
         setScript(details?.script || "");
         setProductUrl(details?.productUrl || "");
-        setPostProcessTextOverlayEnabled(Boolean(similarProject.postProcessing?.textOverlay));
-        setPostProcessTextOverlayText(similarProject.postProcessing?.textOverlay?.text || "");
-        setPostProcessTextOverlayPosition(similarProject.postProcessing?.textOverlay?.position || "bottom");
+        setPostProcessTextOverlayEnabled(Boolean(similarProject.postProcessing?.textOverlay?.enabled || similarProject.postProcessing?.textOverlay?.cues?.length || similarProject.postProcessing?.textOverlay?.text));
+        setPostProcessMovingWatermarkEnabled(Boolean(similarProject.postProcessing?.movingWatermark?.enabled));
+        setPostProcessWatermarkText(similarProject.postProcessing?.movingWatermark?.text || "StoryAI");
+        setPostProcessLogoEnabled(Boolean(similarProject.postProcessing?.logo?.enabled));
         setClaimCategory(salesVideoClaimCategories.find(({ id }) => id === details?.claimCategory)?.id || fallbackClaimCategory);
         setLanguage(salesVideoLanguages.find((value) => value === details?.language) || salesVideoLanguages[0]);
         setDuration(typeof details?.duration === "number" && Number.isInteger(details.duration) ? details.duration : 15);
@@ -1467,13 +1585,13 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
         ratio, prompt, product, facts, userExperience,
         painPoint, heroBenefit, minorFlaw, targetAudience, hookStyle,
         script, productUrl,
-        postProcessTextOverlayEnabled, postProcessTextOverlayText, postProcessTextOverlayPosition,
+        postProcessTextOverlayEnabled, postProcessMovingWatermarkEnabled, postProcessWatermarkText, postProcessLogoEnabled,
         claimCategory: selectedTemplate?.id === "supplements" ? "health" : claimCategory, language, duration, sourceStart,
         productPromptOverride, productPromptEdited, savedFiles: JSON.stringify(savedFiles),
       });
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [draftReady, draftOwner, draftTemplateId, busy, selectedModel, ratio, prompt, product, facts, painPoint, heroBenefit, minorFlaw, targetAudience, hookStyle, userExperience, script, productUrl, postProcessTextOverlayEnabled, postProcessTextOverlayText, postProcessTextOverlayPosition, claimCategory, language, duration, sourceStart, productPromptOverride, productPromptEdited, files, mediaFields, selectedTemplate?.id]);
+  }, [draftReady, draftOwner, draftTemplateId, busy, selectedModel, ratio, prompt, product, facts, painPoint, heroBenefit, minorFlaw, targetAudience, hookStyle, userExperience, script, productUrl, postProcessTextOverlayEnabled, postProcessMovingWatermarkEnabled, postProcessWatermarkText, postProcessLogoEnabled, claimCategory, language, duration, sourceStart, productPromptOverride, productPromptEdited, files, mediaFieldNames, mediaFields, selectedTemplate?.id]);
 
   function updateFile(name: string, file?: File, kind?: keyof typeof salesVideoFileTypes) {
     if (file && kind) {
@@ -1714,7 +1832,8 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
     && model?.available && durationOptions.length && !scriptTooLong && !productAnalysisBusy
     && (!selectedTemplate || Boolean(access?.codingAgent) || manualPromptsReady) && (creative?.workflow !== "narration" || access?.voice)
     && (!selectedTemplate || !productImagesExceedModelLimit)
-    && (!selectedTemplate || !postProcessTextOverlayEnabled || Boolean(postProcessTextOverlayText.trim())));
+    && (!selectedTemplate || !postProcessLogoEnabled || Boolean(files.watermarkLogo?.size))
+    && (!selectedTemplate || !postProcessWatermarkText.trim() || postProcessWatermarkText.length <= 48));
   const example = salesVideoTextExamples[templateId];
 
   async function generate(event: FormEvent<HTMLFormElement>) {
@@ -1739,13 +1858,11 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
       form.set("claimCategory", selectedTemplate.id === "supplements" ? "health" : claimCategory);
       form.set("prompt", "");
       form.set("postProcessTextOverlayEnabled", postProcessTextOverlayEnabled ? "1" : "0");
-      if (postProcessTextOverlayEnabled) {
-        form.set("postProcessTextOverlayText", postProcessTextOverlayText.trim());
-        form.set("postProcessTextOverlayPosition", postProcessTextOverlayPosition);
-      } else {
-        form.delete("postProcessTextOverlayText");
-        form.delete("postProcessTextOverlayPosition");
-      }
+      form.set("postProcessMovingWatermarkEnabled", postProcessMovingWatermarkEnabled ? "1" : "0");
+      form.set("postProcessWatermarkText", postProcessWatermarkText.trim());
+      form.set("postProcessLogoEnabled", postProcessLogoEnabled ? "1" : "0");
+      if (postProcessLogoEnabled && files.watermarkLogo) form.set("postProcessLogo", files.watermarkLogo, files.watermarkLogo.name);
+      else form.delete("postProcessLogo");
       if (manualPromptsReady && manualUgcJob) {
         form.set("manualDraft", JSON.stringify({ segments: manualUgcJob.segments, script: manualUgcJob.script || script }));
       }
@@ -1761,7 +1878,12 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
         setMessage(`Chọn ảnh sản phẩm chính và tối đa ${Math.max(0, maxProductImages - 1)} ảnh tham khảo phụ cho model đang chọn.`);
         return;
       }
-      totalFileBytes = presenter.size + productImageFiles.reduce((total, file) => total + file.size, 0);
+      totalFileBytes = presenter.size + productImageFiles.reduce((total, file) => total + file.size, 0)
+        + (postProcessLogoEnabled ? files.watermarkLogo?.size || 0 : 0);
+      if (postProcessLogoEnabled && !files.watermarkLogo?.size) {
+        setMessage("Chọn ảnh logo để chèn vào video.");
+        return;
+      }
       form.set("presenter", presenter, presenter.name);
       form.delete("image");
       form.set("primaryProductImage", mainProductImage, mainProductImage.name);
@@ -1924,30 +2046,42 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
                 </div>
               </details>
               <section className="sales-video-post-processing full" aria-label="Hậu kỳ Text và Emoji">
-                <label className="sales-video-post-processing-toggle">
-                  <input type="checkbox" checked={postProcessTextOverlayEnabled}
-                    onChange={(event) => setPostProcessTextOverlayEnabled(event.target.checked)} />
-                  <span><strong>Chèn Text/Emoji bằng FFmpeg sau khi ghép video</strong>
-                    <small>Video model sẽ tạo clip không chữ; FFmpeg thêm nội dung này lên video đã ghép.</small></span>
-                </label>
-                {postProcessTextOverlayEnabled && <div className="sales-video-post-processing-fields">
-                  <label className="form-field">
-                    <span>Nội dung Text/Emoji <em>Tối đa 140 ký tự</em></span>
-                    <textarea name="postProcessTextOverlayText" value={postProcessTextOverlayText} maxLength={140} required
-                      onChange={(event) => setPostProcessTextOverlayText(event.target.value)}
-                      placeholder="Ví dụ: Nhỏ gọn, quay mượt hơn 🎬" />
-                    <small>Nội dung này chỉ được gửi tới bước FFmpeg sau khi ghép, không đi vào prompt tạo video.</small>
-                  </label>
-                  <label className="form-field">
-                    <span>Vị trí hiển thị</span>
-                    <select name="postProcessTextOverlayPosition" value={postProcessTextOverlayPosition}
-                      onChange={(event) => setPostProcessTextOverlayPosition(event.target.value as "top" | "center" | "bottom")}>
-                      <option value="top">Phía trên</option>
-                      <option value="center">Ở giữa</option>
-                      <option value="bottom">Phía dưới</option>
-                    </select>
-                  </label>
-                </div>}
+                <div className="sales-video-post-processing-options">
+                  <div className="sales-video-post-processing-option">
+                    <label className="sales-video-post-processing-toggle">
+                      <input type="checkbox" checked={postProcessTextOverlayEnabled}
+                        onChange={(event) => setPostProcessTextOverlayEnabled(event.target.checked)} />
+                      <span><strong>Chèn Text/Emoji bằng FFmpeg sau khi ghép video</strong>
+                        <small>Lấy nội dung từ Video overlay do Code Agent tạo; không chèn cue vào prompt gửi model.</small></span>
+                    </label>
+                  </div>
+                  <div className="sales-video-post-processing-option">
+                    <label className="sales-video-post-processing-toggle">
+                      <input type="checkbox" checked={postProcessMovingWatermarkEnabled}
+                        onChange={(event) => setPostProcessMovingWatermarkEnabled(event.target.checked)} />
+                      <span><strong>Watermark di chuyển ngẫu nhiên</strong>
+                        <small>Di chuyển định kỳ qua các vị trí trong video để khó bị che khuất.</small></span>
+                    </label>
+                    {postProcessMovingWatermarkEnabled && <label className="form-field sales-video-post-processing-extra">
+                      <span>Nội dung watermark</span>
+                      <input type="text" value={postProcessWatermarkText} maxLength={32}
+                        onChange={(event) => setPostProcessWatermarkText(event.target.value.slice(0, 32))} placeholder="StoryAI" />
+                    </label>}
+                  </div>
+                  <div className="sales-video-post-processing-option">
+                    <label className="sales-video-post-processing-toggle">
+                      <input type="checkbox" checked={postProcessLogoEnabled}
+                        onChange={(event) => setPostProcessLogoEnabled(event.target.checked)} />
+                      <span><strong>Chèn logo</strong>
+                        <small>Logo sẽ được chèn ở góc dưới bên phải video.</small></span>
+                    </label>
+                    {postProcessLogoEnabled && <label className="form-field sales-video-post-processing-extra">
+                      <span>Ảnh logo <em>PNG, WebP, JPG hoặc AVIF · tối đa 50 MB</em></span>
+                      <input type="file" accept={salesVideoImageTypes.join(",")} onChange={(event) => updateFile("watermarkLogo", event.target.files?.[0], "image")} />
+                      {files.watermarkLogo && <small>{files.watermarkLogo.name}</small>}
+                    </label>}
+                  </div>
+                </div>
               </section>
             </>}
             <div className="sales-form-step full"><span>{selectedTemplate ? "03" : "02"}</span><div><strong>Model và định dạng video</strong></div></div>

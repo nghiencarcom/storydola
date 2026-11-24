@@ -15,6 +15,10 @@ export function salesVideoSegmentPath(userId: string, id: string, index: number)
   return path.join(salesVideoOwnerDirectory(userId), id, "segments", `clip-${index + 1}.mp4`);
 }
 
+export function salesVideoWatermarkLogoPath(userId: string, id: string) {
+  return path.join(salesVideoOwnerDirectory(userId), id, "watermark-logo.webp");
+}
+
 export function salesVideoReferencePath(userId: string, id: string, kind: "presenter" | "product", index = 0) {
   const suffix = kind === "product" && index > 0 ? `-${index + 1}` : "";
   return path.join(salesVideoOwnerDirectory(userId), id, "references", `${kind}${suffix}.webp`);
@@ -36,6 +40,13 @@ export type SalesVideoProjectDetails = {
   script?: string;
   scriptSegments?: Array<{ start: number; duration: number; script: string }>;
   subtitleSrt?: string;
+  voiceRegeneration?: {
+    status: "processing" | "ready" | "failed";
+    voiceId: string;
+    voiceName: string;
+    updatedAt: string;
+    error?: string;
+  };
   language?: string;
   duration?: number;
   ratio?: string;
@@ -57,9 +68,14 @@ export type SalesVideoProjectDetails = {
 
 export type SalesVideoPostProcessing = {
   textOverlay?: {
-    text: string;
-    position: "top" | "center" | "bottom";
+    enabled?: boolean;
+    cues?: Array<{ start: number; end: number; text: string; position?: "top" | "center" | "bottom" }>;
+    /** Legacy projects created with a single manually entered overlay. */
+    text?: string;
+    position?: "top" | "center" | "bottom";
   };
+  movingWatermark?: { enabled: boolean; text: string };
+  logo?: { enabled: boolean };
 };
 
 export type SalesVideoProject = {
@@ -103,6 +119,16 @@ export async function listSalesVideoProjects(userId: string, worker: string) {
   })) {
     if (!file.endsWith(".json") || !uuid.test(file.slice(0, -5))) continue;
     const project = JSON.parse(await readFile(path.join(records, file), "utf8")) as SalesVideoProject;
+    if (project.details?.voiceRegeneration?.status === "processing" && project.worker !== worker) {
+      project.details.voiceRegeneration = {
+        ...project.details.voiceRegeneration,
+        status: "failed",
+        updatedAt: new Date().toISOString(),
+        error: "Máy chủ đã khởi động lại trong lúc tạo voice. Hãy thử lại.",
+      };
+      delete project.worker;
+      await saveSalesVideoProject(userId, project);
+    }
     if (project.status === "processing" && project.worker !== worker) {
       const output = await stat(salesVideoPath(userId, project.id)).catch(() => null);
       project.status = output?.isFile() ? "ready" : "failed";

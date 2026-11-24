@@ -11,7 +11,7 @@ import { getCodingAgentCliStatuses, type CodingAgent } from "../../lib/coding-ag
 import { readMaiVideoAuthCookie } from "../../lib/maivideo-auth-shared";
 import { getSeedanceApiKey, getSeedanceApiSessionToken } from "../../lib/seedance-accounts";
 import { createCreativeSalesVideo, ensureSalesVideoSegmentFile, SalesVideoInputError, SalesVideoSegmentError } from "../../lib/sales-video-creative";
-import { deleteSalesVideoProject, listSalesVideoProjects, salesVideoSegmentPath, saveSalesVideoProject, type SalesVideoProject } from "../../lib/sales-video-storage";
+import { deleteSalesVideoProject, listSalesVideoProjects, salesVideoSegmentPath, salesVideoWatermarkLogoPath, saveSalesVideoProject, type SalesVideoProject } from "../../lib/sales-video-storage";
 import { enqueueSalesVideoTask, salesVideoWorkerId } from "../../lib/sales-video-runtime";
 import { isVideoOffPeakRequired } from "../../lib/media-generation-settings";
 import { stat } from "node:fs/promises";
@@ -76,7 +76,8 @@ export async function DELETE(request: Request) {
   const missingIds = ids.filter((id) => !projectsById.has(id));
   if (missingIds.length) return NextResponse.json({ message: "Một hoặc nhiều dự án không còn tồn tại." }, { status: 404 });
 
-  const busyIds = ids.filter((id) => projectsById.get(id)?.status === "processing");
+  const busyIds = ids.filter((id) => projectsById.get(id)?.status === "processing"
+    || projectsById.get(id)?.details?.voiceRegeneration?.status === "processing");
   if (busyIds.length) {
     return NextResponse.json({ message: "Không thể xóa dự án đang xử lý. Hãy chờ job hoàn tất rồi thử lại.", busyIds }, { status: 409 });
   }
@@ -363,6 +364,7 @@ export async function POST(request: Request) {
         const generatedSegments = await createCreativeSalesVideo({
           id: project.id, userId, template, images, seconds, ratio, prompt, promptSegments: submittedPromptSegments, videoQuality, videoOffPeak,
           postProcessing: pendingDraft?.postProcessing,
+          postProcessingLogoPath: pendingDraft?.postProcessing?.logo?.enabled ? salesVideoWatermarkLogoPath(userId, project.id) : undefined,
           splitDialogue: isStitched ? { script: scriptForVideo, language: language!, audio: speaksInVideo, segments: productSegments!, scriptSegments: effectiveScriptSegments } : undefined,
           pixverseKey, voiceKey, model, maiVideoModel, gatewayVideoModel, providerAuthToken: token, sourceStart,
           onlySegmentIndex: retrySegmentIndex, signal: AbortSignal.timeout(60 * 60_000),

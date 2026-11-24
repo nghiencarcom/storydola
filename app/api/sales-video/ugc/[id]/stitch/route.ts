@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { readMaiVideoAuthCookie } from "../../../../../lib/maivideo-auth-shared";
 import { stitchSalesVideoSegments } from "../../../../../lib/sales-video-creative";
-import { listSalesVideoProjects, saveSalesVideoProject, type SalesVideoProject } from "../../../../../lib/sales-video-storage";
+import { listSalesVideoProjects, salesVideoWatermarkLogoPath, saveSalesVideoProject, type SalesVideoProject } from "../../../../../lib/sales-video-storage";
 import { salesVideoWorkerId } from "../../../../../lib/sales-video-runtime";
 
 export const runtime = "nodejs";
@@ -16,6 +16,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const project = (await listSalesVideoProjects(userId, salesVideoWorkerId)).find((item) => item.id === id);
   if (!project?.details) return NextResponse.json({ message: "Không tìm thấy project." }, { status: 404 });
   if (project.status === "processing") return NextResponse.json({ message: "Hãy đợi clip đang xử lý hoàn tất trước khi ghép." }, { status: 409 });
+  if (project.details.voiceRegeneration?.status === "processing") return NextResponse.json({ message: "Hãy đợi tạo lại voice hoàn tất trước khi ghép lại video." }, { status: 409 });
 
   const details = project.details;
   const segments = details.promptSegments?.length ? details.promptSegments : details.generatedSegments || [];
@@ -26,7 +27,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
 
   try {
-    await stitchSalesVideoSegments(userId, id, segments, details.duration || segments.reduce((sum, segment) => sum + segment.duration, 0), project.postProcessing?.textOverlay);
+    await stitchSalesVideoSegments(userId, id, segments, details.duration || segments.reduce((sum, segment) => sum + segment.duration, 0),
+      project.postProcessing, project.postProcessing?.logo?.enabled ? salesVideoWatermarkLogoPath(userId, id) : undefined);
     const updated: SalesVideoProject = {
       ...project,
       status: "ready",

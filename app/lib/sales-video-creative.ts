@@ -18,7 +18,6 @@ const ffprobe = () => process.env.STORYAI_FFPROBE_PATH || path.join(path.dirname
 const videoFormat = ["-format_whitelist", "mov"];
 const audioFormats = ["-format_whitelist", "mp3,wav,mov,aac,ogg,flac"];
 
-type SalesVideoTextOverlay = NonNullable<SalesVideoPostProcessing["textOverlay"]>;
 
 function escapeXml(value: string) {
   return value.replace(/&/gu, "&amp;").replace(/</gu, "&lt;").replace(/>/gu, "&gt;")
@@ -64,9 +63,11 @@ async function renderSalesVideoTextOverlay(
   source: string,
   output: string,
   work: string,
-  overlay: SalesVideoTextOverlay,
+  postProcessing: SalesVideoPostProcessing,
   duration: number,
   signal?: AbortSignal,
+  logoPath?: string,
+  seed = 0,
 ) {
   const { stdout } = await exec(ffprobe(), ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", source],
     { signal, timeout: 15_000 });
@@ -75,30 +76,72 @@ async function renderSalesVideoTextOverlay(
   const height = Number(stream?.height);
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 2 || height < 2) throw new Error("Could not read stitched video dimensions for Text/Emoji overlay.");
 
-  const fontSize = Math.max(26, Math.min(64, Math.round(width * 0.055)));
-  const horizontalPadding = Math.round(width * 0.065);
-  const contentWidth = width - horizontalPadding * 2;
-  const maximumLineLength = Math.max(12, Math.floor((contentWidth - fontSize * 1.1) / (fontSize * 0.57)));
-  const lines = wrapOverlayText(overlay.text, maximumLineLength, 4);
-  const lineHeight = Math.round(fontSize * 1.24);
-  const verticalPadding = Math.round(fontSize * 0.5);
-  const cardHeight = lineHeight * lines.length + verticalPadding * 2;
-  const top = overlay.position === "top"
-    ? Math.round(height * 0.08)
-    : overlay.position === "center"
-      ? Math.round((height - cardHeight) / 2)
-      : Math.round(height * 0.88 - cardHeight);
-  const lineMarkup = lines.map((line, index) =>
-    `<text x="${width / 2}" y="${top + verticalPadding + fontSize + index * lineHeight}" text-anchor="middle" font-family="Arial, 'Apple Color Emoji', 'Noto Color Emoji', 'Segoe UI Emoji', sans-serif" font-size="${fontSize}" font-weight="700" fill="#fff" stroke="#111827" stroke-opacity=".45" stroke-width="${Math.max(1, Math.round(fontSize * 0.04))}" paint-order="stroke">${escapeXml(line)}</text>`
-  ).join("");
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect x="${horizontalPadding}" y="${top}" width="${contentWidth}" height="${cardHeight}" rx="${Math.round(fontSize * 0.45)}" fill="#090b14" fill-opacity=".72"/>${lineMarkup}</svg>`;
-  const overlayImage = path.join(work, "text-emoji-overlay.png");
-  await sharp(Buffer.from(svg)).png().toFile(overlayImage);
-  await exec(ffmpeg(), ["-nostdin", "-y", "-hide_banner", "-loglevel", "error", "-i", source,
-    "-loop", "1", "-framerate", "24", "-i", overlayImage,
-    "-filter_complex", "[0:v:0][1:v:0]overlay=0:0:shortest=1:format=auto[v]",
-    "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
-    "-c:a", "copy", "-t", String(duration), "-movflags", "+faststart", output], { signal, timeout: 600_000 });
+  const overlays: Array<{ image: string; start: number; end: number; x: string; y: string }> = [];
+  const cues = postProcessing.textOverlay?.cues?.length
+    ? postProcessing.textOverlay.cues
+    : postProcessing.textOverlay?.text
+      ? [{ start: 0, end: duration, text: postProcessing.textOverlay.text, position: postProcessing.textOverlay.position }]
+      : [];
+  for (const [index, cue] of cues.entries()) {
+    const fontSize = Math.max(26, Math.min(64, Math.round(width * 0.055)));
+    const horizontalPadding = Math.round(width * 0.065);
+    const contentWidth = width - horizontalPadding * 2;
+    const maximumLineLength = Math.max(12, Math.floor((contentWidth - fontSize * 1.1) / (fontSize * 0.57)));
+    const lines = wrapOverlayText(cue.text, maximumLineLength, 4);
+    const lineHeight = Math.round(fontSize * 1.24);
+    const verticalPadding = Math.round(fontSize * 0.5);
+    const cardHeight = lineHeight * lines.length + verticalPadding * 2;
+    const position = cue.position || "bottom";
+    const top = position === "top" ? Math.round(height * 0.08)
+      : position === "center" ? Math.round((height - cardHeight) / 2)
+        : Math.round(height * 0.88 - cardHeight);
+    const lineMarkup = lines.map((line, lineIndex) =>
+      `<text x="${width / 2}" y="${top + verticalPadding + fontSize + lineIndex * lineHeight}" text-anchor="middle" font-family="Arial, 'Apple Color Emoji', 'Noto Color Emoji', 'Segoe UI Emoji', sans-serif" font-size="${fontSize}" font-weight="700" fill="#fff" stroke="#111827" stroke-opacity=".45" stroke-width="${Math.max(1, Math.round(fontSize * 0.04))}" paint-order="stroke">${escapeXml(line)}</text>`
+    ).join("");
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect x="${horizontalPadding}" y="${top}" width="${contentWidth}" height="${cardHeight}" rx="${Math.round(fontSize * 0.45)}" fill="#090b14" fill-opacity=".72"/>${lineMarkup}</svg>`;
+    const image = path.join(work, `text-emoji-overlay-${index + 1}.png`);
+    await sharp(Buffer.from(svg)).png().toFile(image);
+    overlays.push({ image, start: Math.max(0, cue.start), end: Math.min(duration, cue.end), x: "0", y: "0" });
+  }
+  if (postProcessing.movingWatermark?.enabled && postProcessing.movingWatermark.text.trim()) {
+    const watermarkWidth = Math.round(width * 0.32);
+    const watermarkHeight = Math.max(48, Math.round(height * 0.045));
+    const watermarkText = postProcessing.movingWatermark.text.slice(0, 32);
+    const fontSize = Math.max(10, Math.min(42, Math.round(width * 0.032), Math.floor(watermarkWidth * 0.86 / Math.max(1, watermarkText.length * 0.62))));
+    const watermarkSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${watermarkWidth}" height="${watermarkHeight}" viewBox="0 0 ${watermarkWidth} ${watermarkHeight}"><text x="8" y="${Math.round(watermarkHeight * 0.73)}" font-family="Arial, sans-serif" font-size="${fontSize}" font-weight="700" fill="#fff" fill-opacity=".38" stroke="#111827" stroke-opacity=".3" stroke-width="2" paint-order="stroke">${escapeXml(watermarkText)}</text></svg>`;
+    const image = path.join(work, "moving-watermark.png");
+    await sharp(Buffer.from(watermarkSvg)).png().toFile(image);
+    overlays.push({
+      image, start: 0, end: duration,
+      x: `(W-w)*abs(sin(floor(t/2)*12.9898+${seed + 31.7}))`,
+      y: `(H-h)*abs(sin(floor(t/2)*78.233+${seed + 17.4}))`,
+    });
+  }
+  if (postProcessing.logo?.enabled && logoPath) {
+    const logoWidth = Math.round(width * 0.2);
+    const logoHeight = Math.round(height * 0.14);
+    const image = path.join(work, "sales-video-logo.png");
+    await sharp(logoPath).resize(logoWidth, logoHeight, { fit: "inside", withoutEnlargement: true }).png().toFile(image);
+    const margin = Math.max(18, Math.round(width * 0.035));
+    overlays.push({ image, start: 0, end: duration, x: `W-w-${margin}`, y: `H-h-${margin}` });
+  }
+  if (!overlays.length) {
+    await copyFile(source, output);
+    return;
+  }
+  const args = ["-nostdin", "-y", "-hide_banner", "-loglevel", "error", "-i", source];
+  for (const overlay of overlays) args.push("-loop", "1", "-framerate", "24", "-i", overlay.image);
+  const filters: string[] = [];
+  let previous = "0:v:0";
+  overlays.forEach((overlay, index) => {
+    const next = `v${index + 1}`;
+    const enable = `between(t,${overlay.start.toFixed(3)},${overlay.end.toFixed(3)})`;
+    filters.push(`[${previous}][${index + 1}:v:0]overlay=x='${overlay.x}':y='${overlay.y}':eval=frame:shortest=1:eof_action=pass:format=auto:enable='${enable}'[${next}]`);
+    previous = next;
+  });
+  args.push("-filter_complex", filters.join(";"), "-map", `[${previous}]`, "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+    "-c:a", "copy", "-t", String(duration), "-movflags", "+faststart", output);
+  await exec(ffmpeg(), args, { signal, timeout: 600_000 });
 }
 
 function salesVideoOutputSize(ratio: string, quality: string) {
@@ -207,6 +250,7 @@ export async function createCreativeSalesVideo(input: {
   prompt: string;
   promptSegments?: Array<{ start: number; duration: number; prompt: string }>;
   postProcessing?: SalesVideoPostProcessing;
+  postProcessingLogoPath?: string;
   seconds: number;
   ratio: string;
   videoQuality?: string;
@@ -434,9 +478,10 @@ export async function createCreativeSalesVideo(input: {
       ...(audioInput ? ["-af", "apad", "-c:a", "aac"] : ["-c:a", "copy"]),
       "-t", String(seconds), "-c:v", "copy", "-movflags", "+faststart", final]);
     await mkdir(path.dirname(output), { recursive: true });
-    if (input.postProcessing?.textOverlay) {
+    if (input.postProcessing?.textOverlay || input.postProcessing?.movingWatermark?.enabled || input.postProcessing?.logo?.enabled) {
       const withOverlay = path.join(work, "final-with-overlay.mp4");
-      await renderSalesVideoTextOverlay(final, withOverlay, work, input.postProcessing.textOverlay, seconds, signal);
+      const seed = Number.parseInt(id.replace(/-/gu, "").slice(0, 8), 16) || 0;
+      await renderSalesVideoTextOverlay(final, withOverlay, work, input.postProcessing, seconds, signal, input.postProcessingLogoPath, seed);
       await rename(withOverlay, output);
     } else {
       await rename(final, output);
@@ -487,7 +532,8 @@ export async function stitchSalesVideoSegments(
   id: string,
   segments: Array<{ start: number; duration: number }>,
   duration: number,
-  textOverlay?: SalesVideoTextOverlay,
+  postProcessing?: SalesVideoPostProcessing,
+  logoPath?: string,
 ) {
   if (!segments.length || segments.some((segment) => !Number.isInteger(segment.start) || !Number.isInteger(segment.duration) || segment.duration < 1)) {
     throw new Error("Danh sách clip cần ghép không hợp lệ.");
@@ -504,9 +550,10 @@ export async function stitchSalesVideoSegments(
     await exec(ffmpeg(), ["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", manifest,
       "-map", "0:v:0", "-map", "0:a:0?", "-t", String(duration), "-c", "copy", "-movflags", "+faststart", final],
     { timeout: 120_000 });
-    if (textOverlay) {
+    if (postProcessing && (postProcessing.textOverlay || postProcessing.movingWatermark?.enabled || postProcessing.logo?.enabled)) {
       const withOverlay = path.join(work, "final-with-overlay.mp4");
-      await renderSalesVideoTextOverlay(final, withOverlay, work, textOverlay, duration);
+      const seed = Number.parseInt(id.replace(/-/gu, "").slice(0, 8), 16) || 0;
+      await renderSalesVideoTextOverlay(final, withOverlay, work, postProcessing, duration, undefined, logoPath, seed);
       await rename(withOverlay, output);
     } else {
       await rename(final, output);
