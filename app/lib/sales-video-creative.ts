@@ -6,7 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { createFalClient } from "@fal-ai/client";
-import sharp from "sharp";
+import sharp, { type OverlayOptions } from "sharp";
 import { generateMaiVideoPixverseV6ReferenceSegment, generateMaiVideoSalesSegment, generateSalesVideoSegment, generateSeedanceGatewaySalesSegment } from "./media-provider";
 import { videoDurationOptions } from "./media-generation-settings";
 import type { VideoGenerationModelOption } from "./project-types";
@@ -97,12 +97,23 @@ async function renderSalesVideoTextOverlay(
     const top = position === "top" ? Math.round(height * 0.08)
       : position === "center" ? Math.round((height - cardHeight) / 2)
         : Math.round(height * 0.88 - cardHeight);
-    const lineMarkup = lines.map((line, lineIndex) =>
-      `<text x="${width / 2}" y="${top + verticalPadding + fontSize + lineIndex * lineHeight}" text-anchor="middle" font-family="Arial, 'Apple Color Emoji', 'Noto Color Emoji', 'Segoe UI Emoji', sans-serif" font-size="${fontSize}" font-weight="700" fill="#fff" stroke="#111827" stroke-opacity=".45" stroke-width="${Math.max(1, Math.round(fontSize * 0.04))}" paint-order="stroke">${escapeXml(line)}</text>`
-    ).join("");
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect x="${horizontalPadding}" y="${top}" width="${contentWidth}" height="${cardHeight}" rx="${Math.round(fontSize * 0.45)}" fill="#090b14" fill-opacity=".72"/>${lineMarkup}</svg>`;
+    // Pango's RGBA text renderer preserves color emoji; SVG fill/stroke
+    // turns Apple Color Emoji glyphs into white silhouettes on macOS.
+    const textLayers: OverlayOptions[] = [];
+    for (const [lineIndex, line] of lines.entries()) {
+      if (!line) continue;
+      const rendered = await sharp({ text: {
+        text: `<span foreground="white">${escapeXml(line)}</span>`, font: `Arial Bold ${fontSize}`, rgba: true,
+      } }).png().toBuffer({ resolveWithObject: true });
+      const lineImage = await sharp(rendered.data).resize({ width: Math.min(contentWidth - fontSize, rendered.info.width), withoutEnlargement: true }).png().toBuffer({ resolveWithObject: true });
+      textLayers.push({ input: lineImage.data,
+        left: Math.round((width - lineImage.info.width) / 2),
+        top: top + verticalPadding + lineIndex * lineHeight,
+      });
+    }
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect x="${horizontalPadding}" y="${top}" width="${contentWidth}" height="${cardHeight}" rx="${Math.round(fontSize * 0.45)}" fill="#090b14" fill-opacity=".72"/></svg>`;
     const image = path.join(work, `text-emoji-overlay-${index + 1}.png`);
-    await sharp(Buffer.from(svg)).png().toFile(image);
+    await sharp(Buffer.from(svg)).composite(textLayers).png().toFile(image);
     overlays.push({ image, start: Math.max(0, cue.start), end: Math.min(duration, cue.end), x: "0", y: "0" });
   }
   if (postProcessing.movingWatermark?.enabled && postProcessing.movingWatermark.text.trim()) {
