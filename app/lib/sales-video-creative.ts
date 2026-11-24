@@ -1,3 +1,4 @@
+import { ensureOverlayFonts, overlayTextFontFile } from "./overlay-fonts";
 import { withVideoCheckpoint } from "./sales-video-checkpoint";
 import { durableSalesVideo } from "./sales-video-recovery";
 import { execFile } from "node:child_process";
@@ -78,6 +79,7 @@ async function renderSalesVideoTextOverlay(
   const height = Number(stream?.height);
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 2 || height < 2) throw new Error("Could not read stitched video dimensions for Text/Emoji overlay.");
 
+  await ensureOverlayFonts();
   const overlays: Array<{ image: string; start: number; end: number; x: string; y: string }> = [];
   const cues = postProcessing.textOverlay?.cues?.length
     ? postProcessing.textOverlay.cues
@@ -103,7 +105,7 @@ async function renderSalesVideoTextOverlay(
     for (const [lineIndex, line] of lines.entries()) {
       if (!line) continue;
       const rendered = await sharp({ text: {
-        text: `<span foreground="white">${escapeXml(line)}</span>`, font: `Arial Bold ${fontSize}`, rgba: true,
+        text: `<span foreground="white">${escapeXml(line)}</span>`, font: `Noto Sans Bold, Noto Color Emoji ${fontSize}`, fontfile: overlayTextFontFile, rgba: true,
       } }).png().toBuffer({ resolveWithObject: true });
       const lineImage = await sharp(rendered.data).resize({ width: Math.min(contentWidth - fontSize, rendered.info.width), withoutEnlargement: true }).png().toBuffer({ resolveWithObject: true });
       textLayers.push({ input: lineImage.data,

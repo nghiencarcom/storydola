@@ -1086,9 +1086,9 @@ function SalesVideoProjectDetail({ project, catalog, videoUrl, promptMaxLength, 
     </section>}
     {project.status !== "draft" && videoSegments.length > 0 && <section className="sales-project-clips">
       <div className="sales-project-video-heading"><div><h2>Các clip 15 giây</h2><p>Mỗi clip có thể xem riêng và tạo lại khi cần.</p></div>
-        {details?.needsStitching && <button type="button" className="primary-button" onClick={() => void restitchVideo()} disabled={!allClipsReady || stitching || retryingClips.size > 0 || project.status === "processing" || voiceJob?.status === "processing"}>
-          {stitching ? "Đang ghép video…" : "Ghép video lại"}
-        </button>}
+        <button type="button" className="primary-button" onClick={() => void restitchVideo()} disabled={!allClipsReady || stitching || retryingClips.size > 0 || project.status === "processing" || voiceJob?.status === "processing"}>
+          {stitching ? "Đang ghép video…" : "Ghép lại video"}
+        </button>
       </div>
       {details?.needsStitching && !allClipsReady && <small className="sales-project-stitch-hint">Hãy tạo xong tất cả clip trước khi ghép lại.</small>}
       <div className="sales-project-clips-grid">

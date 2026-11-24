@@ -37,7 +37,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       error: undefined,
       details: {
         ...details,
-        segmentResults: segments.map((segment) => ({ start: segment.start, duration: segment.duration, status: "ready" as const })),
+        segmentResults: segments.map((segment, index) => ({ ...results[index], start: segment.start, duration: segment.duration, status: "ready" as const, error: undefined })),
         needsStitching: false,
       },
     };

@@ -3,6 +3,7 @@ const nextConfig = {
   reactStrictMode: true,
   // Build a minimal production server image for the local Docker installer.
   output: "standalone",
+  outputFileTracingIncludes: { "/*": ["./assets/fonts/**/*"] },
   // StoryAI reads and writes these files at runtime. They contain user
   // projects, media, and API credentials, so they must stay in the persistent
   // runtime data directory and must not enter Next.js deployment traces.
