@@ -11,6 +11,10 @@ export function salesVideoPath(userId: string, id: string) {
   return path.join(salesVideoOwnerDirectory(userId), id, "video.mp4");
 }
 
+export function salesVideoSegmentPath(userId: string, id: string, index: number) {
+  return path.join(salesVideoOwnerDirectory(userId), id, "segments", `clip-${index + 1}.mp4`);
+}
+
 export function salesVideoReferencePath(userId: string, id: string, kind: "presenter" | "product", index = 0) {
   const suffix = kind === "product" && index > 0 ? `-${index + 1}` : "";
   return path.join(salesVideoOwnerDirectory(userId), id, "references", `${kind}${suffix}.webp`);
@@ -47,6 +51,8 @@ export type SalesVideoProjectDetails = {
   codingQuality?: string;
   codingSpeed?: string;
   generatedSegments?: Array<{ start: number; duration: number; prompt: string }>;
+  segmentResults?: Array<{ start: number; duration: number; status: "pending" | "processing" | "ready" | "failed"; error?: string }>;
+  needsStitching?: boolean;
 };
 
 export type SalesVideoProject = {
@@ -93,6 +99,14 @@ export async function listSalesVideoProjects(userId: string, worker: string) {
       const output = await stat(salesVideoPath(userId, project.id)).catch(() => null);
       project.status = output?.isFile() ? "ready" : "failed";
       if (project.status === "failed") project.error = "Máy chủ đã khởi động lại trong lúc tạo video. Hãy tạo lượt mới.";
+      if (project.details?.segmentResults?.some((segment) => segment.status === "processing")) {
+        project.details.segmentResults = project.details.segmentResults.map((segment) => segment.status === "processing"
+          ? { ...segment, status: "failed" as const, error: "Tác vụ bị gián đoạn. Hãy tạo lại clip này." }
+          : segment);
+        project.details.needsStitching = true;
+      }
+      delete project.worker;
+      await saveSalesVideoProject(userId, project);
     }
     delete project.worker;
     projects.set(project.id, project);

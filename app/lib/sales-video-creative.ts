@@ -1,13 +1,14 @@
 import { execFile } from "node:child_process";
-import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { randomUUID } from "node:crypto";
 import { createFalClient } from "@fal-ai/client";
 import { generateMaiVideoPixverseV6ReferenceSegment, generateMaiVideoSalesSegment, generateSalesVideoSegment, generateSeedanceGatewaySalesSegment } from "./media-provider";
 import { videoDurationOptions } from "./media-generation-settings";
 import type { VideoGenerationModelOption } from "./project-types";
 import { pixverseSalesClient } from "./pixverse-sales-video";
-import { salesVideoPath } from "./sales-video-storage";
+import { salesVideoPath, salesVideoSegmentPath } from "./sales-video-storage";
 import { salesVideoProductReferenceLock, salesVideoProductScriptInstruction, salesVideoWordCount, type salesVideoCreativeTemplates } from "./sales-video-templates";
 
 const exec = promisify(execFile);
@@ -50,6 +51,12 @@ function scenePlanForSegment(prompt: string, start: number, end: number) {
 }
 
 export class SalesVideoInputError extends Error {}
+export class SalesVideoSegmentError extends Error {
+  constructor(readonly segmentIndex: number, message: string) {
+    super(message);
+    this.name = "SalesVideoSegmentError";
+  }
+}
 
 async function download(url: string | undefined, file: string, signal: AbortSignal) {
   if (!url || new URL(url).protocol !== "https:") throw new Error("Invalid provider media URL");
@@ -127,11 +134,14 @@ export async function createCreativeSalesVideo(input: {
   providerAuthToken: string;
   sourceStart?: number;
   splitDialogue?: { script: string; language: string; audio: boolean; segments: number[]; scriptSegments?: Array<{ start: number; duration: number; script: string }> };
+  onlySegmentIndex?: number;
   signal: AbortSignal;
 }) {
   const { id, userId, template, images, audio, video, prompt, ratio, signal } = input;
-  const output = salesVideoPath(userId, id);
-  const work = path.dirname(output);
+  const output = input.onlySegmentIndex === undefined
+    ? salesVideoPath(userId, id)
+    : salesVideoSegmentPath(userId, id, input.onlySegmentIndex);
+  const work = path.join(path.dirname(salesVideoPath(userId, id)), "work", randomUUID());
   const source = path.join(work, "source");
   const soundtrack = path.join(work, "speech.wav");
   const pixverse = input.model === "higgsfield" || input.maiVideoModel ? undefined : pixverseSalesClient(input.pixverseKey!, signal);
@@ -139,6 +149,7 @@ export async function createCreativeSalesVideo(input: {
   const run = (args: string[]) => exec(ffmpeg(), ["-nostdin", "-hide_banner", "-loglevel", "error", ...args], { signal, timeout: 120_000 });
   let seconds = input.seconds;
   await mkdir(work, { recursive: true });
+  let currentSegmentIndex: number | undefined;
   try {
     if (video || audio) {
       const file = video || audio!;
@@ -189,6 +200,10 @@ export async function createCreativeSalesVideo(input: {
       return Array.from({ length: count }, (_, index) => Math.ceil(length * (index + 1) / count) - Math.ceil(length * index / count));
     });
     const imageGroups = plannedDurations.flatMap((length, index) => Array(Math.ceil(length / modelLimit)).fill(index));
+    if (input.onlySegmentIndex !== undefined && (!Number.isInteger(input.onlySegmentIndex)
+      || input.onlySegmentIndex < 0 || input.onlySegmentIndex >= durations.length)) {
+      throw new SalesVideoInputError("Không tìm thấy clip 15 giây cần tạo lại.");
+    }
     const imageIds = pixverse ? await Promise.all(images.map((image) => pixverse.uploadImage(image))) : [];
     const [width, height] = salesVideoOutputSize(ratio, input.videoQuality || "720p");
     const segments: string[] = [];
@@ -202,6 +217,11 @@ export async function createCreativeSalesVideo(input: {
       : undefined;
     let start = 0;
     for (const [index, length] of durations.entries()) {
+      if (input.onlySegmentIndex !== undefined && index !== input.onlySegmentIndex) {
+        start += length;
+        continue;
+      }
+      currentSegmentIndex = index;
       const pairedImages = isPairedImageWorkflow;
       const referenceImages = pairedImages ? images.slice(imageGroups[index] * 2, imageGroups[index] * 2 + 2) : images;
       const referenceIds = pairedImages ? imageIds.slice(imageGroups[index] * 2, imageGroups[index] * 2 + 2) : imageIds;
@@ -303,8 +323,17 @@ export async function createCreativeSalesVideo(input: {
         "-map", "0:v:0", "-map", "0:a:0?", "-map", "1:a:0", "-t", String(length),
         "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24,tpad=stop_mode=clone:stop_duration=${length}`,
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", path.join(work, segment)]);
+      const segmentOutput = salesVideoSegmentPath(userId, id, index);
+      await mkdir(path.dirname(segmentOutput), { recursive: true });
+      await copyFile(path.join(work, segment), segmentOutput);
       segments.push(segment);
       start += length;
+      currentSegmentIndex = undefined;
+    }
+
+    if (input.onlySegmentIndex !== undefined) {
+      await rm(work, { recursive: true, force: true });
+      return generatedSegments;
     }
 
     const manifest = path.join(work, "segments.txt");
@@ -319,12 +348,68 @@ export async function createCreativeSalesVideo(input: {
       "-map", "0:v:0", "-map", audioInput ? "1:a:0" : "0:a:0",
       ...(audioInput ? ["-af", "apad", "-c:a", "aac"] : ["-c:a", "copy"]),
       "-t", String(seconds), "-c:v", "copy", "-movflags", "+faststart", final]);
+    await mkdir(path.dirname(output), { recursive: true });
     await rename(final, output);
-    const temporary = await readdir(work).catch(() => []);
-    await Promise.allSettled(temporary.filter((file) => file !== "video.mp4").map((file) => rm(path.join(work, file), { recursive: true, force: true })));
+    await rm(work, { recursive: true, force: true });
     return generatedSegments;
   } catch (error) {
     await rm(work, { recursive: true, force: true }).catch(() => undefined);
+    if (currentSegmentIndex !== undefined) {
+      throw new SalesVideoSegmentError(currentSegmentIndex, error instanceof Error ? error.message : "Không tạo được clip.");
+    }
     throw error;
+  }
+}
+
+export async function ensureSalesVideoSegmentFile(userId: string, id: string, index: number, start: number, duration: number) {
+  const output = salesVideoSegmentPath(userId, id, index);
+  if (await stat(output).catch(() => null)) return output;
+
+  const projectDirectory = path.dirname(salesVideoPath(userId, id));
+  const legacySegment = path.join(projectDirectory, `segment-${index}.mp4`);
+  if (await stat(legacySegment).catch(() => null)) {
+    await mkdir(path.dirname(output), { recursive: true });
+    await copyFile(legacySegment, output);
+    return output;
+  }
+
+  const source = salesVideoPath(userId, id);
+  if (!await stat(source).catch(() => null)) throw new Error(`Thiếu clip ${index + 1}.`);
+  const work = path.join(projectDirectory, "segment-extract", randomUUID());
+  const temporary = path.join(work, `clip-${index + 1}.mp4`);
+  await mkdir(work, { recursive: true });
+  try {
+    await exec(ffmpeg(), ["-nostdin", "-hide_banner", "-loglevel", "error", "-ss", String(start), "-i", source,
+      "-t", String(duration), "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "libx264", "-preset", "veryfast",
+      "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", "-movflags", "+faststart", temporary],
+    { timeout: 120_000 });
+    await mkdir(path.dirname(output), { recursive: true });
+    await rename(temporary, output);
+    return output;
+  } finally {
+    await rm(work, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+export async function stitchSalesVideoSegments(userId: string, id: string, segments: Array<{ start: number; duration: number }>, duration: number) {
+  if (!segments.length || segments.some((segment) => !Number.isInteger(segment.start) || !Number.isInteger(segment.duration) || segment.duration < 1)) {
+    throw new Error("Danh sách clip cần ghép không hợp lệ.");
+  }
+  const segmentFiles = await Promise.all(segments.map((segment, index) => ensureSalesVideoSegmentFile(userId, id, index, segment.start, segment.duration)));
+  const output = salesVideoPath(userId, id);
+  const work = path.join(path.dirname(output), "stitch", randomUUID());
+  await mkdir(work, { recursive: true });
+  try {
+    const manifest = path.join(work, "segments.txt");
+    const entries = segmentFiles.map((file) => `file '${file.replace(/'/gu, "'\\''")}'\n`).join("");
+    await writeFile(manifest, entries);
+    const final = path.join(work, "final.mp4");
+    await exec(ffmpeg(), ["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", manifest,
+      "-map", "0:v:0", "-map", "0:a:0?", "-t", String(duration), "-c", "copy", "-movflags", "+faststart", final],
+    { timeout: 120_000 });
+    await rename(final, output);
+    return output;
+  } finally {
+    await rm(work, { recursive: true, force: true }).catch(() => undefined);
   }
 }

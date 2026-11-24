@@ -123,16 +123,42 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   if (!userId || !readMaiVideoAuthCookie(cookie)) return NextResponse.json({ message: "Vui lòng đăng nhập MaiVideo." }, { status: 401 });
   const { id } = await params;
   const project = await getOwnedProject(userId, id);
-  if (!project || project.status !== "draft" || project.phase !== "review" || !project.details) {
+  const body = await request.json().catch(() => null);
+  const retrySegmentValue = body && typeof body === "object" && !Array.isArray(body)
+    ? (body as Record<string, unknown>).retrySegmentIndex
+    : undefined;
+  const retrySegmentIndex = retrySegmentValue === undefined ? undefined : Number(retrySegmentValue);
+  const retrySegment = retrySegmentIndex !== undefined;
+  if (retrySegment && (!Number.isInteger(retrySegmentIndex) || retrySegmentIndex! < 0 || retrySegmentIndex! > 5)) {
+    return NextResponse.json({ message: "Clip cần tạo lại không hợp lệ." }, { status: 400 });
+  }
+  if (!project || !project.details || (retrySegment
+    ? project.status !== "ready" && project.status !== "failed"
+    : project.status !== "draft" || project.phase !== "review")) {
     return NextResponse.json({ message: "Job chưa có bản nháp sẵn sàng để tạo video." }, { status: 409 });
   }
   const details = project.details;
-  const body = await request.json().catch(() => null);
   const parsed = editSchema.safeParse(body);
-  if (!parsed.success) {
+  const parsedData = parsed.success ? parsed.data : undefined;
+  if (!retrySegment && !parsedData) {
     return NextResponse.json({ message: "Prompt clip vượt giới hạn ký tự của StoryAI." }, { status: 400 });
   }
-  const promptSegments = parsed.data.promptSegments || details.promptSegments || [{ start: 0, duration: details.duration || 15, prompt: parsed.data.prompt || details.prompt || "" }];
+  const promptSegments = retrySegment
+    ? details.promptSegments || [{ start: 0, duration: details.duration || 15, prompt: details.prompt || "" }]
+    : parsedData!.promptSegments || details.promptSegments || [{ start: 0, duration: details.duration || 15, prompt: parsedData!.prompt || details.prompt || "" }];
+  if (retrySegment && retrySegmentIndex! >= promptSegments.length) {
+    return NextResponse.json({ message: "Không tìm thấy clip 15 giây này trong project." }, { status: 404 });
+  }
+  const currentSegmentResults = details.segmentResults?.length === promptSegments.length
+    ? details.segmentResults
+    : promptSegments.map((segment, index) => ({
+      start: segment.start, duration: segment.duration,
+      status: project.status === "ready" ? "ready" as const : "pending" as const,
+      ...(index === retrySegmentIndex ? { error: undefined } : {}),
+    }));
+  if (retrySegment && currentSegmentResults[retrySegmentIndex!]?.status === "processing") {
+    return NextResponse.json({ message: "Clip này đang được tạo lại." }, { status: 409 });
+  }
   const promptMaxLength = await promptLimitForProject(userId, details);
   if (!promptSegments.length || promptSegments.some((segment) => !segment.prompt.trim())) {
     return NextResponse.json({ message: "Mỗi clip cần một prompt riêng trước khi tạo video." }, { status: 400 });
@@ -151,11 +177,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
   const language = details.language || "Tiếng Việt";
   const duration = details.duration || 15;
-  const scriptSegments = resolveDialogueSegments({
-    requested: parsed.data.scriptSegments, saved: details.scriptSegments, script: parsed.data.script,
-    prompts: promptSegments, duration, language,
-  });
-  const script = scriptSegments.map((segment) => segment.script).filter(Boolean).join("\n");
+  const scriptSegments = retrySegment
+    ? details.scriptSegments || resolveDialogueSegments({ saved: details.scriptSegments, script: details.script || "", prompts: promptSegments, duration, language })
+    : resolveDialogueSegments({
+      requested: parsedData!.scriptSegments, saved: details.scriptSegments, script: parsedData!.script,
+      prompts: promptSegments, duration, language,
+    });
+  const script = retrySegment ? details.script || scriptSegments.map((segment) => segment.script).filter(Boolean).join("\n")
+    : scriptSegments.map((segment) => segment.script).filter(Boolean).join("\n");
   if (details.audio) {
     const issue = dialogueLimitError(scriptSegments, language);
     if (issue) return NextResponse.json({ message: issue }, { status: 400 });
@@ -174,13 +203,17 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
   const updated: SalesVideoProject = {
     ...project,
-    status: "processing",
-    phase: "generating",
-    worker: salesVideoWorkerId,
-    error: undefined,
+    ...(retrySegment ? {} : { status: "processing" as const, phase: "generating" as const, worker: salesVideoWorkerId }),
+    error: retrySegment ? project.error : undefined,
     details: {
       ...details, prompt: promptSegments[0].prompt, promptMaxLength, promptSegments, script,
       scriptSegments, subtitleSrt: details.audio ? salesVideoDialogueToSrt(scriptSegments, language) : "",
+      ...(retrySegment ? {
+        segmentResults: currentSegmentResults.map((segment, index) => index === retrySegmentIndex
+          ? { start: segment.start, duration: segment.duration, status: "processing" as const }
+          : segment),
+        needsStitching: true,
+      } : {}),
     },
   };
   await saveSalesVideoProject(userId, updated);
@@ -202,6 +235,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   form.set("promptSegments", JSON.stringify(promptSegments));
   form.set("script", script);
   form.set("scriptSegments", JSON.stringify(scriptSegments));
+  if (retrySegment) form.set("retrySegmentIndex", String(retrySegmentIndex));
   form.set("presenter", new File([new Uint8Array(presenter)], "presenter.webp", { type: "image/webp" }));
   productImages.forEach((image, index) => {
     if (!image) return;
@@ -220,12 +254,40 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const response = await fetch(localSalesVideoUrl(), { method: "POST", headers: forwardedHeaders, body: form });
     const result = await response.json().catch(() => ({})) as { project?: SalesVideoProject; message?: string };
     if (!response.ok || result.project?.id !== id) {
-      await saveSalesVideoProject(userId, { ...updated, status: "draft", phase: "review", worker: undefined, error: result.message || "Không gửi được yêu cầu tạo video." });
+      const failedMessage = result.message || "Không gửi được yêu cầu tạo video.";
+      if (retrySegment) {
+        await saveSalesVideoProject(userId, {
+          ...updated, error: project.error,
+          details: updated.details ? {
+            ...updated.details,
+            segmentResults: currentSegmentResults.map((segment, index) => index === retrySegmentIndex
+              ? { ...segment, error: failedMessage }
+              : segment),
+            needsStitching: details.needsStitching ?? false,
+          } : undefined,
+        });
+      } else {
+        await saveSalesVideoProject(userId, { ...updated, status: "draft", phase: "review", worker: undefined, error: failedMessage });
+      }
       return NextResponse.json({ message: result.message || "StoryAI không nhận được yêu cầu tạo video." }, { status: response.status || 502 });
     }
     return NextResponse.json({ project: result.project }, { status: 202 });
   } catch {
-    await saveSalesVideoProject(userId, { ...updated, status: "draft", phase: "review", worker: undefined, error: "StoryAI không kết nối được dịch vụ tạo video." });
+    const failedMessage = "StoryAI không kết nối được dịch vụ tạo video.";
+    if (retrySegment) {
+      await saveSalesVideoProject(userId, {
+        ...updated, error: project.error,
+        details: updated.details ? {
+          ...updated.details,
+          segmentResults: currentSegmentResults.map((segment, index) => index === retrySegmentIndex
+            ? { ...segment, error: failedMessage }
+            : segment),
+          needsStitching: details.needsStitching ?? false,
+        } : undefined,
+      });
+    } else {
+      await saveSalesVideoProject(userId, { ...updated, status: "draft", phase: "review", worker: undefined, error: failedMessage });
+    }
     return NextResponse.json({ message: "StoryAI không kết nối được dịch vụ tạo video." }, { status: 502 });
   }
 }
