@@ -504,8 +504,8 @@ function readSalesVideoRoute(): SalesVideoRoute {
 export function SalesVideoView() {
   const searchParams = useSearchParams();
   const routeQuery = searchParams.toString();
-  useEffect(() => { setRoute(readSalesVideoRoute()); }, [routeQuery]);
   const [route, setRoute] = useState<SalesVideoRoute>({});
+  useEffect(() => { setRoute(readSalesVideoRoute()); }, [routeQuery]);
   const [projects, setProjects] = useState<SalesVideoProject[] | null>(null);
   const [access, setAccess] = useState<Access | null>(null);
   const [catalog, setCatalog] = useState<VideoGenerationModelOption[]>(SALES_VIDEO_GATEWAY_VIDEO_MODEL_OPTIONS);
