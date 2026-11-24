@@ -22,7 +22,7 @@ type SalesVideoTextOverlay = NonNullable<SalesVideoPostProcessing["textOverlay"]
 
 function escapeXml(value: string) {
   return value.replace(/&/gu, "&amp;").replace(/</gu, "&lt;").replace(/>/gu, "&gt;")
-    .replace(/\"/gu, "&quot;").replace(/'/gu, "&apos;");
+    .replace(/"/gu, "&quot;").replace(/'/gu, "&apos;");
 }
 
 function wrapOverlayText(text: string, maximumLineLength: number, maximumLines: number) {
