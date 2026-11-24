@@ -1,5 +1,7 @@
 "use client";
 
+import { useSearchParams } from "next/navigation";
+
 import { useEffect, useId, useMemo, useRef, useState, useCallback, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, type FormEvent } from "react";
 import {
   salesVideoDurationOptions, salesVideoProductSegments, salesVideoLanguages, salesVideoWordCount, salesVideoMaxWordCount,
@@ -471,6 +473,9 @@ function readSalesVideoRoute(): SalesVideoRoute {
 }
 
 export function SalesVideoView() {
+  const searchParams = useSearchParams();
+  const routeQuery = searchParams.toString();
+  useEffect(() => { setRoute(readSalesVideoRoute()); }, [routeQuery]);
   const [route, setRoute] = useState<SalesVideoRoute>({});
   const [projects, setProjects] = useState<SalesVideoProject[] | null>(null);
   const [access, setAccess] = useState<Access | null>(null);
