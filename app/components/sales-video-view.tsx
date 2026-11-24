@@ -144,8 +144,9 @@ function ProductImagesInput({ mainFile, additionalFiles, maxCount, onMainFileCha
         {additionalFiles.length > 0 && <div className="sales-product-image-grid">
           {additionalFiles.map((file, index) => <figure key={`${file.name}-${index}`}>
             {additionalPreviews[index] && <img src={additionalPreviews[index]} alt={`Ảnh tham khảo phụ ${index + 1}`} />}
-            <figcaption><strong>Ảnh phụ {index + 1}</strong><span title={file.name}>{file.name}</span></figcaption>
-            <button type="button" className="secondary-button compact" onClick={() => onAdditionalFilesChange(additionalFiles.filter((_, item) => item !== index))} disabled={disabled} aria-label={`Xóa ảnh tham khảo phụ ${index + 1}`}>Xóa</button>
+            <button type="button" className="secondary-button compact sales-product-image-remove" onClick={() => onAdditionalFilesChange(additionalFiles.filter((_, item) => item !== index))} disabled={disabled} title={`Xóa ảnh phụ ${index + 1}`} aria-label={`Xóa ảnh tham khảo phụ ${index + 1}`}>
+              <Icon name="close" size={13} />
+            </button>
           </figure>)}
         </div>}
         <div className="sales-pose-image-actions">
