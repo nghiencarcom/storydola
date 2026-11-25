@@ -1,18 +1,16 @@
 import { statSync } from "node:fs";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import { previousSceneContinuityReference, readProjectScenes, sceneReferenceImage } from "../../../../lib/scene-store";
+import { readProjectScenes, sceneReferenceImage } from "../../../../lib/scene-store";
 import type { VideoGenerationJob, VideoQueueState } from "../../../../lib/project-types";
-import { resolveMediaGenerationSettings, shouldUseVideoLocationReference } from "../../../../lib/media-generation-settings";
+import { resolveMediaGenerationSettings } from "../../../../lib/media-generation-settings";
 import { isFlowStoryOnlyPreset } from "../../../../lib/story-presets";
 import { getSeedanceApiKey } from "../../../../lib/seedance-accounts";
 import { getMaiVideoApiKey } from "../../../../lib/maivideo-api-keys";
 import { readMaiVideoAuthCookie } from "../../../../lib/maivideo-auth-shared";
 import { higgsfieldSessionEncryptionReady, saveHiggsfieldSessionToken } from "../../../../lib/higgsfield-session-store";
 import { providerSessionEncryptionReady, saveProviderSessionToken } from "../../../../lib/provider-session-store";
-import { seedancePublicBaseUrlErrorMessage, seedancePublicBaseUrlIssue } from "../../../../lib/seedance-reference-links";
 import { getProjectOrThrow, makeActivity, now, readData, updateData } from "../../../../lib/server-store";
-import { sceneReferenceCharacterIds, sceneReferenceLocationId } from "../../../../lib/scene-reference-assignments";
 import { dataPath } from "../../../../lib/data-directory";
 
 export const runtime = "nodejs";
@@ -159,30 +157,6 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
           : "Chưa kết nối API key Seedance / MaiVideo. Hãy thêm tài khoản trong Cài đặt.";
       return NextResponse.json({ ok: false, code, message }, { status: 503 });
     }
-  }
-  const needsSeedanceReferences = candidates.some((scene) => {
-    const settings = resolveMediaGenerationSettings({
-      ...project.mediaGeneration,
-      ...mediaRecord(scene.mediaGeneration || scene.media_generation),
-      ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
-    });
-    const videoReferenceIds = sceneReferenceCharacterIds(scene, "video");
-    const hasCharacterReferenceImage = videoReferenceIds
-      .some((id) => (project.characters || []).some((character) => character.id === id && Boolean(character.referenceImagePath)));
-    const locationId = sceneReferenceLocationId(scene, "video");
-    const hasLocationReferenceImage = Boolean((project.locations || []).find((location) => location.id === locationId)?.referenceImagePath);
-    const flowFramesMode = settings.videoProvider === "flow" && settings.flowReferenceMode === "frames";
-    return (settings.videoProvider === "seedance" || settings.videoProvider === "muse" || settings.videoProvider === "flow") && (
-      flowFramesMode
-      || Boolean(settings.videoUseSceneImageReference && sceneReferenceImage(scene))
-      || Boolean(settings.videoUseCharacterReferences && hasCharacterReferenceImage)
-      || Boolean(shouldUseVideoLocationReference(settings, project.presetId === "ai-drama") && hasLocationReferenceImage)
-      || Boolean(previousSceneContinuityReference(scenes, scene))
-    );
-  });
-  const publicBaseUrlIssue = needsSeedanceReferences ? seedancePublicBaseUrlIssue() : undefined;
-  if (publicBaseUrlIssue) {
-    return NextResponse.json({ ok: false, code: publicBaseUrlIssue, message: seedancePublicBaseUrlErrorMessage(publicBaseUrlIssue) }, { status: 503 });
   }
   if (candidateSettings.some((settings) => settings.videoProvider === "maivideo")) {
     try {

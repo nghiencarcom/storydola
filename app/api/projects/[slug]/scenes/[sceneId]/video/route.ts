@@ -1,13 +1,11 @@
 import { NextResponse } from "next/server";
 import { generateMaiVideoVideoForScene } from "../../../../../../lib/media-provider";
-import { resolveMediaGenerationSettings, shouldUseVideoLocationReference } from "../../../../../../lib/media-generation-settings";
+import { resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
 import { isFlowStoryOnlyPreset } from "../../../../../../lib/story-presets";
 import { chunkForScene, findProjectScene, previousSceneContinuityReference, sceneReferenceImage } from "../../../../../../lib/scene-store";
-import { seedancePublicBaseUrlErrorMessage, seedancePublicBaseUrlIssue } from "../../../../../../lib/seedance-reference-links";
 import { saveGeneratedSceneMedia } from "../../../../../../lib/scene-media-output";
 import { readData } from "../../../../../../lib/server-store";
 import { readMaiVideoAuthCookie } from "../../../../../../lib/maivideo-auth-shared";
-import { sceneReferenceCharacterIds, sceneReferenceLocationId } from "../../../../../../lib/scene-reference-assignments";
 
 export const runtime = "nodejs";
 
@@ -42,7 +40,6 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   if ((mediaGeneration.videoProvider === "muse" || mediaGeneration.videoProvider === "flow") && !providerAuthToken) {
     return NextResponse.json({ code: "PROVIDER_SESSION_REQUIRED", message: "Hãy đăng nhập MaiVideo để dùng API video Muse.ai hoặc Flow." }, { status: 401 });
   }
-  const videoReferenceCharacterIds = sceneReferenceCharacterIds(scene, "video");
   const sceneImage = sceneReferenceImage(scene);
   const continuityReference = previousSceneContinuityReference(scenes, scene);
   const flowFramesMode = mediaGeneration.videoProvider === "flow" && mediaGeneration.flowReferenceMode === "frames";
@@ -54,21 +51,6 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   }
   if (mediaGeneration.videoUseSceneImageReference && (!sceneImage || sceneImage.status !== "ready")) {
     return NextResponse.json({ code: "SCENE_IMAGE_REQUIRED", message: "Hãy tạo và kiểm tra ảnh cảnh trước khi tạo video." }, { status: 409 });
-  }
-  const hasCharacterReferenceImage = videoReferenceCharacterIds
-    .some((id) => (project.characters || []).some((character) => character.id === id && Boolean(character.referenceImagePath)));
-  const locationId = sceneReferenceLocationId(scene, "video");
-  const hasLocationReferenceImage = Boolean((project.locations || []).find((location) => location.id === locationId)?.referenceImagePath);
-  const seedanceNeedsReferenceUrl = flowFramesMode
-    || Boolean(mediaGeneration.videoUseSceneImageReference && sceneImage)
-    || Boolean(mediaGeneration.videoUseCharacterReferences && hasCharacterReferenceImage)
-    || Boolean(shouldUseVideoLocationReference(mediaGeneration, project.presetId === "ai-drama") && hasLocationReferenceImage)
-    || Boolean(continuityReference);
-  const publicBaseUrlIssue = (mediaGeneration.videoProvider === "seedance" || mediaGeneration.videoProvider === "muse" || mediaGeneration.videoProvider === "flow") && seedanceNeedsReferenceUrl
-    ? seedancePublicBaseUrlIssue()
-    : undefined;
-  if (publicBaseUrlIssue) {
-    return NextResponse.json({ code: publicBaseUrlIssue, message: seedancePublicBaseUrlErrorMessage(publicBaseUrlIssue) }, { status: 503 });
   }
   try {
     const media = await generateMaiVideoVideoForScene({
@@ -100,8 +82,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     return NextResponse.json({ ok: true, ...saved, media });
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : "Không tạo được video AI cho cảnh.";
-    const publicBaseUrlMessage = seedancePublicBaseUrlErrorMessage(message);
-    const userMessage = publicBaseUrlMessage || (message === "SEEDANCE_ACCOUNT_REQUIRED"
+    const userMessage = message === "SEEDANCE_ACCOUNT_REQUIRED"
       ? "Chưa kết nối API key Seedance / MaiVideo. Hãy thêm tài khoản trong Cài đặt."
       : message === "AI_DRAMA_SCENE_DURATION_UNSUPPORTED"
         ? "Model video này không hỗ trợ đúng thời lượng 5, 10 hoặc 15 giây của cảnh Phim AI. Hãy chọn model khác."
@@ -113,7 +94,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
           ? "Hãy thêm API key tạo video MaiVideo trong Cài đặt."
           : message === "MAIVIDEO_CREDENTIALS_ENCRYPTION_KEY_REQUIRED"
             ? "Máy chủ chưa cấu hình khóa mã hóa API key MaiVideo."
-        : message);
+        : message;
     const status = message === "MAIVIDEO_VIDEO_API_DISABLED"
       || message === "MAIVIDEO_API_KEY_REQUIRED"
       || message === "MAIVIDEO_VIDEO_API_KEY_REQUIRED"
@@ -121,7 +102,6 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       || message === "SEEDANCE_ACCOUNT_REQUIRED"
       || message === "SEEDANCE_ACCOUNT_NOT_FOUND"
       || message === "SEEDANCE_ENCRYPTION_KEY_REQUIRED"
-      || Boolean(publicBaseUrlMessage)
       ? 503
       : message === "AI_DRAMA_SCENE_DURATION_UNSUPPORTED" ? 409 : 502;
     return NextResponse.json({ code: message, message: userMessage }, { status });

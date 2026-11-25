@@ -3,15 +3,14 @@ import { withProviderSubmissionCheckpoint, canSafelyResumeUnsubmittedJob } from 
 import { randomUUID } from "node:crypto";
 import type { SceneMediaJob, SceneMediaJobStatus, SceneMediaAsset, StoryProject } from "./project-types";
 import { generateMaiVideoImageForScene, generateMaiVideoVideoForScene, isSeedancePendingStatusMessage, MediaProviderJobPendingError, SeedanceGenerationError } from "./media-provider";
-import { isFlowImageModel, isMuseImageModel, resolveMediaGenerationSettings, shouldUseVideoLocationReference } from "./media-generation-settings";
+import { isFlowImageModel, isMuseImageModel, resolveMediaGenerationSettings } from "./media-generation-settings";
 import { isFlowStoryOnlyPreset } from "./story-presets";
 import { deleteHiggsfieldSessionToken, getHiggsfieldSessionToken } from "./higgsfield-session-store";
 import { deleteProviderSessionToken, getProviderSessionToken } from "./provider-session-store";
-import { chunkForScene, previousSceneContinuityReference, readProjectScenes, sceneReferenceImage } from "./scene-store";
+import { chunkForScene, previousSceneContinuityReference, readProjectScenes } from "./scene-store";
 import { saveGeneratedSceneMedia } from "./scene-media-output";
-import { seedancePublicBaseUrlErrorMessage, seedancePublicBaseUrlIssue } from "./seedance-reference-links";
 import { makeActivity, now, readDataForUser, updateDataForUser } from "./server-store";
-import { sceneReferenceCharacterIds, sceneReferenceLocationId } from "./scene-reference-assignments";
+import { sceneReferenceLocationId } from "./scene-reference-assignments";
 
 // Submit a large scene batch concurrently; provider submission is asynchronous,
 // so workers can create many jobs without waiting for earlier videos to finish.
@@ -327,8 +326,6 @@ function userFacingError(value: unknown) {
   if (value instanceof SeedanceGenerationError && value.stage === "seedance_create" && (value.message.includes("Hết thời gian kết nối") || [502, 503, 504].includes(value.statusCode || 0))) {
     return `${value.providerLabel} chưa xác nhận task ID; yêu cầu có thể đã được nhận. Hãy kiểm tra lịch sử ${value.providerLabel} trước khi gửi lại để tránh tạo trùng.`;
   }
-  const publicBaseUrlMessage = seedancePublicBaseUrlErrorMessage(code);
-  if (publicBaseUrlMessage) return publicBaseUrlMessage;
   if (code === "AI_DRAMA_SCENE_DURATION_UNSUPPORTED") return "Model video này không hỗ trợ đúng thời lượng 5, 10 hoặc 15 giây của cảnh Phim AI. Hãy chọn model khác.";
   if (value instanceof SeedanceGenerationError) return value.message;
   return code || "Không tạo được media cho cảnh.";
@@ -374,28 +371,6 @@ async function runJobWithCheckpoint(userId: string, slug: string, job: SceneMedi
     }
 
     if (job.kind === "video" && settings.videoProvider === "higgsfield" && !higgsfieldAuthToken) throw new Error("HIGGSFIELD_SESSION_REQUIRED");
-    if (job.kind === "video" && (settings.videoProvider === "seedance" || settings.videoProvider === "muse" || settings.videoProvider === "flow")) {
-      const videoReferenceCharacterIds = sceneReferenceCharacterIds(scene, "video");
-      const sceneImage = sceneReferenceImage(scene);
-      const hasCharacterReferenceImage = videoReferenceCharacterIds
-        .some((id) => (project.characters || []).some((character) => character.id === id && Boolean(character.referenceImagePath)));
-      const locationId = sceneReferenceLocationId(scene, "video");
-      const hasLocationReferenceImage = Boolean((project.locations || []).find((location) => location.id === locationId)?.referenceImagePath);
-      const flowFramesMode = settings.videoProvider === "flow" && settings.flowReferenceMode === "frames";
-      const flowFrameEndSceneId = String(scene.flowFrameEndSceneId || scene.flow_frame_end_scene_id || "").trim();
-      const flowFrameEndScene = scenes.find((item) => item.id === flowFrameEndSceneId);
-      const flowFrameEndImage = flowFrameEndScene ? sceneReferenceImage(flowFrameEndScene) : undefined;
-      if (flowFramesMode && (flowFrameEndSceneId === scene.id || sceneImage?.kind !== "image" || sceneImage.status !== "ready" || sceneImage.stale === true || flowFrameEndImage?.kind !== "image" || flowFrameEndImage.status !== "ready" || flowFrameEndImage.stale === true)) {
-        throw new Error(`Flow Frames cần ảnh khung đầu và ảnh khung cuối sẵn sàng cho ${scene.id}.`);
-      }
-      const needsReference = flowFramesMode || Boolean(settings.videoUseSceneImageReference && sceneImage)
-        || Boolean(settings.videoUseCharacterReferences && hasCharacterReferenceImage)
-        || Boolean(shouldUseVideoLocationReference(settings, project.presetId === "ai-drama") && hasLocationReferenceImage)
-        || Boolean(previousSceneContinuityReference(scenes, scene));
-      if (!flowFramesMode && settings.videoUseSceneImageReference && sceneImage?.status !== "ready") throw new Error("Hãy tạo và kiểm tra ảnh cảnh trước khi tạo video.");
-      const publicBaseUrlIssue = needsReference ? seedancePublicBaseUrlIssue() : undefined;
-      if (publicBaseUrlIssue) throw new Error(publicBaseUrlIssue);
-    }
     const continuityReference = previousSceneContinuityReference(scenes, scene);
     let media: SceneMediaAsset;
     if (job.kind === "image") {

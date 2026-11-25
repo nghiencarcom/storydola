@@ -27,7 +27,6 @@ import { characterReferencePrompt, locationReferencePrompt, PROFILE_REFERENCE_AS
 import { normalizeEntityName } from "./entity-name";
 import { normalizeAiDramaSceneDuration } from "./ai-drama-scene-timing";
 import { availableImageModels, defaultMediaGenerationSettings, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, filterPixverseVideoQualities, FLOW_IMAGE_MODEL_OPTIONS, FLOW_VIDEO_MODEL_OPTION, HIGGSFIELD_SEEDANCE_MODEL_ID, isFlowImageModel, isKlingVideoModel, isMaiVideoPixverseV56Model, isMaiVideoSeedanceModel, isMuseImageModel, isPixverseVideoSettings, isVideoOffPeakRequired, MINIMAX_H3_VIDEO_MODEL_ID, MUSE_IMAGE_MODEL_OPTION, MUSE_VIDEO_MODEL_OPTION, normalizeVideoDuration, PIXVERSE_SEEDANCE_2_FAST_MODEL_ID, resolveMediaGenerationSettings, SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES, shouldUseVideoLocationReference, WAN_3_VIDEO_MODEL_ID } from "./media-generation-settings";
-import { createSeedanceCharacterReferenceUrl, createSeedanceLocationReferenceUrl, createSeedanceSceneReferenceUrl, seedancePublicBaseUrlIssue } from "./seedance-reference-links";
 import { getSeedanceApiKey, getSeedanceApiSessionToken } from "./seedance-accounts";
 import { getMaiVideoApiKey } from "./maivideo-api-keys";
 import { getCurrentUserId } from "./auth-server";
@@ -1469,6 +1468,22 @@ async function localSceneReferenceDataUrl(projectSlug: string, sceneId: string, 
   return `data:${mimeType};base64,${image.toString("base64")}`;
 }
 
+const GATEWAY_REFERENCE_IMAGE_MAX_BYTES = 25 * 1024 * 1024;
+const GATEWAY_REFERENCE_IMAGES_TOTAL_MAX_BYTES = 100 * 1024 * 1024;
+
+function validateGatewayReferenceImageDataUrls(images: string[], provider: string) {
+  let totalBytes = 0;
+  for (const [index, image] of images.entries()) {
+    const encoded = image.match(/^data:image\/(?:png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/)?.[1];
+    if (!encoded || encoded.length % 4 !== 0) throw new Error(`${provider}: ảnh tham chiếu ${index + 1} không phải Data URI PNG/JPEG/WebP hợp lệ.`);
+    const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
+    const bytes = Math.floor(encoded.length * 3 / 4) - padding;
+    if (bytes > GATEWAY_REFERENCE_IMAGE_MAX_BYTES) throw new Error(`${provider}: mỗi ảnh tham chiếu không được vượt quá 25 MiB.`);
+    totalBytes += bytes;
+  }
+  if (totalBytes > GATEWAY_REFERENCE_IMAGES_TOTAL_MAX_BYTES) throw new Error(`${provider}: tổng dung lượng ảnh tham chiếu không được vượt quá 100 MiB.`);
+}
+
 function sceneCharacterIds(scene: SceneRecord) {
   const value = scene.character_ids ?? scene.characterIds;
   return Array.isArray(value) ? [...new Set(value.map((item) => String(item)))] : [];
@@ -1661,23 +1676,19 @@ export async function generateMaiVideoImageForScene({
   const referenceImageUrls: string[] = [];
   const referenceImageNames: string[] = [];
   if (isMuseImageModel(settings.imageModel) || isFlowImageModel(settings.imageModel)) {
-    if (picturedCharacters.length || picturedLocation || includedContinuityReference) {
-      const publicBaseUrlIssue = seedancePublicBaseUrlIssue();
-      if (publicBaseUrlIssue) throw new Error(publicBaseUrlIssue);
-      const ownerId = userId || await getCurrentUserId();
-      for (const character of picturedCharacters) {
-        referenceImageUrls.push(createSeedanceCharacterReferenceUrl(projectSlug, character.id, ownerId));
-        referenceImageNames.push(`Character - ${character.name}`);
-      }
-      if (picturedLocation) {
-        referenceImageUrls.push(createSeedanceLocationReferenceUrl(projectSlug, picturedLocation.id, ownerId));
-        referenceImageNames.push(`Location - ${picturedLocation.name}`);
-      }
-      if (includedContinuityReference) {
-        referenceImageUrls.push(createSeedanceSceneReferenceUrl(projectSlug, includedContinuityReference.sceneId, ownerId));
-        referenceImageNames.push(`Previous scene - ${includedContinuityReference.sceneId}`);
-      }
+    for (const character of picturedCharacters) {
+      referenceImageUrls.push(await localCharacterReferenceDataUrl(projectSlug, character));
+      referenceImageNames.push(`Character - ${character.name}`);
     }
+    if (picturedLocation) {
+      referenceImageUrls.push(await localLocationReferenceDataUrl(projectSlug, picturedLocation));
+      referenceImageNames.push(`Location - ${picturedLocation.name}`);
+    }
+    if (includedContinuityReference) {
+      referenceImageUrls.push(await localSceneReferenceDataUrl(projectSlug, includedContinuityReference.sceneId, includedContinuityReference.image as unknown as JsonRecord));
+      referenceImageNames.push(`Previous scene - ${includedContinuityReference.sceneId}`);
+    }
+    validateGatewayReferenceImageDataUrls(referenceImageUrls, isMuseImageModel(settings.imageModel) ? "Muse.ai" : "Flow");
   } else {
     for (const character of picturedCharacters) referenceImageUrls.push(await localCharacterReferenceDataUrl(projectSlug, character));
     if (picturedLocation) referenceImageUrls.push(await localLocationReferenceDataUrl(projectSlug, picturedLocation));
@@ -2494,12 +2505,19 @@ export async function generateMaiVideoVideoForScene({
     if ((settings.videoProvider === "muse" || settings.videoProvider === "flow") && !gatewaySessionToken) throw new Error("PROVIDER_SESSION_REQUIRED");
     const referenceImageUrls: string[] = [];
     for (const reference of references) {
-      if (reference.kind === "scene" || reference.kind === "flow-frame-start") referenceImageUrls.push(createSeedanceSceneReferenceUrl(projectSlug, id, ownerId));
-      else if (reference.kind === "flow-frame-end" && reference.previousSceneId) referenceImageUrls.push(createSeedanceSceneReferenceUrl(projectSlug, reference.previousSceneId, ownerId));
-      else if (reference.kind === "previous-scene" && reference.previousSceneId) referenceImageUrls.push(createSeedanceSceneReferenceUrl(projectSlug, reference.previousSceneId, ownerId));
-      else if (reference.kind === "character" && reference.character) referenceImageUrls.push(createSeedanceCharacterReferenceUrl(projectSlug, reference.character.id, ownerId));
-      else if (reference.kind === "location" && selectedLocation) referenceImageUrls.push(createSeedanceLocationReferenceUrl(projectSlug, selectedLocation.id, ownerId));
+      if ((reference.kind === "scene" || reference.kind === "flow-frame-start") && sceneReference) {
+        referenceImageUrls.push(await localSceneReferenceDataUrl(projectSlug, id, sceneReference));
+      } else if (reference.kind === "flow-frame-end" && flowFrameEndSceneId && flowFrameEndImage) {
+        referenceImageUrls.push(await localSceneReferenceDataUrl(projectSlug, flowFrameEndSceneId, flowFrameEndImage));
+      } else if (reference.kind === "previous-scene" && reference.previousSceneId && reference.previousSceneImage) {
+        referenceImageUrls.push(await localSceneReferenceDataUrl(projectSlug, reference.previousSceneId, reference.previousSceneImage));
+      } else if (reference.kind === "character" && reference.character) {
+        referenceImageUrls.push(await localCharacterReferenceDataUrl(projectSlug, reference.character));
+      } else if (reference.kind === "location" && selectedLocation) {
+        referenceImageUrls.push(await localLocationReferenceDataUrl(projectSlug, selectedLocation));
+      }
     }
+    validateGatewayReferenceImageDataUrls(referenceImageUrls, settings.videoProvider === "muse" ? "Muse.ai" : settings.videoProvider === "flow" ? "Flow" : "Seedance");
     if (settings.videoProvider === "muse") {
       const outputPath = path.join(MEDIA_DIR, safeSegment(projectSlug, "project"), safeSegment(chunkId, "chunk"), `${safeSegment(id, `S${String(sceneNumber).padStart(3, "0")}`)}-muse-video.mp4`);
       return generateMuseVideo(safePrompt, outputPath, aspectRatio, referenceImageUrls, references.map((reference) => reference.name), settings, seedanceApiKey, seedanceTaskId, onSeedanceCreateStarted, onSeedanceTaskCreated, seedanceTaskCreatedAt, signal, gatewaySessionToken);

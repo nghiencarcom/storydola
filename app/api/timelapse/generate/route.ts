@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
 import { DEFAULT_FLOW_VIDEO_DURATION_SEC } from "../../../lib/media-generation-settings";
-import { createSeedanceTimelapseReferenceUrl, seedancePublicBaseUrlErrorMessage, seedancePublicBaseUrlIssue } from "../../../lib/seedance-reference-links";
 import { generateFlowTimelapseVideo } from "../../../lib/media-provider";
 import { readMaiVideoAuthCookie } from "../../../lib/maivideo-auth-shared";
-import { safeTimelapseId } from "../../../lib/timelapse-storage";
+import { readTimelapseImage, safeTimelapseId } from "../../../lib/timelapse-storage";
 
 export const runtime = "nodejs";
 
@@ -29,13 +28,15 @@ export async function POST(request: Request) {
   const providerAuthToken = readMaiVideoAuthCookie(request.headers.get("cookie"));
   if (!providerAuthToken) return NextResponse.json({ code: "PROVIDER_SESSION_REQUIRED", message: "Phiên MaiVideo chưa đăng nhập. Hãy đăng nhập lại để dùng Flow." }, { status: 401 });
 
-  const publicBaseUrlIssue = seedancePublicBaseUrlIssue();
-  if (publicBaseUrlIssue) return NextResponse.json({ code: publicBaseUrlIssue, message: seedancePublicBaseUrlErrorMessage(publicBaseUrlIssue) }, { status: 503 });
   try {
-    const referenceImageUrls = [
-      createSeedanceTimelapseReferenceUrl(workflowId, fromImageId, userId),
-      createSeedanceTimelapseReferenceUrl(workflowId, toImageId, userId),
-    ];
+    const [fromImage, toImage] = await Promise.all([
+      readTimelapseImage(userId, workflowId, fromImageId),
+      readTimelapseImage(userId, workflowId, toImageId),
+    ]);
+    if (!fromImage || !toImage) throw new Error("TIMELAPSE_IMAGE_NOT_FOUND");
+    const referenceImageUrls = [fromImage, toImage].map(({ bytes, contentType }) =>
+      `data:${contentType};base64,${bytes.toString("base64")}`,
+    );
     const media = await generateFlowTimelapseVideo({
       userId,
       workflowId,
@@ -50,15 +51,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, videoUrl: `/api/timelapse/videos/${encodeURIComponent(workflowId)}/${encodeURIComponent(transitionId)}`, model: media.model, quality: media.quality, durationSec: media.durationSec });
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : "Không tạo được Transition bằng Flow.";
-    const publicBaseUrlMessage = seedancePublicBaseUrlErrorMessage(message);
-    const userMessage = publicBaseUrlMessage || (message === "SEEDANCE_ACCOUNT_REQUIRED"
+    const userMessage = message === "SEEDANCE_ACCOUNT_REQUIRED"
       ? "Chưa có tài khoản Seedance Gateway. Hãy thêm tài khoản trong Cài đặt StoryAI."
       : message === "SEEDANCE_ACCOUNT_NOT_FOUND"
         ? "Tài khoản Seedance Gateway đã chọn không còn tồn tại. Hãy chọn lại trong Cài đặt."
         : message === "SEEDANCE_ENCRYPTION_KEY_REQUIRED"
           ? "Máy chủ chưa cấu hình khóa mã hóa tài khoản Flow."
-          : message);
-    const status = ["SEEDANCE_ACCOUNT_REQUIRED", "SEEDANCE_ACCOUNT_NOT_FOUND", "SEEDANCE_ENCRYPTION_KEY_REQUIRED"].includes(message) || Boolean(publicBaseUrlMessage) ? 503 : 502;
+          : message;
+    const status = ["SEEDANCE_ACCOUNT_REQUIRED", "SEEDANCE_ACCOUNT_NOT_FOUND", "SEEDANCE_ENCRYPTION_KEY_REQUIRED"].includes(message) ? 503 : 502;
     return NextResponse.json({ code: message, message: userMessage }, { status });
   }
 }

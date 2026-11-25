@@ -4,8 +4,7 @@ import type { VideoGenerationJob, VideoQueueState } from "../../../../../lib/pro
 import { resolveMediaGenerationSettings } from "../../../../../lib/media-generation-settings";
 import { isFlowStoryOnlyPreset } from "../../../../../lib/story-presets";
 import { chunkForScene, previousSceneContinuityReference, readProjectScenes } from "../../../../../lib/scene-store";
-import { getProjectOrThrow, makeActivity, markRenderStale, now, readChunkOutput, readData, saveChunkOutput, updateData } from "../../../../../lib/server-store";
-import { seedancePublicBaseUrlErrorMessage } from "../../../../../lib/seedance-reference-links";
+import { getProjectOrThrow, makeActivity, markRenderStale, now, readChunkOutput, saveChunkOutput, updateData } from "../../../../../lib/server-store";
 import { deleteHiggsfieldSessionToken, getHiggsfieldSessionToken } from "../../../../../lib/higgsfield-session-store";
 import { deleteProviderSessionToken, getProviderSessionToken } from "../../../../../lib/provider-session-store";
 import { canResumeVideoQueueJob, claimVideoQueueJob, isVideoQueueJobActive, releaseVideoQueueJob } from "../../../../../lib/video-queue-runtime";
@@ -283,7 +282,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     return NextResponse.json({ ok: true, processed: true, jobId: job.id, media, outputPath, queue: updated.queue, summary: queueSummary(updated.queue), limit: updated.queue.concurrency });
   } catch (cause) {
     const code = cause instanceof Error ? cause.message : "Video queue job failed";
-    const message = seedancePublicBaseUrlErrorMessage(code) || code;
+    const message = code;
     const seedanceError = cause instanceof SeedanceGenerationError ? cause : undefined;
     const higgsfieldSameTask = cause instanceof MediaProviderJobPendingError && cause.provider === "higgsfield"
       || code === "HIGGSFIELD_SESSION_REQUIRED";
@@ -301,7 +300,6 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
         || !currentJob.higgsfieldJobId && currentJob.stage === "higgsfield_create"
       ));
       const retryable = Boolean(currentJob
-        && !seedancePublicBaseUrlErrorMessage(code)
         && !higgsfieldTerminalFailure
         && !gatewayTerminalFailure
         && currentJob.attempt < currentJob.maxAttempts
