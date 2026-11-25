@@ -363,15 +363,20 @@ export function TimelapseView() {
     if (batchBusy || !transitions.length) return;
     setBatchBusy(true);
     let failed = 0;
-    for (const transition of transitions) {
-      const prompt = promptScenes[transition.index]?.video_prompt?.trim();
-      if (!prompt) {
-        failed += 1;
-        setVideos((current) => ({ ...current, [transition.id]: { status: "failed", error: "Thiếu video_prompt trong JSON." } }));
-        continue;
+    const queue = [...transitions];
+    const worker = async () => {
+      while (queue.length) {
+        const transition = queue.shift()!;
+        const prompt = promptScenes[transition.index]?.video_prompt?.trim();
+        if (!prompt) {
+          failed += 1;
+          setVideos((current) => ({ ...current, [transition.id]: { status: "failed", error: "Thiếu video_prompt trong JSON." } }));
+          continue;
+        }
+        if (!await runOneTransition(transition)) failed += 1;
       }
-      if (!await runOneTransition(transition)) failed += 1;
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, transitions.length) }, () => worker()));
     setBatchBusy(false);
     setMessage(failed ? { tone: "error", text: `${transitions.length - failed}/${transitions.length} Transition đã hoàn tất; ${failed} mục cần kiểm tra.` } : { tone: "success", text: `Đã tạo xong ${transitions.length} Transition bằng Flow.` });
   }

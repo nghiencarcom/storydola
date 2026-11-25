@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
-import type { ProjectChunk, SceneContinuityReference, StoryProject } from "./project-types";
-import { readChunkOutput } from "./server-store";
+import type { MediaGenerationSettings, ProjectChunk, SceneContinuityReference, StoryProject } from "./project-types";
+import { resolveMediaGenerationSettings } from "./media-generation-settings";
+import { isFlowStoryOnlyPreset } from "./story-presets";
+import { readChunkOutput, saveChunkOutput } from "./server-store";
 
 export type StoredScene = Record<string, unknown> & {
   id: string;
@@ -25,10 +27,11 @@ function sceneId(scene: Record<string, unknown>, fallback: string) {
 }
 
 export async function readProjectScenes(project: StoryProject): Promise<StoredScene[]> {
+  const chunks = project.chunks.filter((chunk) => Boolean(chunk.outputPath));
+  const payloads = await Promise.all(chunks.map((chunk) => readChunkOutput(chunk)));
   const output: StoredScene[] = [];
-  for (const chunk of project.chunks) {
-    if (!chunk.outputPath) continue;
-    const payload = recordValue(await readChunkOutput(chunk));
+  chunks.forEach((chunk, chunkIndex) => {
+    const payload = recordValue(payloads[chunkIndex]);
     const rawScenes = payload && Array.isArray(payload.scenes) ? payload.scenes : [];
     rawScenes.forEach((value, index) => {
       const scene = recordValue(value);
@@ -42,7 +45,7 @@ export async function readProjectScenes(project: StoryProject): Promise<StoredSc
         chunkOutputPath: chunk.outputPath,
       });
     });
-  }
+  });
   return output.sort((left, right) => {
     const leftNumber = Number(String(left.id).replace(/\D/g, "")) || 0;
     const rightNumber = Number(String(right.id).replace(/\D/g, "")) || 0;
@@ -107,4 +110,78 @@ export function sceneReferenceImageLocalPath(scene: StoredScene) {
 
 export function chunkForScene(project: StoryProject, scene: StoredScene): ProjectChunk | undefined {
   return project.chunks.find((chunk) => chunk.id === scene.chunkId);
+}
+
+const IMAGE_SETTINGS_KEYS: (keyof MediaGenerationSettings)[] = [
+  "imageModel",
+  "imageQuality",
+  "imageDetailLevel",
+  "imageUseCharacterReferences",
+];
+
+const VIDEO_SETTINGS_KEYS: (keyof MediaGenerationSettings)[] = [
+  "videoProvider",
+  "seedanceAccountId",
+  "seedanceChatMode",
+  "videoModel",
+  "videoQuality",
+  "videoDurationMode",
+  "videoDurationSec",
+  "videoMultiShot",
+  "videoAudio",
+  "videoOffPeak",
+  "videoUseCharacterReferences",
+  "videoUseLocationReferences",
+  "videoUseSceneImageReference",
+  "flowReferenceMode",
+];
+
+/** Persist mediaGeneration settings onto matching scenes in their chunk output files. */
+export async function persistSceneMediaSettingsInChunks(
+  project: StoryProject,
+  scenes: StoredScene[],
+  settingsBySceneId: Map<string, MediaGenerationSettings>,
+): Promise<string[]> {
+  const idsByChunk = new Map<string, Set<string>>();
+  for (const scene of scenes) {
+    if (!settingsBySceneId.has(scene.id)) continue;
+    const chunk = chunkForScene(project, scene);
+    if (!chunk?.outputPath) throw new Error("CHUNK_OUTPUT_NOT_FOUND");
+    if (chunk.status === "processing") throw new Error("CHUNK_IS_PROCESSING");
+    const ids = idsByChunk.get(scene.chunkId) || new Set<string>();
+    ids.add(scene.id);
+    idsByChunk.set(scene.chunkId, ids);
+  }
+  return Promise.all([...idsByChunk.entries()].map(async ([chunkId, sceneIds]) => {
+    const chunk = project.chunks.find((item) => item.id === chunkId)!;
+    const payload = recordValue(await readChunkOutput(chunk));
+    const rawScenes = payload && Array.isArray(payload.scenes) ? payload.scenes : [];
+    const foundIds = new Set<string>();
+    const updatedScenes = rawScenes.map((value) => {
+      const record = recordValue(value) || {};
+      const id = String(record.id || record.scene_id || "").trim();
+      const nextSettings = settingsBySceneId.get(id);
+      if (!nextSettings) return value;
+      foundIds.add(id);
+      const currentSettings = resolveMediaGenerationSettings({
+        ...project.mediaGeneration,
+        ...(recordValue(record.mediaGeneration || record.media_generation) || {}),
+        ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
+      });
+      const currentMedia = recordValue(record.media);
+      const currentReference = recordValue(record.videoReferenceImage || record.video_reference_image)
+        || (currentMedia?.kind === "image" ? currentMedia : null);
+      const imageChanged = IMAGE_SETTINGS_KEYS.some((key) => currentSettings[key] !== nextSettings[key]);
+      const videoChanged = VIDEO_SETTINGS_KEYS.some((key) => currentSettings[key] !== nextSettings[key]);
+      return {
+        ...record,
+        mediaGeneration: nextSettings,
+        ...(imageChanged && currentMedia?.kind === "image" ? { media: { ...currentMedia, stale: true } } : {}),
+        ...(videoChanged && currentMedia?.kind === "video" ? { media: { ...currentMedia, stale: true } } : {}),
+        ...(imageChanged && currentReference?.kind === "image" ? { videoReferenceImage: { ...currentReference, stale: true } } : {}),
+      };
+    });
+    if (foundIds.size !== sceneIds.size) throw new Error("SCENE_OUTPUT_NOT_FOUND");
+    return saveChunkOutput(project.slug, chunkId, { ...(payload || {}), scenes: updatedScenes });
+  }));
 }

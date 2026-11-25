@@ -621,8 +621,11 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   const dramaReferenceSyncAttempted = useRef("");
   const dramaSceneAssignmentAttempted = useRef("");
   const [characterVoiceSavingId, setCharacterVoiceSavingId] = useState("");
-  const [generatingSceneId, setGeneratingSceneId] = useState("");
-  const [generatingSceneMediaKind, setGeneratingSceneMediaKind] = useState<"image" | "video" | "">("");
+  const [generatingSceneKinds, setGeneratingSceneKinds] = useState<Record<string, "image" | "video">>({});
+  const generatingSceneLockRef = useRef(new Set<string>());
+  const [batchGeneratingKind, setBatchGeneratingKind] = useState<"image" | "video" | "">("");
+  const generatingSceneId = Object.keys(generatingSceneKinds).length > 0 ? "busy" : "";
+  const generatingSceneMediaKind = batchGeneratingKind;
   const [sceneSearch, setSceneSearch] = useState("");
   const [sceneChunkFilter, setSceneChunkFilter] = useState("all");
   const [sceneReviewFilter, setSceneReviewFilter] = useState<SceneReviewFilter>("all");
@@ -688,6 +691,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   const videoQueueStopRef = useRef(false);
   const autoResumeVideoQueueAtRef = useRef<Record<string, number>>({});
   const scenesLoadInFlightRef = useRef(false);
+  const scenesMutationEpochRef = useRef(0);
   const episodeScriptLoadTokenRef = useRef(0);
 
   useEffect(() => {
@@ -1253,6 +1257,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
     if (!project?.slug) return;
     if (scenesLoadInFlightRef.current) return;
     scenesLoadInFlightRef.current = true;
+    const startEpoch = scenesMutationEpochRef.current;
     if (!silent) {
       setScenesLoading(true);
       setSceneError("");
@@ -1261,6 +1266,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
       const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes`, { cache: "no-store" });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.message || "Không thể tải danh sách cảnh.");
+      if (silent && scenesMutationEpochRef.current !== startEpoch) return;
       const nextScenes = Array.isArray(payload.scenes) ? payload.scenes as ScenePreview[] : [];
       setScenes((current) => silent ? mergePolledSceneMedia(current, nextScenes) : nextScenes);
       setSelectedSceneId((current) => current && nextScenes.some((scene) => scene.id === current) ? current : nextScenes[0]?.id || "");
@@ -2276,23 +2282,25 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
       return;
     }
     setBatchMediaBusy(true);
-    setGeneratingSceneMediaKind("image");
+    setBatchGeneratingKind("image");
     setSceneError("");
     setRunMessage(null);
     try {
-      setBatchMediaProgress(`Đang áp dụng cấu hình cho ${targets.length} cảnh…`);
-      await applyBatchSceneMediaSettings(targets, batchMediaSettings);
       setBatchMediaProgress(`Đang xếp ${targets.length} job ảnh vào hàng đợi nền…`);
       const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scene-media-jobs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sceneIds: targets.map((scene) => scene.id), kind: "image", mediaGeneration: batchMediaSettings }),
+        body: JSON.stringify({ sceneIds: targets.map((scene) => scene.id), kind: "image", mediaGeneration: batchMediaSettings, persistMediaGeneration: true }),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || !payload.ok) throw new Error(payload.message || "Không thể xếp ảnh vào hàng đợi nền.");
       const jobs = Array.isArray(payload.jobs) ? payload.jobs as SceneMediaJobPreview[] : [];
       const jobsByScene = new Map(jobs.map((job) => [job.sceneId, job]));
-      setScenes((current) => current.map((scene) => jobsByScene.has(scene.id) ? { ...scene, mediaJob: jobsByScene.get(scene.id) } : scene));
+      const targetIds = new Set(targets.map((scene) => scene.id));
+      scenesMutationEpochRef.current += 1;
+      setScenes((current) => current.map((scene) => targetIds.has(scene.id)
+        ? { ...scene, mediaGeneration: batchMediaSettings, ...(jobsByScene.has(scene.id) ? { mediaJob: jobsByScene.get(scene.id) } : {}) }
+        : scene));
       setRunMessage({
         tone: "success",
         text: `Đã xếp ${jobs.length} job tạo ảnh vào hàng đợi chạy nền${batchRegenerateImages ? " (ghi đè ảnh cũ khi hoàn tất)" : ""}. Có thể tiếp tục dùng màn hình; trạng thái sẽ tự cập nhật.`,
@@ -2302,7 +2310,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
     } finally {
       setBatchMediaProgress("");
       setBatchMediaBusy(false);
-      setGeneratingSceneMediaKind("");
+      setBatchGeneratingKind("");
     }
   }
 
@@ -2313,21 +2321,24 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
       return;
     }
     setBatchMediaBusy(true);
-    setGeneratingSceneMediaKind("video");
+    setBatchGeneratingKind("video");
     setBatchMediaProgress(`Đang xếp ${targets.length} job ${regenerate ? "tạo lại video" : "video"} vào hàng đợi nền…`);
     setSceneError("");
     try {
-      await applyBatchSceneMediaSettings(targets, batchMediaSettings);
       const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scene-media-jobs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sceneIds: targets.map((scene) => scene.id), kind: "video", mediaGeneration: batchMediaSettings }),
+        body: JSON.stringify({ sceneIds: targets.map((scene) => scene.id), kind: "video", mediaGeneration: batchMediaSettings, persistMediaGeneration: true }),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || !payload.ok) throw new Error(payload.message || "Không thể xếp video vào hàng đợi nền.");
       const jobs = Array.isArray(payload.jobs) ? payload.jobs as SceneMediaJobPreview[] : [];
       const jobsByScene = new Map(jobs.map((job) => [job.sceneId, job]));
-      setScenes((current) => current.map((scene) => jobsByScene.has(scene.id) ? { ...scene, mediaJob: jobsByScene.get(scene.id) } : scene));
+      const targetIds = new Set(targets.map((scene) => scene.id));
+      scenesMutationEpochRef.current += 1;
+      setScenes((current) => current.map((scene) => targetIds.has(scene.id)
+        ? { ...scene, mediaGeneration: batchMediaSettings, ...(jobsByScene.has(scene.id) ? { mediaJob: jobsByScene.get(scene.id) } : {}) }
+        : scene));
       const replacedLegacyJobs = Number(payload.replacedLegacyVideoJobs) || 0;
       setRunMessage({ tone: "success", text: `Đã xếp ${jobs.length} job ${regenerate ? "tạo lại video" : "video"} vào hàng đợi chạy nền.${replacedLegacyJobs ? ` Đã thay ${replacedLegacyJobs} job chờ ở queue cũ.` : ""} Có thể tiếp tục thao tác; trạng thái từng cảnh tự cập nhật.` });
     } catch (cause) {
@@ -2335,7 +2346,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
     } finally {
       setBatchMediaProgress("");
       setBatchMediaBusy(false);
-      setGeneratingSceneMediaKind("");
+      setBatchGeneratingKind("");
     }
   }
 
@@ -2396,29 +2407,29 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   }
 
   async function generateSceneMedia(scene: ScenePreview, kind: "image" | "video") {
-    if (!project?.slug || sceneMediaSettingsSaving || generatingSceneId || batchMediaBusy || videoQueueRunning || ttsRunning || scriptBlocksIndependentTasks || scene.mediaJob?.status === "queued" || scene.mediaJob?.status === "running") return;
-    if (kind === "video" && batchMediaSettings.videoProvider === "seedance") {
+    if (!project?.slug || sceneMediaSettingsSaving || generatingSceneLockRef.current.has(scene.id) || generatingSceneKinds[scene.id] || batchMediaBusy || videoQueueRunning || ttsRunning || scriptBlocksIndependentTasks || scene.mediaJob?.status === "queued" || scene.mediaJob?.status === "running") return;
+    const currentSettings = mediaSettingsForScene(scene, project);
+    const selectedImageModel = availableImageModels.find((item) => item.id === batchMediaSettings.imageModel);
+    const nextSettings: MediaGenerationSettings = kind === "image"
+      ? {
+          ...currentSettings,
+          imageModel: batchMediaSettings.imageModel,
+          imageQuality: selectedImageModel?.qualities.length && !selectedImageModel.qualities.includes(batchMediaSettings.imageQuality)
+            ? selectedImageModel.qualities[0]
+            : batchMediaSettings.imageQuality,
+          imageDetailLevel: batchMediaSettings.imageDetailLevel,
+          seedanceAccountId: batchMediaSettings.seedanceAccountId || "",
+          imageUseCharacterReferences: batchMediaSettings.imageUseCharacterReferences,
+        }
+      : videoGenerationSettingsForScene(scene);
+    if (kind === "video" && nextSettings.videoProvider === "seedance") {
       setRunMessage({ tone: "error", text: "Dự án đang dùng Seedance trực tiếp từ seedance.maivideo.top, hiện tạm ẩn. Chọn MaiVideo, Muse.ai hoặc Flow để tạo video mới." });
       return;
     }
-    setGeneratingSceneId(scene.id);
-    setGeneratingSceneMediaKind(kind);
+    generatingSceneLockRef.current.add(scene.id);
+    setGeneratingSceneKinds((current) => ({ ...current, [scene.id]: kind }));
     setSceneError("");
     try {
-      const currentSettings = mediaSettingsForScene(scene, project);
-      const selectedImageModel = availableImageModels.find((item) => item.id === batchMediaSettings.imageModel);
-      const nextSettings: MediaGenerationSettings = kind === "image"
-        ? {
-            ...currentSettings,
-            imageModel: batchMediaSettings.imageModel,
-            imageQuality: selectedImageModel?.qualities.length && !selectedImageModel.qualities.includes(batchMediaSettings.imageQuality)
-              ? selectedImageModel.qualities[0]
-              : batchMediaSettings.imageQuality,
-            imageDetailLevel: batchMediaSettings.imageDetailLevel,
-            seedanceAccountId: batchMediaSettings.seedanceAccountId || "",
-            imageUseCharacterReferences: batchMediaSettings.imageUseCharacterReferences,
-          }
-        : videoGenerationSettingsForScene(scene);
       const settingsChanged = kind === "image"
         ? currentSettings.imageModel !== nextSettings.imageModel
           || currentSettings.imageQuality !== nextSettings.imageQuality
@@ -2439,23 +2450,35 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
           || currentSettings.videoUseLocationReferences !== nextSettings.videoUseLocationReferences
           || currentSettings.videoUseSceneImageReference !== nextSettings.videoUseSceneImageReference
           || currentSettings.flowReferenceMode !== nextSettings.flowReferenceMode;
-      if (settingsChanged && !(await saveSceneMediaSettings(scene, nextSettings))) return;
       const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scene-media-jobs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sceneIds: [scene.id], kind, mediaGeneration: nextSettings }),
+        body: JSON.stringify({ sceneIds: [scene.id], kind, mediaGeneration: nextSettings, persistMediaGeneration: settingsChanged }),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || !payload.ok) throw new Error(payload.message || `Không thể xếp ${kind === "image" ? "ảnh" : "video"} vào hàng đợi.`);
       const job = (Array.isArray(payload.jobs) ? payload.jobs[0] : undefined) as SceneMediaJob | undefined;
-      if (job) setScenes((current) => current.map((item) => item.id === scene.id ? { ...item, mediaJob: job } : item));
+      scenesMutationEpochRef.current += 1;
+      setScenes((current) => current.map((item) => item.id === scene.id
+        ? {
+            ...item,
+            ...(settingsChanged ? { mediaGeneration: nextSettings } : {}),
+            ...(job ? { mediaJob: job } : {}),
+          }
+        : item));
+      if (settingsChanged) invalidateSceneVideoPromptPreview(scene.id);
       const replacedLegacyJobs = Number(payload.replacedLegacyVideoJobs) || 0;
       setRunMessage({ tone: "success", text: `${sceneNumberLabel(scene)} đã được xếp vào hàng đợi chạy nền để tạo ${kind === "image" ? "ảnh" : "video"}.${replacedLegacyJobs ? ` Đã thay ${replacedLegacyJobs} job video chờ ở queue cũ.` : ""} Trạng thái sẽ tự cập nhật.` });
     } catch (cause) {
       setSceneError(cause instanceof Error ? cause.message : `Không tạo được ${kind === "image" ? "ảnh" : "video"} AI cho cảnh.`);
     } finally {
-      setGeneratingSceneId("");
-      setGeneratingSceneMediaKind("");
+      generatingSceneLockRef.current.delete(scene.id);
+      setGeneratingSceneKinds((current) => {
+        if (!(scene.id in current)) return current;
+        const next = { ...current };
+        delete next[scene.id];
+        return next;
+      });
     }
   }
 
@@ -2803,7 +2826,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
         setRunMessage({ tone: "error", text: videoOnly ? "Video tải lên không được vượt quá 250 MB." : "Ảnh hoặc video tải lên không được vượt quá 250 MB." });
         return;
       }
-      setGeneratingSceneId(scene.id);
+      setGeneratingSceneKinds((current) => ({ ...current, [scene.id]: videoOnly ? "video" : "image" }));
       try {
         const endpoint = `/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(scene.id)}/media`;
         if (shouldChunkSceneMediaFile(file)) {
@@ -2828,7 +2851,15 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
         }
         await loadScenes(); setRunMessage({ tone: "success", text: videoOnly ? `Đã tải video cho ${sceneNumberLabel(scene)}.` : `Đã tải media cho ${sceneNumberLabel(scene)}.` });
       } catch (cause) { setRunMessage({ tone: "error", text: cause instanceof Error ? cause.message : videoOnly ? "Không tải được video lên." : "Không tải được media lên." }); }
-      finally { setGeneratingSceneId(""); setSceneUploadProgress(null); }
+      finally {
+        setGeneratingSceneKinds((current) => {
+          if (!(scene.id in current)) return current;
+          const next = { ...current };
+          delete next[scene.id];
+          return next;
+        });
+        setSceneUploadProgress(null);
+      }
     };
     input.click();
   }
@@ -3568,8 +3599,9 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
               const missingTranslation = dialogueSegments.some((segment) => !segment.translations?.[dialogueTranslationLanguage]?.trim());
               const mediaKind = scene.media?.kind === "video" ? "Có video" : scene.media?.kind === "image" ? "Có ảnh" : "Thiếu media";
               const hasReadyVideo = scene.media?.kind === "video" && scene.media.status === "ready";
+              const sceneGeneratingKind = generatingSceneKinds[scene.id];
               const mediaJobActive = scene.mediaJob?.status === "queued" || scene.mediaJob?.status === "running";
-              const mediaBusy = generatingSceneId === scene.id || mediaJobActive;
+              const mediaBusy = Boolean(sceneGeneratingKind) || mediaJobActive;
               const canRecoverProviderJob = scene.mediaJob?.status === "failed"
                 && (scene.mediaJob.kind === "image" && (scene.mediaJob.provider === "maivideo-image" || scene.mediaJob.provider === "flow-image")
                   || scene.mediaJob.kind === "video" && (scene.mediaJob.provider === "maivideo-video" || scene.mediaJob.provider === "seedance" || scene.mediaJob.provider === "muse" || scene.mediaJob.provider === "higgsfield" || scene.mediaJob.provider === "flow"))
@@ -3634,7 +3666,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                     {scene.mediaJob?.status === "failed" && scene.mediaJob.kind === "image" && <small className="scene-media-job-status error" role="status">{canRecoverProviderJob ? providerJobRecoveryMessage : mediaJobLabel}</small>}
                     {renderDramaSceneReferencePicker(scene, "ảnh")}
                     <div className="ai-drama-icon-actions" onClick={(event) => event.stopPropagation()}>
-                      <button type="button" title="Tạo ảnh cảnh" onClick={() => void generateSceneImage(scene)} disabled={mediaBusy || batchMediaBusy || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning || Boolean(generatingSceneId)}><Icon name="spark" size={14} /></button>
+                      <button type="button" title="Tạo ảnh cảnh" onClick={() => void generateSceneImage(scene)} disabled={mediaBusy || batchMediaBusy || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning}><Icon name="spark" size={14} /></button>
                       <button type="button" title="Upload ảnh hoặc video" onClick={() => chooseDramaSceneUpload(scene)} disabled={mediaBusy}><Icon name="upload" size={14} /></button>
                       <button type="button" title={expanded ? "Thu gọn thông tin cảnh" : "Chỉnh ảnh tham chiếu"} onClick={() => { setSelectedSceneId(scene.id); setExpandedDramaSceneId((current) => current === scene.id ? "" : scene.id); }}><Icon name="image" size={14} /></button>
                       {scene.media?.status === "ready" && <button type="button" title="Xóa media cảnh" onClick={async () => { await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scenes/${encodeURIComponent(scene.id)}/media`, { method: "DELETE" }); await loadScenes(); }}><Icon name="trash" size={14} /></button>}
@@ -3713,7 +3745,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                     <div className="ai-drama-video-reference-row" onClick={(event) => event.stopPropagation()}>
                       {renderDramaSceneReferencePicker(scene, "video")}
                       <div className="ai-drama-scene-media-actions">
-                        <button type="button" className="primary-button compact" title={mediaJobActive && scene.mediaJob?.kind === "video" ? mediaJobLabel : hasReadyVideo ? "Tạo lại video đã hoàn thành" : "Tạo video"} onClick={() => void generateSceneVideo(scene)} disabled={batchSeedanceHiddenSelected || mediaBusy || batchMediaBusy || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning || Boolean(dialogueTtsBatchProgress) || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress)}><Icon name="play" size={13} />{mediaJobActive && scene.mediaJob?.kind === "video" ? scene.mediaJob.status === "queued" ? " Đang chờ…" : "Đang tạo…" : hasReadyVideo ? " Tạo lại" : " Tạo video"}</button>
+                        <button type="button" className="primary-button compact" title={sceneGeneratingKind === "video" ? "Đang xếp job tạo video…" : mediaJobActive && scene.mediaJob?.kind === "video" ? mediaJobLabel : hasReadyVideo ? "Tạo lại video đã hoàn thành" : "Tạo video"} onClick={() => void generateSceneVideo(scene)} disabled={batchSeedanceHiddenSelected || mediaBusy || batchMediaBusy || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning || Boolean(dialogueTtsBatchProgress) || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress)}><Icon name="play" size={13} />{sceneGeneratingKind === "video" ? " Đang xếp…" : mediaJobActive && scene.mediaJob?.kind === "video" ? scene.mediaJob.status === "queued" ? " Đang chờ…" : "Đang tạo…" : hasReadyVideo ? " Tạo lại" : " Tạo video"}</button>
                         <button type="button" className="secondary-button compact" title={missingTranslation ? `Dịch thoại sang ${voiceLanguageLabel(dialogueTranslationLanguage)} trước` : `Tạo voice ${voiceLanguageLabel(dialogueTranslationLanguage)} cho cảnh`} onClick={() => void generateSceneTts(scene, Boolean(dialogueSegments.length && readyTranslatedLineCount === dialogueSegments.length), dialogueTranslationLanguage)} disabled={!dialogueSegments.length || missingTranslation || missingLineVoice || ttsRunning || renderRunning || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || Boolean(generatingSceneId) || Boolean(dialogueTtsBatchProgress) || dialogueSavingSceneId === scene.id || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress)}>
                           {ttsRunning && ttsSceneId === scene.id ? "Đang tạo voice…" : readyTranslatedLineCount === dialogueSegments.length && dialogueSegments.length ? "Tạo lại voice" : "Tạo voice"}
                         </button>
@@ -3723,11 +3755,11 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                   </div>
                 </div>
                 {expanded && <div className="ai-drama-scene-expanded-row" role="row"><div className="ai-drama-scene-expanded" role="cell" aria-colspan={4}>
-                  <div className="ai-drama-scene-expanded-heading"><div><span>{sceneNumberLabel(scene)} · {scene.chunkId} · {sceneDuration}s</span><h4>Prompt và timeline cảnh</h4></div><span className="ai-drama-media-state">{mediaBusy ? mediaJobLabel || `Đang xếp ${generatingSceneMediaKind === "image" ? "ảnh" : "video"}…` : mediaKind}</span></div>
+                  <div className="ai-drama-scene-expanded-heading"><div><span>{sceneNumberLabel(scene)} · {scene.chunkId} · {sceneDuration}s</span><h4>Prompt và timeline cảnh</h4></div><span className="ai-drama-media-state">{mediaBusy ? mediaJobLabel || `Đang xếp ${sceneGeneratingKind === "image" ? "ảnh" : "video"}…` : mediaKind}</span></div>
                   <div className="ai-drama-scene-actions ai-drama-scene-expanded-actions">
                     {needsDialogueExtraction && <button className="secondary-button compact" type="button" onClick={() => void extractSceneDialogue(scene)} disabled={Boolean(dialogueExtractingSceneId) || Boolean(dialogueExtractBatchProgress) || ttsRunning || renderRunning || isRunning || Boolean(runningScriptChunkId)}>{dialogueExtractingSceneId === scene.id ? "AI đang hoàn thiện…" : "AI tách thoại & bổ sung chi tiết"}</button>}
-                    <button className="secondary-button compact" type="button" onClick={() => void generateSceneImage(scene)} disabled={mediaBusy || batchMediaBusy || sceneMediaSettingsSaving || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning}>{mediaBusy && scene.mediaJob?.kind === "image" ? scene.mediaJob.status === "queued" ? "Đang chờ ảnh…" : "Đang tạo ảnh…" : generatingSceneId === scene.id && generatingSceneMediaKind === "image" ? "Đang xếp ảnh…" : "Tạo ảnh"}</button>
-                    <button className="primary-button compact" type="button" onClick={() => void generateSceneVideo(scene)} disabled={batchSeedanceHiddenSelected || mediaBusy || batchMediaBusy || sceneMediaSettingsSaving || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning}>{mediaBusy && scene.mediaJob?.kind === "video" ? scene.mediaJob.status === "queued" ? "Đang chờ video…" : "Đang tạo video…" : generatingSceneId === scene.id && generatingSceneMediaKind === "video" ? "Đang xếp video…" : hasReadyVideo ? "Tạo lại video" : "Tạo video"}</button>
+                    <button className="secondary-button compact" type="button" onClick={() => void generateSceneImage(scene)} disabled={mediaBusy || batchMediaBusy || sceneMediaSettingsSaving || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning}>{mediaBusy && scene.mediaJob?.kind === "image" ? scene.mediaJob.status === "queued" ? "Đang chờ ảnh…" : "Đang tạo ảnh…" : sceneGeneratingKind === "image" ? "Đang xếp ảnh…" : "Tạo ảnh"}</button>
+                    <button className="primary-button compact" type="button" onClick={() => void generateSceneVideo(scene)} disabled={batchSeedanceHiddenSelected || mediaBusy || batchMediaBusy || sceneMediaSettingsSaving || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning}>{mediaBusy && scene.mediaJob?.kind === "video" ? scene.mediaJob.status === "queued" ? "Đang chờ video…" : "Đang tạo video…" : sceneGeneratingKind === "video" ? "Đang xếp video…" : hasReadyVideo ? "Tạo lại video" : "Tạo video"}</button>
                   </div>
                   <section className="ai-drama-prompt-editor" aria-label={`Prompt tạo media cho ${sceneNumberLabel(scene)}`}>
                     <div className="ai-drama-prompt-editor-heading"><strong>Prompt chi tiết cho cảnh</strong><span>Ảnh · video · {sceneDuration} giây</span></div>
@@ -4244,11 +4276,11 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                 {selectedReferenceImage?.referenceLocationId && <span className="scene-reference-frame-meta">Có ảnh bối cảnh: {project.locations?.find((location) => location.id === selectedReferenceImage.referenceLocationId)?.name || "đã tham chiếu"}</span>}
               </div>
               <div className="scene-detail-actions">
-                <button className="secondary-button compact" type="button" onClick={() => void generateSceneImage(selectedScene)} disabled={Boolean(generatingSceneId) || selectedScene.mediaJob?.status === "queued" || selectedScene.mediaJob?.status === "running" || sceneMediaSettingsSaving || batchMediaBusy || videoQueueRunning || ttsRunning || scriptBlocksIndependentTasks}>
-                  <Icon name="spark" size={14} />{selectedScene.mediaJob?.kind === "image" && selectedScene.mediaJob.status === "queued" ? "Ảnh đang chờ…" : selectedScene.mediaJob?.kind === "image" && selectedScene.mediaJob.status === "running" ? "Đang tạo ảnh cảnh…" : generatingSceneId === selectedScene.id && generatingSceneMediaKind === "image" ? "Đang xếp ảnh cảnh…" : selectedReferenceImage ? "Tạo lại ảnh cảnh" : "Tạo ảnh cảnh"}
+                <button className="secondary-button compact" type="button" onClick={() => void generateSceneImage(selectedScene)} disabled={Boolean(generatingSceneKinds[selectedScene.id]) || selectedScene.mediaJob?.status === "queued" || selectedScene.mediaJob?.status === "running" || sceneMediaSettingsSaving || batchMediaBusy || videoQueueRunning || ttsRunning || scriptBlocksIndependentTasks}>
+                  <Icon name="spark" size={14} />{selectedScene.mediaJob?.kind === "image" && selectedScene.mediaJob.status === "queued" ? "Ảnh đang chờ…" : selectedScene.mediaJob?.kind === "image" && selectedScene.mediaJob.status === "running" ? "Đang tạo ảnh cảnh…" : generatingSceneKinds[selectedScene.id] === "image" ? "Đang xếp ảnh cảnh…" : selectedReferenceImage ? "Tạo lại ảnh cảnh" : "Tạo ảnh cảnh"}
                 </button>
-                <button className="primary-button" type="button" onClick={() => void generateSceneVideo(selectedScene)} disabled={batchSeedanceHiddenSelected || Boolean(generatingSceneId) || selectedScene.mediaJob?.status === "queued" || selectedScene.mediaJob?.status === "running" || sceneMediaSettingsSaving || batchMediaBusy || videoQueueRunning || ttsRunning || scriptBlocksIndependentTasks}>
-                  <Icon name="play" size={15} />{selectedScene.mediaJob?.kind === "video" && selectedScene.mediaJob.status === "queued" ? "Video đang chờ…" : selectedScene.mediaJob?.kind === "video" && selectedScene.mediaJob.status === "running" ? "Đang tạo video…" : generatingSceneId === selectedScene.id && generatingSceneMediaKind === "video" ? "Đang xếp video…" : selectedMedia?.kind === "video" ? "Tạo lại video AI" : "Tạo video AI"}
+                <button className="primary-button" type="button" onClick={() => void generateSceneVideo(selectedScene)} disabled={batchSeedanceHiddenSelected || Boolean(generatingSceneKinds[selectedScene.id]) || selectedScene.mediaJob?.status === "queued" || selectedScene.mediaJob?.status === "running" || sceneMediaSettingsSaving || batchMediaBusy || videoQueueRunning || ttsRunning || scriptBlocksIndependentTasks}>
+                  <Icon name="play" size={15} />{selectedScene.mediaJob?.kind === "video" && selectedScene.mediaJob.status === "queued" ? "Video đang chờ…" : selectedScene.mediaJob?.kind === "video" && selectedScene.mediaJob.status === "running" ? "Đang tạo video…" : generatingSceneKinds[selectedScene.id] === "video" ? "Đang xếp video…" : selectedMedia?.kind === "video" ? "Tạo lại video AI" : "Tạo video AI"}
                 </button>
                 {selectedMedia?.sourceUrl && <a className="secondary-button compact" href={selectedMedia.sourceUrl} target="_blank" rel="noreferrer">Mở nguồn</a>}
                 <div className="scene-nav-actions"><button className="secondary-button compact" type="button" onClick={() => moveSelectedScene(-1)} disabled={selectedFilteredIndex <= 0} aria-label="Cảnh trước">← Trước</button><span>{selectedFilteredIndex + 1} / {filteredScenes.length}</span><button className="secondary-button compact" type="button" onClick={() => moveSelectedScene(1)} disabled={selectedFilteredIndex < 0 || selectedFilteredIndex >= filteredScenes.length - 1} aria-label="Cảnh sau">Sau →</button></div>

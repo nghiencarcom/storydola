@@ -36,6 +36,7 @@ import { sceneReferenceCharacterIds, sceneReferenceLocationId } from "./scene-re
 import { imageStylePrompt, visualStylePrompt } from "./visual-styles";
 import { contentGenrePrompt, storySettingPrompt } from "./content-genres";
 import { dataPath } from "./data-directory";
+import { prepareGatewayReferenceImageDataUrls } from "./gateway-reference-images";
 
 type JsonRecord = Record<string, unknown>;
 type SceneRecord = Record<string, unknown>;
@@ -179,17 +180,38 @@ function safeProviderDetail(value: unknown, fallback: string) {
     .slice(0, 220) || fallback;
 }
 
+function nestedResponseErrorDetail(value: unknown, depth = 0): string | undefined {
+  if (typeof value === "string") return value.trim() || undefined;
+  if (depth >= 4 || !value || typeof value !== "object") return undefined;
+  if (Array.isArray(value)) {
+    return value.map((item) => nestedResponseErrorDetail(item, depth + 1)).find(Boolean);
+  }
+  const record = value as JsonRecord;
+  for (const key of ["detail", "message", "error_description", "error_message", "reason", "description", "error", "msg", "exception", "items", "errors"]) {
+    const detail = nestedResponseErrorDetail(record[key], depth + 1);
+    if (detail) return detail;
+  }
+  return undefined;
+}
+
 function responseErrorDetail(record: JsonRecord) {
-  const error = record.error && typeof record.error === "object" ? record.error as JsonRecord : undefined;
-  const itemError = Array.isArray(record.items)
-    ? record.items.map((item) => {
-        const row = asJsonRecord(item);
-        const nested = row.error && typeof row.error === "object" ? asJsonRecord(row.error) : undefined;
-        return typeof row.error === "string" ? row.error : nested?.message || nested?.detail;
-      }).find((value): value is string => typeof value === "string" && Boolean(value.trim()))
-    : undefined;
-  return [record.detail, record.message, typeof record.error === "string" ? record.error : undefined, error?.message, error?.detail, itemError]
-    .find((value): value is string => typeof value === "string" && Boolean(value.trim()));
+  return nestedResponseErrorDetail(record);
+}
+
+function responseTextDetail(raw: string) {
+  const text = raw
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text || undefined;
 }
 
 function isMaiVideoSessionKeyMismatch(detail: string) {
@@ -455,8 +477,9 @@ async function requestJsonOnce(url: string, init: RequestInit = {}, timeoutMs = 
   try { payload = raw ? JSON.parse(raw) : {}; } catch { payload = {}; }
   if (!response.ok) {
     const record = payload && typeof payload === "object" ? payload as JsonRecord : {};
-    const fallback = "Dịch vụ trả về lỗi.";
-    const providerDetail = responseErrorDetail(record) || "";
+    const requestId = requestIdFromHeaders(response.headers);
+    const fallback = response.statusText || "Dịch vụ trả về lỗi.";
+    const providerDetail = responseErrorDetail(record) || responseTextDetail(raw) || "";
     const sessionKeyMismatch = seedanceContext?.stage === "seedance_create"
       && response.status === 403
       && isMaiVideoSessionKeyMismatch(providerDetail);
@@ -466,10 +489,11 @@ async function requestJsonOnce(url: string, init: RequestInit = {}, timeoutMs = 
         : providerDetail,
       fallback,
     );
+    const requestIdNote = requestId && response.status >= 500 ? ` · Mã request: ${requestId}` : "";
     if (seedanceContext) {
-      throw seedanceRequestError(seedanceContext, detail, {
+      throw seedanceRequestError(seedanceContext, `${detail}${requestIdNote}`.slice(0, 260), {
         statusCode: response.status,
-        requestId: requestIdFromHeaders(response.headers),
+        requestId,
       });
     }
     const retryAfterMs = retryAfterDelayMs(response.headers);
@@ -1247,6 +1271,7 @@ async function generateMuseImage(
   let taskId = existingJobId?.trim() || "";
   let created: JsonRecord = {};
   if (!taskId) {
+    const preparedReferenceImages = await prepareGatewayReferenceImageDataUrls(referenceImageUrls, "Muse.ai");
     try {
       created = await requestJson(`${SEEDANCE_BASE_URL}/v1/muse/images/generations`, {
         method: "POST",
@@ -1254,7 +1279,7 @@ async function generateMuseImage(
         body: JSON.stringify({
           prompt,
           ratio: museImageRatio(aspectRatio),
-          ...(referenceImageUrls.length ? { reference_images: referenceImageUrls, reference_image_names: referenceImageNames } : {}),
+          ...(preparedReferenceImages.length ? { reference_images: preparedReferenceImages, reference_image_names: referenceImageNames } : {}),
         }),
       }, Number(process.env.MUSE_IMAGE_CREATE_TIMEOUT_MS) || 180_000);
     } catch (cause) {
@@ -1341,6 +1366,7 @@ async function generateFlowImage(
   let taskId = existingJobId?.trim() || "";
   let created: JsonRecord = {};
   if (!taskId) {
+    const preparedReferenceImages = await prepareGatewayReferenceImageDataUrls(referenceImageUrls, "Flow");
     try {
       created = await requestJson(`${SEEDANCE_BASE_URL}/v1/flow/images/generations`, {
         method: "POST",
@@ -1349,7 +1375,7 @@ async function generateFlowImage(
           prompt,
           model: settings.imageModel,
           ratio: museImageRatio(aspectRatio),
-          ...(referenceImageUrls.length ? { reference_images: referenceImageUrls, reference_image_names: referenceImageNames } : {}),
+          ...(preparedReferenceImages.length ? { reference_images: preparedReferenceImages, reference_image_names: referenceImageNames } : {}),
         }),
       }, Number(process.env.FLOW_IMAGE_CREATE_TIMEOUT_MS) || 180_000, { stage: "seedance_create", providerLabel: "Flow" });
     } catch (cause) {
@@ -1466,22 +1492,6 @@ async function localSceneReferenceDataUrl(projectSlug: string, sceneId: string, 
   const mimeType = extension === ".png" ? "image/png" : extension === ".webp" ? "image/webp" : [".jpg", ".jpeg"].includes(extension) ? "image/jpeg" : "";
   if (!mimeType) throw new Error(`Ảnh cảnh ${sceneId} phải là PNG, JPEG hoặc WebP.`);
   return `data:${mimeType};base64,${image.toString("base64")}`;
-}
-
-const GATEWAY_REFERENCE_IMAGE_MAX_BYTES = 25 * 1024 * 1024;
-const GATEWAY_REFERENCE_IMAGES_TOTAL_MAX_BYTES = 100 * 1024 * 1024;
-
-function validateGatewayReferenceImageDataUrls(images: string[], provider: string) {
-  let totalBytes = 0;
-  for (const [index, image] of images.entries()) {
-    const encoded = image.match(/^data:image\/(?:png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/)?.[1];
-    if (!encoded || encoded.length % 4 !== 0) throw new Error(`${provider}: ảnh tham chiếu ${index + 1} không phải Data URI PNG/JPEG/WebP hợp lệ.`);
-    const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
-    const bytes = Math.floor(encoded.length * 3 / 4) - padding;
-    if (bytes > GATEWAY_REFERENCE_IMAGE_MAX_BYTES) throw new Error(`${provider}: mỗi ảnh tham chiếu không được vượt quá 25 MiB.`);
-    totalBytes += bytes;
-  }
-  if (totalBytes > GATEWAY_REFERENCE_IMAGES_TOTAL_MAX_BYTES) throw new Error(`${provider}: tổng dung lượng ảnh tham chiếu không được vượt quá 100 MiB.`);
 }
 
 function sceneCharacterIds(scene: SceneRecord) {
@@ -1688,7 +1698,6 @@ export async function generateMaiVideoImageForScene({
       referenceImageUrls.push(await localSceneReferenceDataUrl(projectSlug, includedContinuityReference.sceneId, includedContinuityReference.image as unknown as JsonRecord));
       referenceImageNames.push(`Previous scene - ${includedContinuityReference.sceneId}`);
     }
-    validateGatewayReferenceImageDataUrls(referenceImageUrls, isMuseImageModel(settings.imageModel) ? "Muse.ai" : "Flow");
   } else {
     for (const character of picturedCharacters) referenceImageUrls.push(await localCharacterReferenceDataUrl(projectSlug, character));
     if (picturedLocation) referenceImageUrls.push(await localLocationReferenceDataUrl(projectSlug, picturedLocation));
@@ -1803,6 +1812,7 @@ async function generateSeedanceVideo(
   const headers = { Authorization: `Bearer ${apiKey}` };
   let taskId = existingTaskId || "";
   if (!taskId) {
+    const preparedReferenceImages = await prepareGatewayReferenceImageDataUrls(referenceImageUrls, "Seedance");
     if (onSeedanceCreateStarted) {
       try {
         await onSeedanceCreateStarted();
@@ -1823,8 +1833,8 @@ async function generateSeedanceVideo(
         prompt,
         duration: settings.videoDurationSec,
         ratio: aspectRatio,
-        ...(referenceImageUrls.length ? {
-          reference_images: referenceImageUrls,
+        ...(preparedReferenceImages.length ? {
+          reference_images: preparedReferenceImages,
           reference_image_names: referenceImageNames,
           reference_image_mode: "reference",
         } : {}),
@@ -1895,6 +1905,7 @@ async function generateMuseVideo(
   let taskId = existingTaskId || "";
   let created: JsonRecord = {};
   if (!taskId) {
+    const preparedReferenceImages = await prepareGatewayReferenceImageDataUrls(referenceImageUrls, "Muse.ai");
     if (onCreateStarted) {
       try {
         await onCreateStarted();
@@ -1908,15 +1919,15 @@ async function generateMuseVideo(
       body: JSON.stringify({
         prompt,
         duration: normalizeVideoDuration(settings.videoDurationSec, MUSE_VIDEO_MODELS[0]),
-        ratio: aspectRatio,
-        ...(referenceImageUrls.length ? {
-          reference_images: referenceImageUrls,
+        ratio: museImageRatio(aspectRatio),
+        ...(preparedReferenceImages.length ? {
+          reference_images: preparedReferenceImages,
           reference_image_names: referenceImageNames,
           reference_image_mode: "none",
         } : {}),
       }),
     }, Number(process.env.MUSE_VIDEO_CREATE_TIMEOUT_MS) || 180_000, { stage: "seedance_create", providerLabel: "Muse.ai" }, signal);
-    taskId = String(created.id || created.task_id || "").trim().slice(0, 200);
+    taskId = providerJobIdFromPayload(created);
     if (!taskId) {
       throw new SeedanceGenerationError({ stage: "seedance_create", detail: "Dịch vụ không trả về task ID.", retryStrategy: "new_task", providerLabel: "Muse.ai" });
     }
@@ -1985,6 +1996,7 @@ async function generateFlowVideo(
   let taskId = existingTaskId?.trim() || "";
   let created: JsonRecord = {};
   if (!taskId) {
+    const preparedReferenceImages = await prepareGatewayReferenceImageDataUrls(referenceImageUrls, "Flow");
     if (onCreateStarted) {
       try {
         await onCreateStarted();
@@ -2004,7 +2016,7 @@ async function generateFlowVideo(
           resolution: "720p",
           ratio: museImageRatio(aspectRatio),
           reference_mode: settings.flowReferenceMode,
-          ...(referenceImageUrls.length ? { reference_images: referenceImageUrls, reference_image_names: referenceImageNames } : {}),
+          ...(preparedReferenceImages.length ? { reference_images: preparedReferenceImages, reference_image_names: referenceImageNames } : {}),
         }),
       }, Number(process.env.FLOW_VIDEO_CREATE_TIMEOUT_MS) || 180_000, { stage: "seedance_create", providerLabel: "Flow" }, signal);
     } catch (cause) {
@@ -2517,7 +2529,6 @@ export async function generateMaiVideoVideoForScene({
         referenceImageUrls.push(await localLocationReferenceDataUrl(projectSlug, selectedLocation));
       }
     }
-    validateGatewayReferenceImageDataUrls(referenceImageUrls, settings.videoProvider === "muse" ? "Muse.ai" : settings.videoProvider === "flow" ? "Flow" : "Seedance");
     if (settings.videoProvider === "muse") {
       const outputPath = path.join(MEDIA_DIR, safeSegment(projectSlug, "project"), safeSegment(chunkId, "chunk"), `${safeSegment(id, `S${String(sceneNumber).padStart(3, "0")}`)}-muse-video.mp4`);
       return generateMuseVideo(safePrompt, outputPath, aspectRatio, referenceImageUrls, references.map((reference) => reference.name), settings, seedanceApiKey, seedanceTaskId, onSeedanceCreateStarted, onSeedanceTaskCreated, seedanceTaskCreatedAt, signal, gatewaySessionToken);

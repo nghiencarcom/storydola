@@ -4,7 +4,7 @@ import { z } from "zod";
 import { getMaiVideoModelCatalog } from "../../../../lib/media-provider";
 import { readMaiVideoAuthCookie } from "../../../../lib/maivideo-auth-shared";
 import { salesVideoWorkerId } from "../../../../lib/sales-video-runtime";
-import { listSalesVideoProjects, salesVideoReferencePath, saveSalesVideoProject as persistSalesVideoProject, type SalesVideoProject } from "../../../../lib/sales-video-storage";
+import { getSalesVideoProject, salesVideoReferencePath, saveSalesVideoProject as persistSalesVideoProject, type SalesVideoProject } from "../../../../lib/sales-video-storage";
 import { salesVideoDialogueToSrt, salesVideoMaxProductImages, salesVideoMaxWordCount, salesVideoSplitDialogue, salesVideoWordCount } from "../../../../lib/sales-video-templates";
 
 const saveSalesVideoProject = persistSalesVideoProject;
@@ -62,8 +62,7 @@ function localSalesVideoUrl() {
 }
 
 async function getOwnedProject(userId: string, id: string) {
-  if (!/^[a-f0-9-]{36}$/i.test(id)) return undefined;
-  return (await listSalesVideoProjects(userId, salesVideoWorkerId)).find((project) => project.id === id);
+  return getSalesVideoProject(userId, id, salesVideoWorkerId);
 }
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {

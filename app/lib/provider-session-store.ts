@@ -67,21 +67,37 @@ async function updateStore<T>(update: (data: SessionFile) => T) {
   return result;
 }
 
-export async function saveProviderSessionToken(ownerId: string, jobId: string, token: string) {
+export async function saveProviderSessionTokens(ownerId: string, jobIds: string[], token: string) {
   const normalizedOwnerId = ownerId.trim();
-  const normalizedJobId = jobId.trim();
+  const normalizedJobIds = [...new Set(jobIds.map((jobId) => jobId.trim()).filter(Boolean))];
   const normalizedToken = token.trim();
-  if (!normalizedOwnerId || !normalizedJobId || !normalizedToken || normalizedToken.length > 4_096) {
+  if (!normalizedJobIds.length) return;
+  if (!normalizedOwnerId || !normalizedToken || normalizedToken.length > 4_096) {
     throw new Error("PROVIDER_SESSION_REQUIRED");
   }
   const encryptedToken = encryptToken(normalizedToken);
+  const updatedAt = new Date().toISOString();
+  const jobIdSet = new Set(normalizedJobIds);
   await updateStore((data) => {
-    const existing = data.sessions.find((item) => item.ownerId === normalizedOwnerId && item.jobId === normalizedJobId);
-    const stored: StoredSession = { ownerId: normalizedOwnerId, jobId: normalizedJobId, token: encryptedToken, updatedAt: new Date().toISOString() };
-    if (existing) Object.assign(existing, stored);
-    else data.sessions.push(stored);
+    const existingByJobId = new Map<string, StoredSession>();
+    for (const item of data.sessions) {
+      if (item.ownerId === normalizedOwnerId && jobIdSet.has(item.jobId)) {
+        existingByJobId.set(item.jobId, item);
+      }
+    }
+    for (const jobId of normalizedJobIds) {
+      const stored: StoredSession = { ownerId: normalizedOwnerId, jobId, token: encryptedToken, updatedAt };
+      const existing = existingByJobId.get(jobId);
+      if (existing) Object.assign(existing, stored);
+      else data.sessions.push(stored);
+    }
     data.sessions = data.sessions.filter((item) => Date.now() - Date.parse(item.updatedAt) < 30 * 24 * 60 * 60 * 1000);
   });
+}
+
+export async function saveProviderSessionToken(ownerId: string, jobId: string, token: string) {
+  if (!jobId.trim()) throw new Error("PROVIDER_SESSION_REQUIRED");
+  await saveProviderSessionTokens(ownerId, [jobId], token);
 }
 
 export async function getProviderSessionToken(ownerId: string, jobId: string) {

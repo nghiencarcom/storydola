@@ -16,6 +16,11 @@ const OUTPUT_DIR = path.join(DATA_DIR, "outputs");
 const EMPTY_DATA: StoryAIData = { projects: [], activities: [] };
 let mutationQueue: Promise<unknown> = Promise.resolve();
 let partitionedWorkspaceSeen = false;
+let workspaceFileCache: {
+  version: string;
+  data: StoredWorkspaceFile | (StoryAIData & { legacyDataOwnerId?: string });
+} | undefined;
+let workspaceReadInFlight: Promise<StoredWorkspaceFile | (StoryAIData & { legacyDataOwnerId?: string })> | undefined;
 
 function normalizeProjectAspectRatio(value: unknown) {
   const ratio = typeof value === "string" ? value.trim() : "";
@@ -55,28 +60,57 @@ function normalizeWorkspaceData(value: unknown): StoryAIData {
   };
 }
 
-async function readWorkspaceFile(): Promise<StoredWorkspaceFile | (StoryAIData & { legacyDataOwnerId?: string })> {
+function workspaceFileVersion(info: { ino: number; mtimeMs: number; size: number }) {
+  return `${info.ino}:${info.mtimeMs}:${info.size}`;
+}
+
+async function loadWorkspaceFileFromDisk(version: string): Promise<StoredWorkspaceFile | (StoryAIData & { legacyDataOwnerId?: string })> {
   try {
     const raw = await readFile(DATA_FILE, "utf8");
     const stored = JSON.parse(raw) as StoredWorkspaceFile | (StoryAIData & { legacyDataOwnerId?: string });
     partitionedWorkspaceSeen = isPartitionedFile(stored);
+    workspaceFileCache = { version, data: stored };
     return stored;
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code !== "ENOENT") {
       throw new Error("STORYAI_DATA_FILE_CORRUPT: Workspace data could not be read safely.", { cause });
     }
     await mkdir(DATA_DIR, { recursive: true });
-    return { version: 2, userData: {} };
+    return { version: 2 as const, userData: {} };
   }
+}
+
+async function readWorkspaceFile(): Promise<StoredWorkspaceFile | (StoryAIData & { legacyDataOwnerId?: string })> {
+  let info: Awaited<ReturnType<typeof stat>>;
+  try {
+    info = await stat(DATA_FILE);
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw new Error("STORYAI_DATA_FILE_CORRUPT: Workspace data could not be read safely.", { cause });
+    }
+    await mkdir(DATA_DIR, { recursive: true });
+    return { version: 2 as const, userData: {} };
+  }
+  const version = workspaceFileVersion(info);
+  if (workspaceFileCache?.version === version) return workspaceFileCache.data;
+  if (workspaceReadInFlight) return workspaceReadInFlight;
+  const pending = loadWorkspaceFileFromDisk(version).finally(() => {
+    if (workspaceReadInFlight === pending) workspaceReadInFlight = undefined;
+  });
+  workspaceReadInFlight = pending;
+  return pending;
 }
 
 async function writeWorkspaceFile(value: StoredWorkspaceFile | (StoryAIData & { legacyDataOwnerId?: string })) {
   await mkdir(DATA_DIR, { recursive: true, mode: 0o700 });
   const temporaryPath = path.join(DATA_DIR, `.storyai.json.${randomUUID()}.tmp`);
-  await writeFile(temporaryPath, JSON.stringify(value, null, 2), { flag: "wx", mode: 0o600 });
+  await writeFile(temporaryPath, JSON.stringify(value), { flag: "wx", mode: 0o600 });
   await chmod(temporaryPath, 0o600);
   await rename(temporaryPath, DATA_FILE);
   await chmod(DATA_FILE, 0o600);
+  const info = await stat(DATA_FILE).catch(() => null);
+  workspaceFileCache = info ? { version: workspaceFileVersion(info), data: value } : undefined;
+  partitionedWorkspaceSeen = isPartitionedFile(value);
 }
 
 function isPartitionedFile(value: StoredWorkspaceFile | (StoryAIData & { legacyDataOwnerId?: string })): value is StoredWorkspaceFile {
@@ -85,8 +119,8 @@ function isPartitionedFile(value: StoredWorkspaceFile | (StoryAIData & { legacyD
 
 async function readUserPartition(userId: string): Promise<StoryAIData> {
   const stored = await readWorkspaceFile();
-  if (isPartitionedFile(stored)) return normalizeWorkspaceData(stored.userData[userId] || EMPTY_DATA);
-  if (stored.legacyDataOwnerId === userId) return normalizeWorkspaceData(stored);
+  if (isPartitionedFile(stored)) return normalizeWorkspaceData(structuredClone(stored.userData[userId] || EMPTY_DATA));
+  if (stored.legacyDataOwnerId === userId) return normalizeWorkspaceData(structuredClone(stored));
   return structuredClone(EMPTY_DATA);
 }
 
@@ -131,8 +165,11 @@ export async function claimLegacyWorkspace(userId: string) {
   if (partitionedWorkspaceSeen) return;
   mutationQueue = mutationQueue.catch(() => undefined).then(async () => {
     const stored = await readWorkspaceFile();
-    if (isPartitionedFile(stored)) return;
-    const legacyData = normalizeWorkspaceData(stored);
+    if (isPartitionedFile(stored)) {
+      partitionedWorkspaceSeen = true;
+      return;
+    }
+    const legacyData = normalizeWorkspaceData(structuredClone(stored));
     const next: StoredWorkspaceFile = {
       version: 2,
       legacyDataOwnerId: userId,
@@ -148,12 +185,12 @@ export async function updateDataForUser<T>(userId: string, mutator: (data: Story
   let result!: T;
   mutationQueue = mutationQueue.catch(() => undefined).then(async () => {
     const stored = await readWorkspaceFile();
-    const data = normalizeWorkspaceData(isPartitionedFile(stored) ? stored.userData[userId] || EMPTY_DATA : stored.legacyDataOwnerId === userId ? stored : EMPTY_DATA);
+    const rawUserData = isPartitionedFile(stored) ? stored.userData[userId] || EMPTY_DATA : stored.legacyDataOwnerId === userId ? stored : EMPTY_DATA;
+    const data = normalizeWorkspaceData(structuredClone(rawUserData));
     result = await mutator(data);
-    const current = isPartitionedFile(stored)
-      ? stored
-      : { version: 2 as const, legacyDataOwnerId: stored.legacyDataOwnerId, userData: {} as Record<string, StoryAIData> };
-    current.userData[userId] = data;
+    const current: StoredWorkspaceFile = isPartitionedFile(stored)
+      ? { ...stored, userData: { ...stored.userData, [userId]: data } }
+      : { version: 2 as const, legacyDataOwnerId: stored.legacyDataOwnerId, userData: { [userId]: data } };
     await writeWorkspaceFile(current);
   });
   await mutationQueue;

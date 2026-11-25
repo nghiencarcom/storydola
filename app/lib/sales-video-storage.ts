@@ -132,6 +132,64 @@ export async function deleteSalesVideoProject(userId: string, id: string) {
   await rm(path.join(ownerDirectory, "projects", `${id}.json`), { force: true });
 }
 
+async function reconcileSalesVideoProject(userId: string, project: SalesVideoProject, worker: string) {
+  if (project.details?.voiceRegeneration?.status === "processing" && project.worker !== worker) {
+    project.details.voiceRegeneration = {
+      ...project.details.voiceRegeneration,
+      status: "failed",
+      updatedAt: new Date().toISOString(),
+      error: "Máy chủ đã khởi động lại trong lúc tạo voice. Hãy thử lại.",
+    };
+    delete project.worker;
+    await saveSalesVideoProject(userId, project);
+  }
+  const recoveryFiles = ["all", ...(project.details?.promptSegments || []).map((_, index) => String(index))];
+  const canRecover = (await Promise.all(recoveryFiles.map(async suffix => {
+    try { const record = JSON.parse(await readFile(dataPath("sales-video-recovery", `${project.id}-${suffix}.json`), "utf8")); return record.state === "pending"; }
+    catch { return false; }
+  }))).some(Boolean);
+  if (project.status === "processing" && project.worker !== worker && !canRecover) {
+    const output = await stat(salesVideoPath(userId, project.id)).catch(() => null);
+    project.status = output?.isFile() ? "ready" : "failed";
+    if (project.status === "failed") project.error = "Máy chủ đã khởi động lại trong lúc tạo video. Hãy tạo lượt mới.";
+    if (project.details?.segmentResults?.some((segment) => segment.status === "processing")) {
+      project.details.segmentResults = project.details.segmentResults.map((segment) => segment.status === "processing"
+        ? { ...segment, status: "failed" as const, error: "Tác vụ bị gián đoạn. Hãy tạo lại clip này." }
+        : segment);
+      project.details.needsStitching = true;
+    }
+    delete project.worker;
+    await saveSalesVideoProject(userId, project);
+  }
+  if (project.status !== "processing" && project.details?.segmentResults?.some((segment) => segment.status === "processing") && project.worker !== worker) {
+    project.details.segmentResults = project.details.segmentResults.map((segment) => segment.status === "processing"
+      ? { ...segment, status: "failed" as const, error: "Tác vụ bị gián đoạn. Hãy tạo lại clip này." }
+      : segment);
+    project.details.needsStitching = true;
+    delete project.worker;
+    await saveSalesVideoProject(userId, project);
+  }
+  delete project.worker;
+  return project;
+}
+
+export async function getSalesVideoProject(userId: string, id: string, worker: string): Promise<SalesVideoProject | undefined> {
+  if (!uuid.test(id)) return undefined;
+  const directory = salesVideoOwnerDirectory(userId);
+  const file = path.join(directory, "projects", `${id}.json`);
+  try {
+    const project = JSON.parse(await readFile(file, "utf8")) as SalesVideoProject;
+    return await reconcileSalesVideoProject(userId, project, worker);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+  }
+  const video = await stat(salesVideoPath(userId, id)).catch(() => null);
+  if (!video?.isFile()) return undefined;
+  const recovered: SalesVideoProject = { id, title: "Video bán hàng", template: "", model: "", createdAt: video.mtime.toISOString(), status: "ready" };
+  await saveSalesVideoProject(userId, recovered).catch(() => undefined);
+  return recovered;
+}
+
 export async function listSalesVideoProjects(userId: string, worker: string) {
   const directory = salesVideoOwnerDirectory(userId);
   const records = path.join(directory, "projects");
@@ -142,43 +200,7 @@ export async function listSalesVideoProjects(userId: string, worker: string) {
   })) {
     if (!file.endsWith(".json") || !uuid.test(file.slice(0, -5))) continue;
     const project = JSON.parse(await readFile(path.join(records, file), "utf8")) as SalesVideoProject;
-    if (project.details?.voiceRegeneration?.status === "processing" && project.worker !== worker) {
-      project.details.voiceRegeneration = {
-        ...project.details.voiceRegeneration,
-        status: "failed",
-        updatedAt: new Date().toISOString(),
-        error: "Máy chủ đã khởi động lại trong lúc tạo voice. Hãy thử lại.",
-      };
-      delete project.worker;
-      await saveSalesVideoProject(userId, project);
-    }
-    const recoveryFiles = ["all", ...(project.details?.promptSegments || []).map((_, index) => String(index))];
-    const canRecover = (await Promise.all(recoveryFiles.map(async suffix => {
-      try { const record = JSON.parse(await readFile(dataPath("sales-video-recovery", `${project.id}-${suffix}.json`), "utf8")); return record.state === "pending"; }
-      catch { return false; }
-    }))).some(Boolean);
-    if (project.status === "processing" && project.worker !== worker && !canRecover) {
-      const output = await stat(salesVideoPath(userId, project.id)).catch(() => null);
-      project.status = output?.isFile() ? "ready" : "failed";
-      if (project.status === "failed") project.error = "Máy chủ đã khởi động lại trong lúc tạo video. Hãy tạo lượt mới.";
-      if (project.details?.segmentResults?.some((segment) => segment.status === "processing")) {
-        project.details.segmentResults = project.details.segmentResults.map((segment) => segment.status === "processing"
-          ? { ...segment, status: "failed" as const, error: "Tác vụ bị gián đoạn. Hãy tạo lại clip này." }
-          : segment);
-        project.details.needsStitching = true;
-      }
-      delete project.worker;
-      await saveSalesVideoProject(userId, project);
-    }
-    if (project.status !== "processing" && project.details?.segmentResults?.some((segment) => segment.status === "processing") && project.worker !== worker) {
-      project.details.segmentResults = project.details.segmentResults.map((segment) => segment.status === "processing"
-        ? { ...segment, status: "failed" as const, error: "Tác vụ bị gián đoạn. Hãy tạo lại clip này." }
-        : segment);
-      project.details.needsStitching = true;
-      delete project.worker;
-      await saveSalesVideoProject(userId, project);
-    }
-    delete project.worker;
+    await reconcileSalesVideoProject(userId, project, worker);
     projects.set(project.id, project);
   }
   // Include MP4s created before project history was introduced.

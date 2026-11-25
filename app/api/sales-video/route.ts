@@ -11,7 +11,7 @@ import { getCodingAgentCliStatuses, type CodingAgent } from "../../lib/coding-ag
 import { readMaiVideoAuthCookie } from "../../lib/maivideo-auth-shared";
 import { getSeedanceApiKey, getSeedanceApiSessionToken } from "../../lib/seedance-accounts";
 import { createCreativeSalesVideo, ensureSalesVideoSegmentFile, SalesVideoInputError, SalesVideoSegmentError } from "../../lib/sales-video-creative";
-import { deleteSalesVideoProject, listSalesVideoProjects, salesVideoSegmentPath, salesVideoWatermarkLogoPath, saveSalesVideoProject as persistSalesVideoProject, type SalesVideoProject } from "../../lib/sales-video-storage";
+import { deleteSalesVideoProject, getSalesVideoProject, listSalesVideoProjects, salesVideoSegmentPath, salesVideoWatermarkLogoPath, saveSalesVideoProject as persistSalesVideoProject, type SalesVideoProject } from "../../lib/sales-video-storage";
 import { enqueueSalesVideoTask, salesVideoWorkerId } from "../../lib/sales-video-runtime";
 import { HIGGSFIELD_SEEDANCE_MODEL_ID, isVideoOffPeakRequired } from "../../lib/media-generation-settings";
 import { stat } from "node:fs/promises";
@@ -97,14 +97,27 @@ export async function DELETE(request: Request) {
   return NextResponse.json({ ok: failed.length === 0, deleted, failed });
 }
 
+const verifiedFfmpegPaths = new Set<string>();
+
+async function ensureFfmpegAvailable() {
+  const ffmpegPath = process.env.STORYAI_FFMPEG_PATH || process.env.VIBE_FFMPEG_PATH || "ffmpeg";
+  if (verifiedFfmpegPaths.has(ffmpegPath)) return;
+  await run(ffmpegPath, ["-version"], { timeout: 5000 });
+  verifiedFfmpegPaths.add(ffmpegPath);
+}
+
 async function referenceImage(entry: FormDataEntryValue | null) {
   if (!(entry instanceof File) || !entry.size || entry.size > salesVideoImageLimit) {
     throw new Error("Mỗi ảnh phải có dung lượng tối đa 50 MB.");
   }
   try {
-    const image = sharp(Buffer.from(await entry.arrayBuffer()), { limitInputPixels: 40_000_000 });
-    const { format } = await image.metadata();
+    const raw = Buffer.from(await entry.arrayBuffer());
+    const image = sharp(raw, { limitInputPixels: 40_000_000 });
+    const { format, width, height, orientation } = await image.metadata();
     if (!format || !["jpeg", "png", "webp", "avif", "heif"].includes(format)) throw new Error("Unsupported image");
+    if (format === "webp" && width && height && width <= 1920 && height <= 1920 && (!orientation || orientation === 1)) {
+      return `data:image/webp;base64,${raw.toString("base64")}`;
+    }
     const bytes = await image.rotate().resize(1920, 1920, { fit: "inside", withoutEnlargement: true }).webp().toBuffer();
     return `data:image/webp;base64,${bytes.toString("base64")}`;
   } catch {
@@ -178,10 +191,13 @@ export async function POST(request: Request) {
     || (creative?.text && (text.length > salesVideoNameLimit || (!text && !creative.defaultText)))) {
     return NextResponse.json({ message: "Kiểm tra tiêu đề, nội dung và các tùy chọn của mẫu." }, { status: 400 });
   }
-  const pendingDraft = requestedProjectId && value("autoUgc") === "1"
-    ? (await listSalesVideoProjects(userId, worker)).find((project) => project.id === requestedProjectId && (retrySegmentIndex === undefined
-      ? project.status === "processing" && project.phase === "generating"
-      : (project.status === "ready" || project.status === "failed") && project.details?.segmentResults?.[retrySegmentIndex]?.status === "processing"))
+  const pendingDraftCandidate = requestedProjectId && value("autoUgc") === "1"
+    ? await getSalesVideoProject(userId, requestedProjectId, worker)
+    : undefined;
+  const pendingDraft = pendingDraftCandidate && (retrySegmentIndex === undefined
+    ? pendingDraftCandidate.status === "processing" && pendingDraftCandidate.phase === "generating"
+    : (pendingDraftCandidate.status === "ready" || pendingDraftCandidate.status === "failed") && pendingDraftCandidate.details?.segmentResults?.[retrySegmentIndex]?.status === "processing")
+    ? pendingDraftCandidate
     : undefined;
   if (requestedProjectId && !pendingDraft) return NextResponse.json({ message: "Job UGC không còn ở trạng thái chờ tạo video." }, { status: 409 });
   const sourceStart = creative?.workflow === "remake" ? Number(value("sourceStart")) : 0;
@@ -294,7 +310,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ message: (error as Error).message }, { status: 400 });
   }
   try {
-    await run(process.env.STORYAI_FFMPEG_PATH || process.env.VIBE_FFMPEG_PATH || "ffmpeg", ["-version"], { timeout: 5000 });
+    await ensureFfmpegAvailable();
   } catch {
     return NextResponse.json({ message: "Máy chủ cần FFmpeg để xuất video." }, { status: 503 });
   }

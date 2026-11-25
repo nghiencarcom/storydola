@@ -153,7 +153,13 @@ async function projectForUser(userId: string, slug: string) {
   return data.projects.find((item) => item.slug === slug);
 }
 
-async function updateJob(userId: string, slug: string, jobId: string, update: (job: SceneMediaJob) => void) {
+async function updateJob(
+  userId: string,
+  slug: string,
+  jobId: string,
+  update: (job: SceneMediaJob) => void,
+  activity?: () => ReturnType<typeof makeActivity> | undefined,
+) {
   return updateDataForUser(userId, (data) => {
     const project = data.projects.find((item) => item.slug === slug);
     const job = project && jobById(project, jobId);
@@ -161,6 +167,8 @@ async function updateJob(userId: string, slug: string, jobId: string, update: (j
     update(job);
     job.updatedAt = now();
     project.updatedAt = now();
+    const nextActivity = activity?.();
+    if (nextActivity) data.activities.unshift(nextActivity);
     return true;
   });
 }
@@ -288,26 +296,35 @@ async function recoverInterruptedJobs(userId: string, slug: string) {
   });
 }
 
-async function claimNextJob(userId: string, slug: string): Promise<{ job: SceneMediaJob; project: StoryProject } | undefined> {
+async function claimNextJobs(userId: string, slug: string, limit: number): Promise<Array<{ job: SceneMediaJob; project: StoryProject }>> {
+  if (limit <= 0) return [];
   return updateDataForUser(userId, (data) => {
     const project = data.projects.find((item) => item.slug === slug);
-    if (!project) return undefined;
+    if (!project) return [];
     project.sceneMediaJobs ||= [];
-    if (project.sceneMediaJobs.filter((job) => job.status === "running" && job.workerId === WORKER_ID).length >= CONCURRENCY) return undefined;
-    const job = project.sceneMediaJobs.find((item) => item.status === "queued");
-    if (!job) return undefined;
-    job.submissionTracked = true;
-    job.providerRequestStartedAt = undefined;
-    job.status = "running";
-    job.attempt += 1;
-    job.startedAt = now();
-    job.updatedAt = now();
-    job.workerId = WORKER_ID;
-    job.finishedAt = undefined;
-    job.error = undefined;
-    job.stage = job.maiVideoJobId && (job.provider === "flow" || job.provider === "flow-image") ? "flow_poll" : job.seedanceTaskId ? "seedance_poll" : undefined;
+    const runningCount = project.sceneMediaJobs.filter((job) => job.status === "running" && job.workerId === WORKER_ID).length;
+    const slots = Math.max(0, Math.min(limit, CONCURRENCY - runningCount));
+    if (!slots) return [];
+    const claimedJobs: SceneMediaJob[] = [];
+    for (const job of project.sceneMediaJobs) {
+      if (job.status !== "queued") continue;
+      job.submissionTracked = true;
+      job.providerRequestStartedAt = undefined;
+      job.status = "running";
+      job.attempt += 1;
+      job.startedAt = now();
+      job.updatedAt = now();
+      job.workerId = WORKER_ID;
+      job.finishedAt = undefined;
+      job.error = undefined;
+      job.stage = job.maiVideoJobId && (job.provider === "flow" || job.provider === "flow-image") ? "flow_poll" : job.seedanceTaskId ? "seedance_poll" : undefined;
+      claimedJobs.push(structuredClone(job));
+      if (claimedJobs.length >= slots) break;
+    }
+    if (!claimedJobs.length) return [];
     project.updatedAt = now();
-    return { job: structuredClone(job), project: structuredClone(project) };
+    const projectSnapshot = structuredClone(project);
+    return claimedJobs.map((job) => ({ job, project: projectSnapshot }));
   });
 }
 
@@ -460,17 +477,14 @@ async function runJobWithCheckpoint(userId: string, slug: string, job: SceneMedi
       current.error = undefined;
       current.workerId = undefined;
       current.stage = undefined;
-    });
+    }, () => saved.superseded ? undefined : makeActivity({
+      projectSlug: slug,
+      kind: "chunk",
+      title: `${job.sceneId} đã tạo ${job.kind === "image" ? "ảnh" : "video"} AI`,
+      detail: `${job.chunkId} · ${media.model || media.provider}${media.quality ? ` · ${media.quality}` : ""}`,
+      status: "success",
+    }));
     if (!completed || saved.superseded) return;
-    await updateDataForUser(userId, (data) => {
-      data.activities.unshift(makeActivity({
-        projectSlug: slug,
-        kind: "chunk",
-        title: `${job.sceneId} đã tạo ${job.kind === "image" ? "ảnh" : "video"} AI`,
-        detail: `${job.chunkId} · ${media.model || media.provider}${media.quality ? ` · ${media.quality}` : ""}`,
-        status: "success",
-      }));
-    });
   } catch (cause) {
     if (signal.aborted) return;
     const message = userFacingError(cause);
@@ -502,11 +516,8 @@ async function runJobWithCheckpoint(userId: string, slug: string, job: SceneMedi
           current.seedanceTaskCreatedAt ||= current.startedAt || current.createdAt;
           current.stage = "seedance_poll";
         }
-      }).catch(() => undefined);
+      }, () => makeActivity({ projectSlug: slug, kind: "chunk", title: `${job.sceneId} vẫn đang chờ kết quả ${job.kind === "image" ? "ảnh" : "video"}`, detail: "Giữ nguyên ID job và sẽ tiếp tục poll; không gửi lại yêu cầu tạo.", status: "warning" })).catch(() => undefined);
       if (!updated) return;
-      await updateDataForUser(userId, (data) => {
-        data.activities.unshift(makeActivity({ projectSlug: slug, kind: "chunk", title: `${job.sceneId} vẫn đang chờ kết quả ${job.kind === "image" ? "ảnh" : "video"}`, detail: "Giữ nguyên ID job và sẽ tiếp tục poll; không gửi lại yêu cầu tạo.", status: "warning" }));
-      }).catch(() => undefined);
       return;
     }
     const updated = await updateJob(userId, slug, job.id, (current) => {
@@ -521,12 +532,9 @@ async function runJobWithCheckpoint(userId: string, slug: string, job: SceneMedi
         else current.seedanceTaskId = cause.taskId || current.seedanceTaskId;
         if (current.seedanceTaskId) current.seedanceTaskCreatedAt ||= current.startedAt || current.createdAt;
       }
-    }).catch(() => undefined);
+    }, () => makeActivity({ projectSlug: slug, kind: "chunk", title: `${job.sceneId} tạo ${job.kind === "image" ? "ảnh" : "video"} thất bại`, detail: message, status: "error" })).catch(() => undefined);
     if (!updated) return;
     if (job.provider === "higgsfield") await deleteHiggsfieldSessionToken(userId, job.id).catch(() => undefined);
-    await updateDataForUser(userId, (data) => {
-      data.activities.unshift(makeActivity({ projectSlug: slug, kind: "chunk", title: `${job.sceneId} tạo ${job.kind === "image" ? "ảnh" : "video"} thất bại`, detail: message, status: "error" }));
-    }).catch(() => undefined);
   }
 }
 
@@ -563,21 +571,25 @@ async function pumpUserQueue(userId: string) {
 
       let claimedNext = false;
       for (const [key, entry] of candidates) {
+        const availableSlots = CONCURRENCY - activeJobCount(userId);
+        if (availableSlots <= 0) break;
         const revision = entry.revision;
-        const claimed = await claimNextJob(entry.userId, entry.slug);
-        if (!claimed) {
+        const claimedBatch = await claimNextJobs(entry.userId, entry.slug, availableSlots);
+        if (!claimedBatch.length) {
           if (queueRuntime.queues.get(key) === entry && entry.revision === revision) queueRuntime.queues.delete(key);
           continue;
         }
 
         entry.lastClaimedAt = Date.now();
-        const controller = new AbortController();
-        const task = runJob(entry.userId, entry.slug, claimed.job, controller.signal);
-        queueRuntime.activeJobs.set(claimed.job.id, { userId, promise: task, controller });
-        void task.finally(() => {
-          queueRuntime.activeJobs.delete(claimed.job.id);
-          requestUserQueuePump(userId);
-        }).catch(() => undefined);
+        for (const claimed of claimedBatch) {
+          const controller = new AbortController();
+          const task = runJob(entry.userId, entry.slug, claimed.job, controller.signal);
+          queueRuntime.activeJobs.set(claimed.job.id, { userId, promise: task, controller });
+          void task.finally(() => {
+            queueRuntime.activeJobs.delete(claimed.job.id);
+            requestUserQueuePump(userId);
+          }).catch(() => undefined);
+        }
         claimedNext = true;
         break;
       }
