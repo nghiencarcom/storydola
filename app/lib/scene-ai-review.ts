@@ -155,18 +155,6 @@ function structuralReview(scene: SceneRecord, index: number, chunk: ProjectChunk
     checks.timing = "pass";
   }
   const words = dialogue.words;
-  const dialogueMinimum = duration !== undefined && Math.abs(duration - 5) < 0.01
-    ? 10
-    : duration !== undefined && Math.abs(duration - 10) < 0.01
-      ? 20
-      : duration !== undefined && Math.abs(duration - 15) < 0.01
-        ? 30
-        : undefined;
-  const dialogueRange = duration === 5 ? "10–15" : duration === 10 ? "20–30" : "30–45";
-  if (aiDrama && dialogue.dialogueLed && dialogueMinimum !== undefined && words < dialogueMinimum) {
-    checks.voiceover = "warning";
-    issues.push(`${id}: cảnh thoại ${duration} giây có ${words} từ; mục tiêu là ${dialogueRange} từ để đủ nhịp hội thoại. Cảnh visual_led hoặc im lặng có chủ đích được miễn.`);
-  }
   if (aiDrama && dialogue.dialogueLed && duration !== undefined) {
     const pacing = validateDialoguePacing(scene, duration);
     if (pacing.errors.length) {
@@ -184,14 +172,14 @@ function structuralReview(scene: SceneRecord, index: number, chunk: ProjectChunk
   }
 
   const speakingRate = words / Math.max(0.001, duration || 0.001);
-  if (voice && speakingRate > MAX_TTS_WORDS_PER_SECOND + 0.01) {
+  if (!aiDrama && voice && speakingRate > MAX_TTS_WORDS_PER_SECOND + 0.01) {
     if (checks.voiceover !== "fail") checks.voiceover = aiDrama ? "warning" : "fail";
     issues.push(`${id}: tốc độ đọc dự kiến ${speakingRate.toFixed(2)} từ/giây, vượt giới hạn ${MAX_TTS_WORDS_PER_SECOND} từ/giây.`);
   }
-  if (words > 60) {
+  if (!aiDrama && words > 60) {
     if (checks.voiceover !== "fail") checks.voiceover = aiDrama ? "warning" : "fail";
     issues.push(`${id}: voice-over có khoảng ${words} từ, dễ vượt nhịp 15s.`);
-  } else if (words > 45 && checks.voiceover !== "fail") {
+  } else if (!aiDrama && words > 45 && checks.voiceover !== "fail") {
     checks.voiceover = "warning";
     issues.push(`${id}: voice-over hơi dài (${words} từ), cần nghe lại khi render.`);
   }
@@ -222,6 +210,11 @@ function structuralReview(scene: SceneRecord, index: number, chunk: ProjectChunk
 function reviewInput(scene: SceneRecord, index: number, chunk: ProjectChunk) {
   const media = asRecord(scene.media);
   const dialogue = dialogueInfo(scene);
+  const dialogueCues = readDialogueSegments(scene).slice(0, 40).map((cue) => ({
+    speaker: cue.speakerName || cue.speakerCharacterId || "unknown",
+    start_sec: Number((cue.startMs / 1000).toFixed(3)),
+    end_sec: cue.endMs === undefined ? null : Number((cue.endMs / 1000).toFixed(3)),
+  }));
   const fallbackId = `S${String(chunk.sceneStart + index).padStart(3, "0")}`;
   return {
     id: sceneId(scene, fallbackId),
@@ -233,8 +226,8 @@ function reviewInput(scene: SceneRecord, index: number, chunk: ProjectChunk) {
     purpose: textValue(scene, "purpose"),
     beat_summary: textValue(scene, "beat_summary", "beatSummary"),
     dialogue_mode: dialogue.mode || undefined,
-    dialogue_word_count: dialogue.words,
     dialogue_or_voiceover: dialogue.voice,
+    dialogue_cues: dialogueCues,
     continuity_in: textValue(scene, "continuity_in", "continuityIn"),
     continuity_out: textValue(scene, "continuity_out", "continuityOut"),
     image_keyword: textValue(scene, "image_keyword", "imageKeyword"),
@@ -257,13 +250,13 @@ function buildReviewPrompt(project: StoryProject, chunk: ProjectChunk, scenes: S
   const openingSceneId = `S${String(chunk.sceneStart).padStart(3, "0")}`;
   return `Bạn là AI pre-check cho pipeline StoryAI. Hãy kiểm tra các cảnh dưới đây trước khi người dùng xem.
 
-Mục tiêu: phát hiện lỗi có thể sửa được trong kịch bản và metadata sản xuất: timecode, nhịp camera, voice-over có vừa thời lượng cảnh không, beat/narrative có rõ không, continuity_in/out có nhất quán trong chunk không, prompt có đủ cụ thể không, keyword có dùng được cho stock/AI không, và media đã sẵn sàng chưa. Với AI Drama, mỗi duration_sec phải đúng 5, 10 hoặc 15 giây, timecode phải khớp duration_sec, không có khoảng đuôi rỗng bị kéo dài, video_prompt và media video là bắt buộc; không dùng image_prompt để thay thế video_prompt.
+Mục tiêu: phát hiện lỗi có thể sửa được trong kịch bản và metadata sản xuất: timecode và thời lượng cảnh, voiceover_target_sec và cue thoại có hợp lệ trong cảnh không, nhịp camera, beat/narrative có rõ không, continuity_in/out có nhất quán trong chunk không, prompt có đủ cụ thể không, keyword có dùng được cho stock/AI không, và media đã sẵn sàng chưa. Không suy diễn tốc độ đọc từ số từ. Với AI Drama, mỗi duration_sec phải đúng 5, 10 hoặc 15 giây, timecode phải khớp duration_sec, không có khoảng đuôi rỗng bị kéo dài, video_prompt và media video là bắt buộc; không dùng image_prompt để thay thế video_prompt.
 
 TIÊU CHÍ CHẤT LƯỢNG KỂ CHUYỆN:
 - narrative: beat có mục tiêu/xung đột/thay đổi/hậu quả rõ không; cảnh kế tiếp có phát triển hoặc trả lời cảnh trước bằng quan hệ nhân quả không; có lặp beat, recap, twist vô cớ, hay hành động không được chuẩn bị không. Cảnh nên thay đổi ít nhất một yếu tố: mục tiêu, thông tin, quan hệ, rủi ro hoặc quyền chủ động.
 - Hook mở tập (3–5 giây): với cảnh mở tập ${openingSceneId}, kiểm tra 0–5s đầu trong video_prompt và lời thoại đầu tiên (nếu có). Va chạm phải bắt đầu ngay; hook có thể rõ trong 3 giây hoặc dùng tới 5 giây khi cần để người xem hiểu stakes. Không kéo dài chỉ để đủ mốc. Dùng hành động/hình ảnh/câu hỏi/manh mối/xung đột/cứu giúp/hài hước phù hợp, gắn với nội dung thật và tạo câu hỏi tức thì; không intro, recap hay teaser chung chung. Chỉ đánh narrative fail nếu không có hook rõ trong 5 giây đầu hoặc mở đầu giải thích chậm. Chọn một cách mở phù hợp, không ép đủ mọi kiểu và không ép hài vào cảnh nghiêm túc.
 - continuity: đối chiếu continuity_in/out của các cảnh liền nhau; trạng thái hành động, thời gian/địa điểm, đồ vật, kiến thức và cảm xúc phải tiếp nối hoặc có transition hợp lý. Đánh dấu lỗi khi có mâu thuẫn/hard reset rõ ràng, không chỉ vì cách chuyển cảnh mang tính lựa chọn phong cách.
-- voiceover: với AI Drama, lời thoại phải tự nhiên khi nói, đúng ngôn ngữ đã chọn, có ý đồ/subtext phù hợp nhân vật và làm thay đổi nhịp trao đổi; tránh thoại giải thích điều khán giả vừa thấy, nhắc lại thông tin hoặc câu sáo rỗng. Với cảnh dialogue_led, dùng mục tiêu theo thời lượng: 5 giây = 10–15 từ, 10 giây = 20–30 từ, 15 giây = 30–45 từ; dưới lần lượt 10, 20, 30 từ chỉ là warning, không được fail/needs_changes chỉ vì thiếu từ. Tính tốc độ bằng tổng số từ chia thời lượng cả cảnh, không tính từng cue. Số từ và tốc độ chỉ warning. Với dialogue_led, khoảng nghỉ bắt buộc: mỗi khoảng nghỉ liên tục <=3s, tổng nghỉ <=4s/cảnh 10s và <=5s/cảnh 15s; vượt ngưỡng là fail/needs_changes. Tính cả đầu, giữa và cuối cảnh, gộp các cue chồng lấn trước khi tính. Phim hài hình ảnh hoặc im lặng không cần lời thoại. visual_led hoặc im lặng có chủ đích được miễn giới hạn nghỉ; dùng dialogue_mode visual_led cho cảnh im lặng. Đọc số từ từ dialogue_word_count. Không áp dụng mức tối thiểu cho visual_led, hành động, khám phá hình ảnh hoặc im lặng có chủ đích. Chỉ yêu cầu sửa khi có lỗi rõ; dùng warning cho nhận xét chủ quan.
+   - voiceover: Với AI Drama, lời thoại cần tự nhiên khi nói, đúng ngôn ngữ đã chọn, có ý đồ/subtext phù hợp nhân vật và làm thay đổi nhịp trao đổi; tránh giải thích điều khán giả vừa thấy, nhắc lại thông tin hoặc câu sáo rỗng. Không áp số từ tối thiểu/tối đa hay tốc độ từ/giây; không cảnh báo hoặc yêu cầu sửa chỉ vì độ dài, số từ hoặc tốc độ đọc ước tính, và không suy diễn tốc độ đọc từ văn bản. Chỉ kiểm tra cue có timecode hợp lệ, đúng thứ tự và nằm trong cảnh. Với dialogue_led, khoảng nghỉ bắt buộc: mỗi khoảng nghỉ liên tục <=3s, tổng nghỉ <=4s/cảnh 10s và <=5s/cảnh 15s; vượt ngưỡng là fail/needs_changes. Tính cả đầu, giữa và cuối cảnh, gộp các cue chồng lấn trước khi tính. Phim hài hình ảnh hoặc im lặng không cần lời thoại. visual_led hoặc im lặng có chủ đích được miễn giới hạn nghỉ; dùng dialogue_mode visual_led cho cảnh im lặng. Chỉ yêu cầu sửa khi có lỗi rõ; dùng warning cho nhận xét chủ quan.
 - camera: cảnh 5/10/15 giây có nhịp tự nhiên theo hành động, thoại, phản ứng và thể loại. Cho phép một cú máy liên tục; không yêu cầu giữ hình đầu 0.5 giây, lưới thời gian cố định, đổi góc định kỳ hay giới hạn độ dài shot. Kiểm tra tính khả thi của camera, screen direction, eyeline, continuity và thời điểm sự kiện quan trọng. Giữ camera/VFX cần thiết và timing của chúng. Không đánh lỗi chỉ vì thiếu các khoảng timecode hoặc shot dài hơn 3 giây. Với ảnh nhân vật tham chiếu, cấm mô tả tuổi/đặc điểm khuôn mặt cụ thể; giữ và cho phép REFERENCE RULES khoá face, apparent age, skin tone, hair, proportions, costume theo ảnh và khoá layout/materials theo ảnh bối cảnh. Cho phép diễn xuất, biểu cảm và hướng nhìn.
 - Chỉ dùng fail/needs_changes cho lỗi nghiêm trọng, mâu thuẫn hoặc lặp lại có bằng chứng trong dữ liệu; không phạt kịch bản chỉ vì khác sở thích thể loại. Không tự bịa chi tiết nguồn để đánh giá.
 

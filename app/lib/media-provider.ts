@@ -2041,7 +2041,7 @@ async function generateFlowVideo(
     sourceUrl: resolved,
     query: prompt,
     model: DEFAULT_FLOW_VIDEO_MODEL_ID,
-    quality: "1080p",
+    quality: "720p",
     durationSec: duration,
   };
 }
@@ -2074,7 +2074,7 @@ export async function generateFlowTimelapseVideo({
   const settings = resolveMediaGenerationSettings({
     videoProvider: "flow",
     videoModel: DEFAULT_FLOW_VIDEO_MODEL_ID,
-    videoQuality: "1080p",
+    videoQuality: "720p",
     videoDurationMode: "fixed",
     videoDurationSec: durationSec,
   });
@@ -2898,7 +2898,7 @@ export async function generateSeedanceGatewaySalesSegment(input: {
   const settings = resolveMediaGenerationSettings({
     videoProvider: provider,
     videoModel: modelId,
-    videoQuality: provider === "flow" ? "1080p" : "",
+    videoQuality: provider === "flow" ? "720p" : "",
     videoDurationMode: "fixed",
     videoDurationSec: input.durationSec,
     videoAudio: true,

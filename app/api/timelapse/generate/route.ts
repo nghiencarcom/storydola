@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { DEFAULT_FLOW_VIDEO_DURATION_SEC } from "../../../lib/media-generation-settings";
 import { createSeedanceTimelapseReferenceUrl, seedancePublicBaseUrlErrorMessage, seedancePublicBaseUrlIssue } from "../../../lib/seedance-reference-links";
 import { generateFlowTimelapseVideo } from "../../../lib/media-provider";
 import { readMaiVideoAuthCookie } from "../../../lib/maivideo-auth-shared";
@@ -19,7 +20,8 @@ export async function POST(request: Request) {
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
   const continuity = typeof body.continuity === "string" ? body.continuity.trim().slice(0, 3_000) : "";
   const aspectRatio = ["16:9", "9:16", "1:1", "4:3", "3:4"].includes(String(body.aspectRatio)) ? String(body.aspectRatio) : "16:9";
-  const durationSec = [6, 8, 10].includes(Number(body.durationSec)) ? Number(body.durationSec) : 10;
+  const requestedDuration = Number(body.durationSec);
+  const durationSec = Number.isInteger(requestedDuration) && requestedDuration >= 5 && requestedDuration <= 15 ? requestedDuration : DEFAULT_FLOW_VIDEO_DURATION_SEC;
   if (!workflowId || !transitionId || !fromImageId || !toImageId || !prompt) return NextResponse.json({ message: "Cần có hai ảnh liên tiếp và video_prompt tương ứng." }, { status: 400 });
   const flowPrompt = continuity ? `${prompt}\n\nGLOBAL CONTINUITY:\n${continuity}` : prompt;
   if (flowPrompt.length > 12_000) return NextResponse.json({ message: "video_prompt và continuity vượt giới hạn 12.000 ký tự của Flow." }, { status: 400 });

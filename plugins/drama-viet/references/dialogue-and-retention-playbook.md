@@ -23,22 +23,19 @@ Trong phim ngắn và drama đời thường, khán giả không xem phim để 
 
 ---
 
-## 2. Quy tắc Độ dài Câu Thoại: Bỏ trần 12 từ, Khuyến khích 12–18 từ
+## 2. Độ dài câu thoại linh hoạt theo nhân vật và tình huống
 
-### A. Ưu tiên câu trọn vẹn 12–18 từ, linh hoạt theo nhịp
-- Tiếng Việt đời thường có nhịp điệu phong phú, nhiều từ đệm, quan hệ từ và các vế đối đáp tự nhiên. Ưu tiên câu thoại trọn vẹn, có ngữ cảnh và subtext dài **12–18 từ**; có thể dài hơn khi dấu phẩy hoặc gạch ngang (`—`) ngắt nhịp tự nhiên và giữ trọn cái duyên.
-- Độ dài 12–18 từ cho phép nhân vật trình bày trọn vẹn một lập luận sắc bén, một câu mỉa mai sâu cay hoặc một sự phản bác có sức nặng.
-- **Về mặt kỹ thuật TTS:** Ở tốc độ 2.5–3 từ/giây, một câu 12–18 từ mất khoảng **4–7,2 giây**. Với `dialogue_led`, căn cue hoặc thêm lượt thoại tự nhiên để tuân thủ giới hạn khoảng lặng; nếu hành động gánh beat và cần khoảng lặng dài hơn, dùng `visual_led`.
+### A. Viết trọn ý, không nhắm tới một số từ cố định
+- Độ dài câu phụ thuộc vào điều nhân vật muốn làm, cảm xúc, quan hệ, ngôn ngữ và cách diễn. Câu ngắn có thể tạo sức nặng; câu dài có thể mang lập luận, né tránh hoặc cảm xúc phức tạp. Không áp mục tiêu số từ hay tốc độ từ/giây.
+- Không cắt cụt một ý tự nhiên để đạt thời lượng ước tính, cũng không kéo dài câu hoặc thêm lời lấp chỗ trống. Khi một lượt thoại cần thêm thời gian, hãy để nhân vật có nhịp diễn phù hợp hoặc điều chỉnh cấu trúc cảnh tại điểm chuyển ý tự nhiên.
 
-### B. Tuyệt đối cấm băm nhỏ câu hay cắt cụt làm mất "duyên"
-- **Lỗi băm nhỏ câu:** Tự động cắt một ý hay thành những mẩu vụn 4–7 từ khiến nhân vật nói năng giật cục như học sinh đọc chính tả. Câu ngắn trọn vẹn 3–7 từ vẫn dùng được khi đan xen có chủ đích để nhấn, bùng nổ, ra lệnh hoặc từ chối:
-  * *Bị cấm:* *"Mẹ đã mua máy. Tiền của con. Con không thích. Mẹ xin lỗi."* (Vô hồn, máy móc, mất hết cảm xúc).
-  * *Đúng chuẩn tự nhiên (15 từ):* *"Tiền mồ hôi nước mắt con tích cóp ba năm, mẹ đem đi đặt cọc mà không nói một lời?"*
-- **Khi nào dùng câu ngắn (< 12 từ)?**
-  * Chỉ dùng khi có dụng ý; câu trọn vẹn 3–7 từ hợp để nhấn hoặc trong khoảnh khắc gắt gỏng bộc phát (*"Đủ rồi đấy Duy!"*), mệnh lệnh dứt khoát (*"Đưa chìa khóa đây cho tôi!"*), hoặc từ chối đanh thép (*"Không một đồng nào nữa hết."*).
+### B. Giữ trọn ý, không cắt câu theo số từ
+- Tránh chia một ý liền mạch thành nhiều mẩu máy móc nếu làm mất ý đồ hoặc cảm xúc. Ngược lại, câu ngắn là phù hợp khi nhân vật cần nhấn, bộc phát, ra lệnh hoặc từ chối.
+  * *Ví dụ rời rạc:* *"Mẹ đã mua máy. Tiền của con. Con không thích. Mẹ xin lỗi."*
+  * *Ví dụ đối đáp trọn ý:* *"Tiền mồ hôi nước mắt con tích cóp ba năm, mẹ đem đi đặt cọc mà không nói một lời?"*
 
-### C. Kỹ thuật điều khiển nhịp thở cho AI TTS (ElevenLabs / Omnivoice)
-- **Dấu phẩy `,`:** Chia câu 12–18 từ thành 2 vế nhịp nhàng (mỗi vế 6–9 từ), giúp giọng AI lấy hơi tự nhiên và có trọng âm rõ nét.
+### C. Dùng dấu câu theo nhịp nói cho AI TTS (ElevenLabs / Omnivoice)
+- **Dấu phẩy `,`:** Ngắt ở nơi người nói cần lấy hơi hoặc chuyển ý; không chia câu theo số từ cố định.
 - **Dấu chấm lửng `...`:** Đặt ở giữa câu để thể hiện sự ngập ngừng, dối trá hoặc kìm nén nước mắt (*"Duy nói... anh ấy sang tên tiệm may... từ tháng trước rồi mẹ."*).
 - **Dấu gạch ngang `—`:** Thể hiện cú chuyển ý đột ngột hoặc ngắt lời đối phương (*"Tôi tôn trọng mẹ cả đời này — nhưng cái tiệm này không phải của riêng mẹ!"*).
 

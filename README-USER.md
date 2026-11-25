@@ -64,6 +64,12 @@ npm start
 
 Lần chạy đầu tự cài thư viện npm, build ứng dụng, tạo `.env` cùng khóa mã hóa riêng cho máy, rồi mở trình duyệt. Người dùng đăng nhập bằng tài khoản MaiVideo.
 
+## Remake video từ link
+
+Mở **Remake video**, nhập link YouTube, Facebook, TikTok, Douyin hoặc Instagram công khai, hoặc link HTTPS trực tiếp đến MP4, MOV, WebM. Mỗi job có URL riêng dạng `/video-remake/<job-id>`; chọn job trong hàng đợi sẽ mở URL đó, còn **Sao chép link job** chép đường dẫn để lưu hoặc mở lại. Với video dài, StoryAI chia timeline thành các mốc nguồn 5 giây, lấy khung hình theo từng lô và giữ nguyên tệp nguồn để timecode chính xác. Code Agent đã chọn trong **Cài đặt** tự phân tích và chọn nhịp 5, 10 hoặc 15 giây cho từng cảnh. StoryAI không đặt giới hạn thời lượng hoặc dung lượng cho video tải từ link. StoryAI lập kế hoạch chung, viết theo từng nhóm cảnh và chia dự án Phim AI thành nhiều tập khi cần. Khi job hoàn tất, mở bản nháp để xem nhận xét theo mốc thời gian, kịch bản, nhân vật, bối cảnh và prompt từng cảnh. Chọn **Duyệt và tạo dự án Phim AI** để chuyển toàn bộ kịch bản sang quy trình sản xuất.
+
+Máy chạy StoryAI cần FFmpeg, FFprobe, Chrome hoặc Chromium, và CLI đã đăng nhập với model hỗ trợ ảnh (Codex, Antigravity hoặc Claude Code). Với link nền tảng, StoryAI mở MaiVideo Bulk Download trước, tải kết quả thẳng vào thư mục job local, rồi mới thử `yt-dlp` nếu MaiVideo không hỗ trợ hoặc tải lỗi. Chrome/Chromium được tự dò; nếu cài ở vị trí khác, đặt `STORYAI_BROWSER_PATH` trong `.env`. `yt-dlp` cập nhật có hỗ trợ JavaScript là phương án dự phòng trong `PATH` hoặc `STORYAI_YT_DLP_PATH`. Link trực tiếp đến MP4, MOV, WebM không cần MaiVideo. StoryAI đọc phụ đề có sẵn, dùng dịch vụ transcript MaiVideo cho YouTube, Facebook và TikTok và có thể chạy Whisper cục bộ nếu đặt `STORYAI_WHISPER_TRANSCRIBE_PATH` tới binary `whisper-transcribe` của MaiVideo cùng `STORYAI_WHISPER_MODEL_DIR` tới thư mục mô hình. Bạn cũng có thể dán transcript khi thêm job.
+
 ## Mở ứng dụng và cập nhật
 
 Mỗi lần muốn mở StoryAI, vào thư mục `StoryAI` trong Terminal hoặc PowerShell và chạy `npm start`. Với bản clone sạch trên nhánh `main`, lệnh này kiểm tra và tải mã mới từ GitHub, cài lại thư viện nếu cần, build khi mã nguồn thay đổi rồi khởi động ứng dụng. Cần có Internet để kiểm tra bản cập nhật.

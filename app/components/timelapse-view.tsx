@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "./ui-icon";
+import { DEFAULT_FLOW_VIDEO_DURATION_SEC } from "../lib/media-generation-settings";
 
 type TimelapseImage = { id: string; name: string; url: string; sourceId?: string };
 type VideoState = { status: "ready" | "generating" | "failed"; url?: string; error?: string; durationSec?: number };
@@ -11,7 +12,7 @@ type LibraryImage = { id: string; name: string; fileName: string; previewUrl: st
 type PersistedTimelapse = { workflowId: string; images: TimelapseImage[]; promptsJson: string; durationSec: number; videos: Record<string, VideoState> };
 
 const STORAGE_KEY = "storyai.timelapse.v1";
-const DURATIONS = [6, 8, 10];
+const DURATIONS = Array.from({ length: 11 }, (_, index) => index + 5);
 const AUDIO_DESIGN_GUIDANCE = "AUDIO AND SFX: Make the sound design depend on this transition's video prompt and reference images. Follow any explicit sound or silence directions in the prompt; otherwise, add only natural ambience and restrained sound effects that fit the setting and visible actions, synchronized to their visible causes. Do not force construction sounds into scenes without construction activity, or add unrelated sounds, dialogue, narration, or music unless requested by the prompt.";
 
 function newId() {
@@ -74,7 +75,7 @@ export function TimelapseView() {
   const [workflowId, setWorkflowId] = useState("");
   const [images, setImages] = useState<TimelapseImage[]>([]);
   const [promptsJson, setPromptsJson] = useState(() => samplePrompts(5));
-  const [durationSec, setDurationSec] = useState(10);
+  const [durationSec, setDurationSec] = useState(DEFAULT_FLOW_VIDEO_DURATION_SEC);
   const [videos, setVideos] = useState<Record<string, VideoState>>({});
   const [loaded, setLoaded] = useState(false);
   const [imageActionBusy, setImageActionBusy] = useState(false);
@@ -386,7 +387,7 @@ export function TimelapseView() {
           <p>Tạo video liền mạch từ các ảnh theo thứ tự thời gian. Mỗi cặp ảnh liên tiếp tạo thành một Transition.</p>
         </div>
         <div className="timelapse-hero-aside">
-          <span className="timelapse-model-pill"><span className="timelapse-model-dot" />Flow Omni 1.1 Flash</span>
+          <span className="timelapse-model-pill"><span className="timelapse-model-dot" />Flow Omni 1.2 Flash</span>
           <div className="timelapse-hero-stats">
             <div><strong>{images.length}</strong><span>ảnh nguồn</span></div>
             <div><strong>{readyCount}/{transitions.length}</strong><span>video hoàn tất</span></div>
@@ -399,10 +400,10 @@ export function TimelapseView() {
       <section className="timelapse-card panel-card timelapse-config-card">
         <div className="timelapse-section-heading"><div><span className="timelapse-step">01</span><div><h2>Cài đặt Timelapse</h2><p>Chọn thông số Transition và nhập prompt cho từng cặp ảnh.</p></div></div><span className={`timelapse-count-pill ${canGenerate ? "ready" : ""}`}>{validPrompts} prompt hợp lệ{transitions.length ? ` · cần ${transitions.length}` : " · chờ ảnh"}</span></div>
         <div className="timelapse-transition-config">
-          <div className="timelapse-transition-config-head"><div><h3>Transition</h3><p>Mỗi video dùng một <code>video_prompt</code> trong JSON.</p></div><span>FLOW · 1080p</span></div>
+          <div className="timelapse-transition-config-head"><div><h3>Transition</h3><p>Mỗi video dùng một <code>video_prompt</code> trong JSON.</p></div><span>FLOW · 720p</span></div>
           <div className="timelapse-settings-grid">
-            <label><span>Model tạo video</span><div className="timelapse-fixed-setting"><strong>Flow Omni 1.1 Flash</strong><small>Google Flow</small></div></label>
-            <label><span>Chất lượng</span><div className="timelapse-fixed-setting"><strong>1080p</strong><small>Cố định</small></div></label>
+            <label><span>Model tạo video</span><div className="timelapse-fixed-setting"><strong>Flow Omni 1.2 Flash</strong><small>Google Flow</small></div></label>
+            <label><span>Chất lượng</span><div className="timelapse-fixed-setting"><strong>720p</strong><small>1080p nếu có</small></div></label>
             <label><span>Thời lượng</span><select value={durationSec} onChange={(event) => setDurationSec(Number(event.target.value))}>{DURATIONS.map((duration) => <option key={duration} value={duration}>{duration} giây</option>)}</select></label>
             <div className="timelapse-batch-setting"><span>Tạo video</span><button className="primary-button" type="button" onClick={() => void generateAllTransitions()} disabled={!canGenerate || batchBusy || imageActionBusy}><Icon name={batchBusy ? "clock" : "play"} size={15} />{batchBusy ? "Đang tạo video…" : `Tạo video hàng loạt (${transitions.length})`}</button></div>
           </div>
@@ -451,9 +452,9 @@ export function TimelapseView() {
                   <header className="timelapse-compact-transition-head"><div><h4>Transition · {transition.fromLabel} → {transition.toLabel}</h4><p>{transition.fromLabel} → {transition.toLabel} · Flow Omni</p></div></header>
                   <div className="timelapse-compact-transition-actions"><button className="timelapse-compact-generate" type="button" onClick={() => void runOneTransition(transition)} disabled={!prompt.trim() || video?.status === "generating" || imageActionBusy}><Icon name={video?.status === "ready" ? "refresh" : video?.status === "generating" ? "clock" : "play"} size={13} />{video?.status === "ready" ? "Tạo lại video" : video?.status === "generating" ? "Đang tạo…" : video?.status === "failed" ? "Thử lại" : "Tạo video"}</button><span className={`timelapse-status ${video?.status || "waiting"}`}>{video?.status === "ready" ? "Hoàn thành" : video?.status === "generating" ? "Đang tạo" : video?.status === "failed" ? "Lỗi" : "Chưa tạo"}</span><details className="timelapse-compact-prompt"><summary>Prompt riêng</summary><textarea aria-label={`Prompt video ${transition.index + 1}`} value={prompt} onChange={(event) => updateScenePrompt(transition.index, event.target.value)} disabled={!parsedPrompts.document} placeholder="Sửa video_prompt trong JSON ở trên…" />{!parsedPrompts.document && <small>Sửa JSON hợp lệ trước khi chỉnh prompt tại đây.</small>}</details></div>
                   <p className="timelapse-compact-prompt-preview" title={prompt}>{prompt || "Chưa có video_prompt cho Transition này."}</p>
-                  <div className={`timelapse-video-preview ${video?.status === "ready" ? "has-video" : ""}`}>{video?.status === "ready" && video.url ? <video src={video.url} controls preload="metadata" /> : video?.status === "generating" ? <div className="timelapse-video-placeholder"><span className="timelapse-spinner" /><strong>Flow đang tạo video…</strong><small>Giữ tab này mở cho đến khi hoàn tất.</small></div> : <div className="timelapse-video-placeholder"><Icon name="play" size={20} /><strong>Video {transition.fromLabel} → {transition.toLabel}</strong><small>{durationSec} giây · 1080p</small></div>}</div>
+                  <div className={`timelapse-video-preview ${video?.status === "ready" ? "has-video" : ""}`}>{video?.status === "ready" && video.url ? <video src={video.url} controls preload="metadata" /> : video?.status === "generating" ? <div className="timelapse-video-placeholder"><span className="timelapse-spinner" /><strong>Flow đang tạo video…</strong><small>Giữ tab này mở cho đến khi hoàn tất.</small></div> : <div className="timelapse-video-placeholder"><Icon name="play" size={20} /><strong>Video {transition.fromLabel} → {transition.toLabel}</strong><small>{durationSec} giây · 720p, 1080p nếu có</small></div>}</div>
                   {video?.error && <div className="timelapse-video-error">{video.error}</div>}
-                  <div className="timelapse-transition-footer"><span>{video?.status === "ready" ? `Flow Omni · ${video.durationSec || durationSec}s · 1080p` : `${durationSec} giây · 1080p`}</span>{video?.status === "ready" && video.url && <a className="secondary-button compact" href={video.url} download={`timelapse-transition-${transition.index + 1}.mp4`}><Icon name="download" size={13} />Tải video</a>}</div>
+                  <div className="timelapse-transition-footer"><span>{video?.status === "ready" ? `Flow Omni 1.2 Flash · ${video.durationSec || durationSec}s` : `${durationSec} giây · 720p, 1080p nếu có`}</span>{video?.status === "ready" && video.url && <a className="secondary-button compact" href={video.url} download={`timelapse-transition-${transition.index + 1}.mp4`}><Icon name="download" size={13} />Tải video</a>}</div>
                 </article>;
               }) : <div className="timelapse-pair-transition-empty"><Icon name="arrow" size={17} /><span>Thêm ảnh liền kề để tạo Transition.</span></div>}</div>
             </div>

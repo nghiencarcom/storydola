@@ -7,7 +7,7 @@ import { useProjects } from "../lib/project-store";
 import { FALLBACK_VIDEO_LANGUAGES, voiceLanguageLabel, type OmniVoiceCatalog, type OmniVoiceOption } from "../lib/omnivoice";
 import { formatDurationLabel, getManualScriptMetrics } from "../lib/script-utils";
 import { DEFAULT_MEDIA_GENERATION_SETTINGS, IMAGE_DETAIL_LEVEL_LABELS, MAX_PROJECT_CHUNK_SIZE, MAX_SCENE_DURATION_SEC, MIN_PROJECT_CHUNK_SIZE, PROJECT_CHUNK_SIZE_PRESETS, slugify, type DurationMode, type MediaGenerationSettings, type MediaModelCatalog, type MediaSource, type ScriptFormat, type ScriptMode, type VideoGenerationModelOption } from "../lib/project-types";
-import { availableImageModels, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, DEFAULT_SEEDANCE_VIDEO_MODEL_ID, HIGGSFIELD_SEEDANCE_MODEL_ID, imageDetailLevelsForModel, isFlowImageModel, isMuseImageModel, isPixverseVideoSettings, isTemporarilyHiddenMaiVideoSeedance25, isTemporarilyHiddenSeedanceProvider, isVideoOffPeakRequired, normalizeVideoDuration, preferredVideoQuality, resolveMediaGenerationSettings, videoDurationBoundsForModel, videoDurationOptions, videoModelDisplayName, videoQualitiesForModel, visibleVideoModels } from "../lib/media-generation-settings";
+import { availableImageModels, DEFAULT_FLOW_VIDEO_DURATION_SEC, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, DEFAULT_SEEDANCE_VIDEO_MODEL_ID, HIGGSFIELD_SEEDANCE_MODEL_ID, imageDetailLevelsForModel, isFlowImageModel, isMuseImageModel, isPixverseVideoSettings, isTemporarilyHiddenMaiVideoSeedance25, isTemporarilyHiddenSeedanceProvider, isVideoOffPeakRequired, normalizeVideoDuration, preferredVideoQuality, resolveMediaGenerationSettings, videoDurationBoundsForModel, videoDurationOptions, videoModelDisplayName, videoQualitiesForModel, visibleVideoModels } from "../lib/media-generation-settings";
 import { useSeedanceAccounts } from "../lib/seedance-accounts-client";
 import { DEFAULT_IMAGE_STYLE, DEFAULT_VISUAL_STYLE, IMAGE_STYLE_OPTIONS, IMAGE_STYLE_PRESETS } from "../lib/visual-styles";
 import { CONTENT_GENRES, contentGenresLabel, storySettingLabel, DEFAULT_CONTENT_GENRE, DEFAULT_STORY_SETTING, normalizeContentGenre, normalizeSecondaryGenres, normalizeStorySetting, STORY_SETTING_OPTIONS } from "../lib/content-genres";
@@ -338,8 +338,11 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
     const currentQuality = form.mediaGeneration.videoQuality;
     const videoQuality = preferredVideoQuality(videoModel, currentQuality, videoQualitiesForModel(selected, currentQuality), selected?.label);
     const maxDuration = videoDurationLimit(selected, videoQuality);
+    const requestedDuration = selected?.provider === "flow" && form.mediaGeneration.videoProvider !== "flow"
+      ? DEFAULT_FLOW_VIDEO_DURATION_SEC
+      : form.mediaGeneration.videoDurationSec;
     const videoDurationSec = selected?.supportedDurationsSec?.length
-      ? normalizeVideoDuration(form.mediaGeneration.videoDurationSec, selected, videoQuality)
+      ? normalizeVideoDuration(requestedDuration, selected, videoQuality)
       : Math.min(maxDuration, Math.max(selected?.minDurationSec || 1, form.mediaGeneration.videoDurationSec));
     setMediaSettings({
       videoProvider: selected?.provider || videoProvider,
@@ -365,7 +368,11 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
       videoProvider,
       videoModel,
       videoQuality,
-      videoDurationSec: normalizeVideoDuration(form.mediaGeneration.videoDurationSec, selected, videoQuality),
+      videoDurationSec: normalizeVideoDuration(
+        videoProvider === "flow" && form.mediaGeneration.videoProvider !== "flow" ? DEFAULT_FLOW_VIDEO_DURATION_SEC : form.mediaGeneration.videoDurationSec,
+        selected,
+        videoQuality,
+      ),
       ...(isPixverseVideoSettings({ videoProvider, videoModel }) ? { videoMultiShot: true, videoAudio: true } : {}),
       ...(selected?.supportsMultiShot === false ? { videoMultiShot: false } : {}),
       ...(selected?.supportsAudio === true ? { videoAudio: true } : {}),
@@ -481,7 +488,7 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
       hasValidChunkSize
         ? `Phân tập: ${totalChunks} tập, tối đa ${form.chunkSize} cảnh/tập, tổng ${totalScenes} cảnh theo mốc lập kế hoạch 15 giây/cảnh. Tập cuối nhận số cảnh còn lại. Viết một chương cho mỗi tập.`
         : "Phân tập: Hãy đề xuất số tập và số cảnh hợp lý theo thời lượng mục tiêu; không vượt giới hạn cấu hình khi có giá trị hợp lệ.",
-      "Khi triển khai cảnh, thời lượng hợp lệ là 5, 10 hoặc 15 giây theo diễn biến.",
+      "Khi triển khai cảnh, thời lượng hợp lệ là 5, 10 hoặc 15 giây theo diễn biến. Viết lời thoại trọn ý theo nhân vật, cảm xúc và nhịp diễn; không áp tốc độ hoặc số từ mỗi giây. Căn cue theo phần trình diễn thực tế và giữ trong timeline cảnh.",
       `Thể loại: ${contentGenresLabel(form.contentGenre, form.secondaryGenres)}`,
       `Bối cảnh: ${storySettingLabel(form.storySetting)}${form.settingNotes.trim() ? ` · ${form.settingNotes.trim()}` : ""}`,
       `Phong cách hình ảnh: ${form.imageStyle.trim() || "[Chưa nhập — đề xuất phong cách phù hợp]"} · ${form.visualStyle}`,
@@ -782,9 +789,13 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
           <small className="field-help">Mỗi chunk/tập gồm số cảnh đã chọn; có thể nhập từ {MIN_PROJECT_CHUNK_SIZE} đến {MAX_PROJECT_CHUNK_SIZE}.</small>
         </label>
       </div>
+      {form.presetId === "ai-drama" && <div className="fixed-rule ai-drama-dialogue-guidance">
+        <Icon name="check" size={15} />
+        <span><strong>Nhịp thoại:</strong> Viết trọn ý theo cá tính, cảm xúc và nhịp diễn; không áp tốc độ hay số từ mỗi giây. Cue thoại cần khớp cảnh 5/10/15 giây.</span>
+      </div>}
       {!isNewAiDrama && <div className="fixed-rule">
         <Icon name="check" size={15} />
-        <span><strong>Giới hạn cảnh:</strong> {MAX_SCENE_DURATION_SEC} giây · 3 từ/giây{currentScriptEntryMode === "json" ? " · JSON cần timecode hợp lệ" : ""}</span>
+        <span><strong>Giới hạn cảnh:</strong> {MAX_SCENE_DURATION_SEC} giây{form.presetId === "ai-drama" ? "" : " · 3 từ/giây"}{currentScriptEntryMode === "json" ? " · JSON cần timecode hợp lệ" : ""}</span>
       </div>}
     </section>
   );
@@ -866,7 +877,7 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
                 <span>JSON kịch bản</span>
                 {(fixedPresetId || form.presetId) === "ai-drama" && <div className="script-template-actions">
                   <button className="secondary-button compact" type="button" onClick={loadDramaJsonTemplate} disabled={saving}><Icon name="file" size={14} />Chèn mẫu JSON Phim AI</button>
-                  <small>Mẫu hướng dẫn A01/S001 · không cố định câu chuyện hay mốc nhịp; có đầy đủ prompt_guidance trong JSON. Chọn cảnh 5/10/15 giây và nhịp linh hoạt theo diễn biến, không chia đều 2,5/3 giây hay giữ hình đầu 0,5 giây. Giữ camera/VFX cần thiết và REFERENCE RULES. Thay các hướng dẫn trong [ ] bằng kịch bản thực tế và bổ sung đủ tập/cảnh trước khi nhập.</small>
+                  <small>Mẫu hướng dẫn A01/S001 · không cố định câu chuyện hay mốc nhịp; có đầy đủ prompt_guidance trong JSON. Chọn cảnh 5/10/15 giây theo diễn biến; căn thoại theo nhịp diễn, không áp số từ/giây. Không chia đều timecode hay giữ hình đầu 0,5 giây. Giữ camera/VFX cần thiết và REFERENCE RULES. Thay các hướng dẫn trong [ ] bằng kịch bản thực tế và bổ sung đủ tập/cảnh trước khi nhập.</small>
                 </div>}
                 <input ref={scriptJsonInputRef} type="file" accept="application/json,.json" hidden onChange={selectScriptJsonFile} />
                 <textarea
@@ -1013,7 +1024,7 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
                   <label htmlFor="project-video-quality" className="form-field">
                     <span>Chất lượng video</span>
                     {providerAccountSelected
-                      ? <select id="project-video-quality" value="profile" disabled><option value="profile">{flowSelected ? "1080p · cố định" : museSelected ? "Theo profile Muse.ai" : "Theo profile Seedance"}</option></select>
+                      ? <select id="project-video-quality" value="profile" disabled><option value="profile">{flowSelected ? "720p · 1080p nếu có" : museSelected ? "Theo profile Muse.ai" : "Theo profile Seedance"}</option></select>
                       : <select id="project-video-quality" value={form.mediaGeneration.videoQuality} onChange={(event) => selectVideoQuality(event.target.value)}>
                         {videoQualities.map((quality) => <option key={quality} value={quality}>{quality}{!supportedVideoQualities.includes(quality) ? " · cấu hình đã lưu" : ""}</option>)}
                       </select>}
@@ -1024,12 +1035,12 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
                       <option value="scene">Theo độ dài từng cảnh</option>
                       {form.presetId !== "ai-drama" && <option value="fixed">Cố định cho mọi cảnh</option>}
                     </select>
-                    {form.presetId === "ai-drama" && <small className="field-help">{museSelected ? "Muse.ai chỉ nhận clip 5 hoặc 10 giây; cảnh dài hơn dùng tối đa 10 giây." : flowSelected ? "Flow nhận clip 6, 8 hoặc 10 giây; thời lượng cảnh được làm tròn lên mốc phù hợp, tối đa 10 giây." : "Phim AI luôn tạo clip theo từng cảnh 5/10/15 giây."}</small>}
+                    {form.presetId === "ai-drama" && <small className="field-help">{museSelected ? "Muse.ai chỉ nhận clip 5 hoặc 10 giây; cảnh dài hơn dùng tối đa 10 giây." : flowSelected ? "Flow nhận clip 5–15 giây; thời lượng cảnh được làm tròn lên giây phù hợp." : "Phim AI luôn tạo clip theo từng cảnh 5/10/15 giây."}</small>}
                     {form.mediaGeneration.videoDurationMode === "fixed"
                       ? providerAccountSelected
                         ? <select id="project-video-duration-seconds" value={form.mediaGeneration.videoDurationSec} onChange={(event) => setMediaSettings({ videoDurationSec: Number(event.target.value) })}>{videoDurationChoices.map((seconds) => <option key={seconds} value={seconds}>{seconds} giây</option>)}</select>
                         : <input id="project-video-duration-seconds" type="number" min={videoMinDuration} max={videoMaxDuration} step={1} value={form.mediaGeneration.videoDurationSec} onChange={(event) => setMediaSettings({ videoDurationSec: Number(event.target.value) })} />
-                      : <small className="field-help">{providerAccountSelected ? `Tự chọn thời lượng hợp lệ theo cảnh${museSelected ? " (5/10s)" : flowSelected ? " (6/8/10s)" : " (5/10/15s)"}.` : `Theo cảnh · tối đa ${videoMaxDuration}s.`}</small>}
+                      : <small className="field-help">{providerAccountSelected ? `Tự chọn thời lượng hợp lệ theo cảnh${museSelected ? " (5/10s)" : flowSelected ? " (5–15s)" : " (5/10/15s)"}.` : `Theo cảnh · tối đa ${videoMaxDuration}s.`}</small>}
                   </label>
                   {flowSelected && <label htmlFor="project-flow-reference-mode" className="form-field">
                     <span>Tham chiếu video Flow</span>

@@ -15,7 +15,8 @@ export const FLOW_IMAGE_MODEL_OPTIONS: ImageGenerationModelOption[] = [
 ];
 export const DEFAULT_SEEDANCE_VIDEO_MODEL_ID = "seedance-2.5";
 export const DEFAULT_MUSE_VIDEO_MODEL_ID = "muse-video";
-export const DEFAULT_FLOW_VIDEO_MODEL_ID = "flow-omni-1.1-flash";
+export const DEFAULT_FLOW_VIDEO_MODEL_ID = "flow-omni-1.2-flash";
+export const DEFAULT_FLOW_VIDEO_DURATION_SEC = 8;
 export const SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES = 30;
 export const MUSE_VIDEO_MODEL_OPTION: VideoGenerationModelOption = {
   id: DEFAULT_MUSE_VIDEO_MODEL_ID,
@@ -36,13 +37,13 @@ export const MINIMAX_H3_VIDEO_MODEL_ID = "minimax-h3";
 export const WAN_3_VIDEO_MODEL_ID = "wan-3.0";
 export const FLOW_VIDEO_MODEL_OPTION: VideoGenerationModelOption = {
   id: DEFAULT_FLOW_VIDEO_MODEL_ID,
-  label: "Flow Omni 1.1 Flash",
+  label: "Flow Omni 1.2 Flash",
   provider: "flow",
-  qualities: ["1080p"],
+  qualities: ["720p"],
   aspectRatios: ["9:16", "16:9", "1:1", "4:3", "3:4"],
-  minDurationSec: 6,
-  maxDurationSec: 10,
-  supportedDurationsSec: [6, 8, 10],
+  minDurationSec: 5,
+  maxDurationSec: 15,
+  supportedDurationsSec: Array.from({ length: 11 }, (_, index) => index + 5),
   supportsMultiShot: false,
   supportsAudio: true,
   supportsOffPeak: false,
@@ -53,6 +54,11 @@ export const SALES_VIDEO_GATEWAY_VIDEO_MODEL_OPTIONS: VideoGenerationModelOption
 export const KLING_VIDEO_MODEL_ID = "kling-4.0";
 export const PIXVERSE_SEEDANCE_2_FAST_MODEL_ID = "seedance-2.0-fast";
 export const HIGGSFIELD_SEEDANCE_MODEL_ID = "higgsfield-seedance-2.0";
+
+function isFlowVideoModel(modelId?: string) {
+  const id = modelId?.trim().toLowerCase();
+  return id === DEFAULT_FLOW_VIDEO_MODEL_ID || id === "flow-omni-1.1-flash";
+}
 
 const DIRECT_SEEDANCE_VIDEO_MODEL_IDS = new Set(["seedance-2.0", "seedance-2.5"]);
 
@@ -170,7 +176,7 @@ export function isVideoOffPeakRequired(modelId?: string, modelLabel?: string) {
 }
 
 export function videoQualitiesForModel(model?: VideoGenerationModelOption, fallbackQuality?: string) {
-  if (model?.provider === "flow") return ["1080p"];
+  if (model?.provider === "flow") return model.qualities.length ? model.qualities : ["720p"];
   const qualities = model ? filterPixverseVideoQualities(model.id, model.label, model.qualities) : [];
   if (qualities.length) return qualities;
   return fallbackQuality && !isRemovedPixverseVideoQuality(fallbackQuality)
@@ -188,7 +194,7 @@ export function preferredVideoQuality(modelId: string | undefined, currentQualit
 
 export function videoDurationOptions(model?: VideoGenerationModelOption, quality = "") {
   if (model?.provider === "muse") return [5, 10];
-  if (model?.provider === "flow") return [6, 8, 10];
+  if (model?.provider === "flow") return Array.from({ length: 11 }, (_, index) => index + 5);
   const { min, max } = videoDurationBoundsForModel(model, quality);
   const supported = model?.supportedDurationsSec?.filter((duration) => Number.isInteger(duration) && duration >= min && duration <= max);
   if (supported?.length) return [...new Set(supported)].sort((left, right) => left - right);
@@ -197,7 +203,7 @@ export function videoDurationOptions(model?: VideoGenerationModelOption, quality
 
 export function videoDurationBoundsForModel(model?: VideoGenerationModelOption, quality = "") {
   if (model?.provider === "muse") return { min: 5, max: 10 };
-  if (model?.provider === "flow") return { min: 6, max: 10 };
+  if (model?.provider === "flow") return { min: 5, max: 15 };
   const min = Math.max(1, Math.round(model?.minDurationSec || 1));
   const configuredMax = model?.maxDurationByQuality?.[quality] || model?.maxDurationSec || 15;
   const max = Math.max(min, Math.round(configuredMax));
@@ -215,20 +221,22 @@ function normalizeMuseDuration(requested: number, fallback = 10) {
   return duration <= 5 ? 5 : 10;
 }
 
-function normalizeFlowDuration(requested: number, fallback = 8) {
-  const duration = Math.max(1, Math.ceil(Number(requested) || fallback || 8));
-  return [6, 8, 10].find((option) => option >= duration) ?? 10;
+function normalizeFlowDuration(requested: number, fallback = DEFAULT_FLOW_VIDEO_DURATION_SEC) {
+  const duration = Math.ceil(Number(requested) || fallback || DEFAULT_FLOW_VIDEO_DURATION_SEC);
+  return Math.min(15, Math.max(5, duration));
 }
 
 export function defaultMediaGenerationSettings(): MediaGenerationSettings {
   const configuredDuration = Number(process.env.MAIVIDEO_VIDEO_DURATION);
   const configuredVideoModel = process.env.MAIVIDEO_VIDEO_MODEL?.trim() || DEFAULT_MEDIA_GENERATION_SETTINGS.videoModel;
-  const videoModel = isKlingVideoModel(configuredVideoModel)
-    ? DEFAULT_MEDIA_GENERATION_SETTINGS.videoModel
-    : isMaiVideoPixverseV56Model({ id: configuredVideoModel }) ? "pixverse-c1" : configuredVideoModel;
-  const videoProvider = isHiggsfieldSeedanceModel(videoModel) ? "higgsfield" : isDirectSeedanceVideoModel(videoModel) ? "seedance" : videoModel === DEFAULT_FLOW_VIDEO_MODEL_ID ? "flow" : "maivideo";
+  const videoModel = isFlowVideoModel(configuredVideoModel)
+    ? DEFAULT_FLOW_VIDEO_MODEL_ID
+    : isKlingVideoModel(configuredVideoModel)
+      ? DEFAULT_MEDIA_GENERATION_SETTINGS.videoModel
+      : isMaiVideoPixverseV56Model({ id: configuredVideoModel }) ? "pixverse-c1" : configuredVideoModel;
+  const videoProvider = isHiggsfieldSeedanceModel(videoModel) ? "higgsfield" : isDirectSeedanceVideoModel(videoModel) ? "seedance" : isFlowVideoModel(videoModel) ? "flow" : "maivideo";
   const pixverse = isPixverseVideoSettings({ videoProvider, videoModel });
-  const maxVideoDuration = videoProvider === "flow" ? 10 : 15;
+  const maxVideoDuration = 15;
   const minVideoDuration = 1;
   const configuredVideoQuality = process.env.MAIVIDEO_VIDEO_QUALITY?.trim();
   return {
@@ -239,13 +247,13 @@ export function defaultMediaGenerationSettings(): MediaGenerationSettings {
     imageDetailLevel: DEFAULT_MEDIA_GENERATION_SETTINGS.imageDetailLevel,
     videoModel,
     videoQuality: videoProvider === "flow"
-      ? "1080p"
+      ? "720p"
       : isPixverseVideoModel(videoModel)
       ? (isRemovedPixverseVideoQuality(configuredVideoQuality) ? "1080p" : configuredVideoQuality || "1080p")
       : configuredVideoQuality || DEFAULT_MEDIA_GENERATION_SETTINGS.videoQuality,
     videoDurationMode: DEFAULT_MEDIA_GENERATION_SETTINGS.videoDurationMode,
     videoDurationSec: videoProvider === "flow"
-      ? normalizeFlowDuration(configuredDuration, DEFAULT_MEDIA_GENERATION_SETTINGS.videoDurationSec)
+      ? normalizeFlowDuration(configuredDuration, DEFAULT_FLOW_VIDEO_DURATION_SEC)
       : Math.min(maxVideoDuration, Math.max(minVideoDuration, Number.isFinite(configuredDuration) && configuredDuration > 0 ? Math.round(configuredDuration) : DEFAULT_MEDIA_GENERATION_SETTINGS.videoDurationSec)),
     videoMultiShot: pixverse ? true : DEFAULT_MEDIA_GENERATION_SETTINGS.videoMultiShot,
     videoAudio: pixverse ? true : DEFAULT_MEDIA_GENERATION_SETTINGS.videoAudio,
@@ -265,7 +273,7 @@ export function resolveMediaGenerationSettings(settings?: Partial<MediaGeneratio
   const configuredVideoModel = settings?.videoModel?.trim() || defaults.videoModel;
   const videoProvider = settings?.videoProvider === "seedance" || settings?.videoProvider === "higgsfield" || settings?.videoProvider === "maivideo" || settings?.videoProvider === "muse" || settings?.videoProvider === "flow"
     ? settings.videoProvider
-    : isHiggsfieldSeedanceModel(configuredVideoModel) ? "higgsfield" : isDirectSeedanceVideoModel(configuredVideoModel) ? "seedance" : configuredVideoModel === DEFAULT_FLOW_VIDEO_MODEL_ID ? "flow" : "maivideo";
+    : isHiggsfieldSeedanceModel(configuredVideoModel) ? "higgsfield" : isDirectSeedanceVideoModel(configuredVideoModel) ? "seedance" : isFlowVideoModel(configuredVideoModel) ? "flow" : "maivideo";
   const storedVideoModel = videoProvider === "maivideo" && isKlingVideoModel(configuredVideoModel)
     ? DEFAULT_MEDIA_GENERATION_SETTINGS.videoModel
     : videoProvider === "maivideo" && isMaiVideoPixverseV56Model({ id: configuredVideoModel, provider: videoProvider })
@@ -279,7 +287,7 @@ export function resolveMediaGenerationSettings(settings?: Partial<MediaGeneratio
   const flowReferenceMode = settings?.flowReferenceMode === "frames" ? "frames" : "ingredients";
   const seedanceChatMode = settings?.seedanceChatMode === "Pro" ? "Pro" : "Fast";
   const pixverse = isPixverseVideoSettings({ videoProvider, videoModel });
-  const maxVideoDuration = videoProvider === "muse" ? 10 : videoProvider === "flow" ? 10 : videoProvider === "maivideo" && videoModel === WAN_3_VIDEO_MODEL_ID ? 30 : 15;
+  const maxVideoDuration = videoProvider === "muse" ? 10 : videoProvider === "maivideo" && videoModel === WAN_3_VIDEO_MODEL_ID ? 30 : 15;
   const minVideoDuration = videoProvider === "maivideo" && videoModel === MINIMAX_H3_VIDEO_MODEL_ID ? 5 : videoProvider === "maivideo" && videoModel === WAN_3_VIDEO_MODEL_ID ? 2 : 1;
   const maiVideoSeedance = videoProvider === "maivideo" && isMaiVideoSeedanceModel(videoModel);
   const requiresOffPeak = videoProvider === "maivideo" && isVideoOffPeakRequired(videoModel);
@@ -292,7 +300,7 @@ export function resolveMediaGenerationSettings(settings?: Partial<MediaGeneratio
     imageDetailLevel,
     videoModel,
     videoQuality: videoProvider === "flow"
-      ? "1080p"
+      ? "720p"
       : pixverse && isRemovedPixverseVideoQuality(settings?.videoQuality)
         ? "1080p"
         : settings?.videoQuality?.trim() || (pixverse ? "1080p" : defaults.videoQuality),
@@ -300,7 +308,7 @@ export function resolveMediaGenerationSettings(settings?: Partial<MediaGeneratio
     videoDurationSec: videoProvider === "muse"
       ? normalizeMuseDuration(duration, defaults.videoDurationSec)
       : videoProvider === "flow"
-        ? normalizeFlowDuration(duration, defaults.videoDurationSec)
+        ? normalizeFlowDuration(duration, DEFAULT_FLOW_VIDEO_DURATION_SEC)
       : Math.min(maxVideoDuration, Math.max(minVideoDuration, Number.isFinite(duration) && duration > 0 ? Math.round(duration) : defaults.videoDurationSec)),
     videoMultiShot: pixverse ? true : settings?.videoMultiShot ?? defaults.videoMultiShot,
     videoAudio: pixverse ? true : settings?.videoAudio ?? defaults.videoAudio,

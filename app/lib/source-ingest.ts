@@ -35,7 +35,7 @@ function sourceError(message: string, cause?: unknown) {
 }
 
 /** Fetch a transcript/brief from the existing MaiVideo crawl service. */
-export async function ingestSourceUrl(sourceUrl: string): Promise<SourceIngestResult> {
+export async function ingestSourceUrl(sourceUrl: string, timeoutMs?: number): Promise<SourceIngestResult> {
   const normalizedUrl = sourceUrl.trim();
   if (!normalizedUrl) throw sourceError("SOURCE_URL_REQUIRED");
 
@@ -43,7 +43,7 @@ export async function ingestSourceUrl(sourceUrl: string): Promise<SourceIngestRe
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ url: normalizedUrl }),
-    signal: AbortSignal.timeout(Number(process.env.MAIVIDEO_CRAWL_TIMEOUT_MS) || 12 * 60 * 1000),
+    signal: AbortSignal.timeout(timeoutMs ?? (Number(process.env.MAIVIDEO_CRAWL_TIMEOUT_MS) || 12 * 60 * 1000)),
   }).catch((cause) => {
     throw sourceError("Không kết nối được MaiVideo để lấy transcript. Hãy kiểm tra htmlvideo đang chạy và MAIVIDEO_HTMLVIDEO_BASE_URL.", cause);
   });

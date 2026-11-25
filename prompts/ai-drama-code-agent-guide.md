@@ -110,7 +110,7 @@ Camera bắt đầu di chuyển theo     Chuyển nét (Rack Focus) hoặc      
     * Từng khoảng nghỉ liên tục (khoảng trống giữa các câu thoại hoặc đầu/đuôi cảnh) tối đa **$\le 3.0$ giây**.
     * Tổng thời gian im lặng trong cảnh 15 giây tối đa **$\le 5.0$ giây** (tổng thời lượng thoại phải đạt ít nhất $10$ giây).
     * Giữa 2 cảnh `dialogue_led` liền nhau: Khoảng lặng đuôi cảnh trước + khoảng lặng đầu cảnh sau phải **$\le 3.0$ giây**.
-  - Tốc độ thoại lý tưởng: **2.5 – 3.0 từ/giây**. Dùng dấu phẩy `,` ngắt nhịp thở tự nhiên.
+  - Không áp tốc độ hoặc số từ mỗi giây làm mục tiêu. Viết lời thoại trọn ý theo giọng nhân vật, ý đồ, cảm xúc và cách diễn; căn cue theo nhịp nói tự nhiên, không cắt hoặc kéo câu để vừa mốc số.
 - **`visual_led` (Cảnh hành động / khám phá manh mối / im lặng có chủ đích):**
   - Dành cho cảnh tìm kiếm tài liệu, sốc tâm lý, quan sát, ngã quỵ hoặc nấu ăn.
   - Được **miễn trừ toàn bộ giới hạn khoảng lặng** và giúp bẻ gãy chuỗi ràng buộc boundary giữa các cảnh thoại.

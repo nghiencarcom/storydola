@@ -17,7 +17,7 @@ function isPublicIpv4(address: string) {
     || (a === 203 && b === 0 && c === 113));
 }
 
-function isPublicIp(address: string) {
+export function isPublicIp(address: string) {
   const version = isIP(address);
   if (version === 4) return isPublicIpv4(address);
   if (version !== 6) return false;

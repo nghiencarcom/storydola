@@ -1,5 +1,4 @@
-import { readDialogueSegments } from "./dialogue-segments";
-import { countScriptWords } from "./script-utils";
+import { isTemplateDialogueText, readDialogueSegments } from "./dialogue-segments";
 
 /** Cue times are relative to the scene. Silence is the complement of their union. */
 export function validateDialoguePacing(scene: Record<string, unknown>, duration: number) {
@@ -8,14 +7,33 @@ export function validateDialoguePacing(scene: Record<string, unknown>, duration:
   if (["visual_led", "silent", "intentional_silence"].includes(mode)) return { errors: [] as string[], warnings: [] as string[], silenceSec: duration };
   const errors: string[] = [];
   const warnings: string[] = [];
-  const words = countScriptWords(segments.map(cue => cue.text).join(" "));
-  const minimum = duration === 5 ? 10 : duration === 10 ? 20 : 30;
-  if (words < minimum) warnings.push(`${words}/${minimum} từ mục tiêu tối thiểu cho ${duration}s (chỉ cảnh báo)`);
-  if (words > duration * 3 + 0.001) warnings.push(`${words} từ / ${duration}s = ${(words / duration).toFixed(2)} từ/giây toàn cảnh, vượt mục tiêu 3 từ/giây (chỉ cảnh báo)`);
   const intervals: Array<[number, number]> = [];
+  const rawSegments = Array.isArray(scene.dialogueSegments) ? scene.dialogueSegments : Array.isArray(scene.dialogue_segments) ? scene.dialogue_segments : undefined;
+  const missingStartCueIds = new Set<string>();
+  rawSegments?.forEach((value, index) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return;
+    const cue = value as Record<string, unknown>;
+    const text = [cue.text, cue.dialogue, cue.line, cue.dialogue_or_voiceover, cue.voiceover]
+      .find((item) => typeof item === "string" && item.trim()) as string | undefined;
+    if (!text || isTemplateDialogueText(text)) return;
+    const rawStart = cue.startMs ?? cue.start_ms ?? cue.start_sec ?? cue.startSec;
+    const start = Number(rawStart);
+    if (rawStart === undefined || rawStart === null || rawStart === "" || !Number.isFinite(start) || start < 0) {
+      const providedId = [cue.id, cue.segmentId, cue.segment_id].find((item) => typeof item === "string" && item.trim()) as string | undefined;
+      const id = providedId?.trim() || `line-${index + 1}`;
+      missingStartCueIds.add(id);
+      warnings.push(`cue ${index + 1}: thiếu start time hợp lệ; cue không được tính là thời lượng có thoại`);
+    }
+  });
+  let previousCueStart = Number.NEGATIVE_INFINITY;
   for (const [index, cue] of segments.entries()) {
+    if (missingStartCueIds.has(cue.id)) continue;
     const start = cue.startMs / 1000;
     const end = cue.endMs === undefined ? NaN : cue.endMs / 1000;
+    if (Number.isFinite(start) && start >= 0) {
+      if (start < previousCueStart - 0.001) warnings.push("cue thoại không theo thứ tự thời gian; kiểm tra lại thứ tự lượt nói");
+      previousCueStart = start;
+    }
     if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || end > duration + 0.001) {
       warnings.push(`cue ${index + 1}: cần start/end hợp lệ trong 0–${duration}s`);
       continue;

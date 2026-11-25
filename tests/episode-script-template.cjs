@@ -32,7 +32,8 @@ for (const template of [initial, episode]) {
   const guide = template.prompt_guidance;
   assert(guide.dialogue.includes('EACH continuous gap must be <=3s'));
   assert(guide.dialogue.includes('TOTAL silence must be <=4s per 10s scene or <=5s per 15s scene'));
-  assert(guide.dialogue.includes('Word counts and scene-level speaking rate are warnings only'));
+  assert(guide.dialogue.includes('do not impose a words-per-second cap or target word count'));
+  assert(!guide.dialogue.includes('scene-level target is at most 3 words per second'));
   assert(guide.episode_locations.includes('never to meet a count'));
   assert(guide.episode_locations.includes('top-level location_bible'));
   assert(guide.episode_locations.includes('starts generating missing location reference images'));
