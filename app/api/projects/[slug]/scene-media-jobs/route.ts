@@ -5,9 +5,9 @@ import { isFlowStoryOnlyPreset } from "../../../../lib/story-presets";
 import { readMaiVideoAuthCookie } from "../../../../lib/maivideo-auth-shared";
 import { createSceneMediaJob, startSceneMediaQueue } from "../../../../lib/scene-media-queue";
 import { getSeedanceApiKey } from "../../../../lib/seedance-accounts";
-import { providerSessionEncryptionReady, saveProviderSessionToken } from "../../../../lib/provider-session-store";
-import { higgsfieldSessionEncryptionReady, saveHiggsfieldSessionToken } from "../../../../lib/higgsfield-session-store";
-import { chunkForScene, readProjectScenes, sceneReferenceImage } from "../../../../lib/scene-store";
+import { providerSessionEncryptionReady, saveProviderSessionTokens } from "../../../../lib/provider-session-store";
+import { higgsfieldSessionEncryptionReady, saveHiggsfieldSessionTokens } from "../../../../lib/higgsfield-session-store";
+import { chunkForScene, persistSceneMediaSettingsInChunks, readProjectScenes, sceneReferenceImage } from "../../../../lib/scene-store";
 import { makeActivity, now, readDataForUser, updateDataForUser } from "../../../../lib/server-store";
 import type { MediaGenerationSettings, SceneMediaJob, StoryProject } from "../../../../lib/project-types";
 
@@ -64,12 +64,13 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   const userId = userIdFromHeaders(await headers());
   if (!userId) return NextResponse.json({ message: "Chưa đăng nhập." }, { status: 401 });
   const { slug } = await context.params;
-  const body = await request.json().catch(() => ({})) as { sceneIds?: unknown; kind?: unknown; mediaGeneration?: unknown };
+  const body = await request.json().catch(() => ({})) as { sceneIds?: unknown; kind?: unknown; mediaGeneration?: unknown; persistMediaGeneration?: unknown };
   const kind = body.kind === "image" || body.kind === "video" ? body.kind : "";
   const sceneIds = Array.isArray(body.sceneIds) ? [...new Set(body.sceneIds.map((id) => String(id || "").trim()).filter(Boolean))] : [];
   if (!kind || !sceneIds.length || sceneIds.length > 500) {
     return NextResponse.json({ message: "Cần chọn loại media và ít nhất một cảnh." }, { status: 400 });
   }
+  const persistMediaGeneration = body.persistMediaGeneration === true;
   const data = await readDataForUser(userId);
   const project = data.projects.find((item) => item.slug === slug);
   if (!project) return NextResponse.json({ message: "Không tìm thấy project." }, { status: 404 });
@@ -143,6 +144,19 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   }
   if (gatewayJobsRequested && !providerSessionEncryptionReady()) {
     return NextResponse.json({ code: "PROVIDER_SESSION_ENCRYPTION_KEY_REQUIRED", message: "Máy chủ chưa cấu hình khóa mã hóa để chạy và tiếp tục job Muse.ai/Flow." }, { status: 503 });
+  }
+  if (persistMediaGeneration) {
+    const validScenes = requestedScenes.filter((scene): scene is NonNullable<typeof scene> => Boolean(scene));
+    const settingsBySceneId = new Map(validScenes.map((scene, index) => [scene.id, requestedMediaSettings[index]]));
+    try {
+      await persistSceneMediaSettingsInChunks(project, validScenes, settingsBySceneId);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "Không thể áp dụng cấu hình media cho các cảnh.";
+      if (message === "CHUNK_IS_PROCESSING" || message === "CHUNK_OUTPUT_NOT_FOUND" || message === "SCENE_OUTPUT_NOT_FOUND") {
+        return NextResponse.json({ message }, { status: 409 });
+      }
+      throw cause;
+    }
   }
   let replacedLegacyVideoJobs = 0;
   let queued: SceneMediaJob[];
@@ -220,29 +234,34 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   }
 
   if (higgsfieldJobsRequested) {
-    try {
-      for (const job of queued) {
-        if (job.kind === "video" && job.provider === "higgsfield" && (job.status === "queued" || job.status === "running")) {
-          await saveHiggsfieldSessionToken(userId, job.id, higgsfieldAuthToken);
-        }
+    const higgsfieldJobIds = queued
+      .filter((job) => job.kind === "video" && job.provider === "higgsfield" && (job.status === "queued" || job.status === "running"))
+      .map((job) => job.id);
+    if (higgsfieldJobIds.length) {
+      try {
+        await saveHiggsfieldSessionTokens(userId, higgsfieldJobIds, higgsfieldAuthToken);
+      } catch {
+        return NextResponse.json({ code: "HIGGSFIELD_SESSION_STORE_UNAVAILABLE", message: "Không lưu được phiên Higgsfield an toàn; hãy thử xếp job lại." }, { status: 503 });
       }
-    } catch {
-      return NextResponse.json({ code: "HIGGSFIELD_SESSION_STORE_UNAVAILABLE", message: "Không lưu được phiên Higgsfield an toàn; hãy thử xếp job lại." }, { status: 503 });
     }
   }
 
   if (gatewayJobsRequested) {
-    try {
-      for (const job of queued) {
-        if (job.status !== "queued" && job.status !== "running") continue;
+    const gatewayJobIds = queued
+      .filter((job) => {
+        if (job.status !== "queued" && job.status !== "running") return false;
         const settings = resolveMediaGenerationSettings({ ...project.mediaGeneration, ...settingsRecord(job.mediaGeneration) });
-        const usesGateway = job.kind === "image"
+        return job.kind === "image"
           ? isMuseImageModel(settings.imageModel) || isFlowImageModel(settings.imageModel)
           : settings.videoProvider === "muse" || settings.videoProvider === "flow";
-        if (usesGateway) await saveProviderSessionToken(userId, job.id, providerAuthToken);
+      })
+      .map((job) => job.id);
+    if (gatewayJobIds.length) {
+      try {
+        await saveProviderSessionTokens(userId, gatewayJobIds, providerAuthToken);
+      } catch {
+        return NextResponse.json({ code: "PROVIDER_SESSION_STORE_UNAVAILABLE", message: "Không lưu được phiên MaiVideo an toàn; hãy thử xếp job lại." }, { status: 503 });
       }
-    } catch {
-      return NextResponse.json({ code: "PROVIDER_SESSION_STORE_UNAVAILABLE", message: "Không lưu được phiên MaiVideo an toàn; hãy thử xếp job lại." }, { status: 503 });
     }
   }
 

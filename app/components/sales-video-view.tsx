@@ -938,20 +938,20 @@ function SalesVideoProjectDetail({ project, catalog, videoUrl, promptMaxLength, 
     setError("");
     window.clearTimeout(timer.current);
     try {
-      await pendingSave.current;
-      await persist();
+      await pendingSave.current?.catch(() => undefined);
       const response = await fetch(`/api/sales-video/ugc/${project.id}`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ promptSegments, scriptSegments, script }),
       });
       const result = await response.json().catch(() => null);
       if (!response.ok || !result?.project?.id) throw new Error(result?.message || "Không gửi được yêu cầu tạo video.");
+      setSaveState("saved");
       onUpdated(result.project as SalesVideoProject);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Không gửi được yêu cầu tạo video.");
     } finally {
       setGenerating(false);
     }
-  }, [generating, tooLong, persist, promptSegments, scriptSegments, script, onUpdated]);
+  }, [generating, tooLong, project.id, promptSegments, scriptSegments, script, onUpdated]);
 
   async function regenerateClip(index: number) {
     if (!canRegenerateClips || retryLocks.current.has(index) || stitching) return;
@@ -995,14 +995,14 @@ function SalesVideoProjectDetail({ project, catalog, videoUrl, promptMaxLength, 
   useEffect(() => {
     if (project.status === "draft" && project.phase === "review" && details) {
       onReviewActionChange({
-        disabled: generating || saveState === "error" || tooLong || !promptsReady,
+        disabled: generating || tooLong || !promptsReady,
         busy: generating,
         activate: () => { void generate(); },
       });
     } else {
       onReviewActionChange(null);
     }
-  }, [details, generate, generating, onReviewActionChange, project.phase, project.status, promptsReady, saveState, tooLong]);
+  }, [details, generate, generating, onReviewActionChange, project.phase, project.status, promptsReady, tooLong]);
 
   useEffect(() => () => onReviewActionChange(null), [onReviewActionChange]);
 
