@@ -105,7 +105,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
           <div className="topbar-actions"><Link href="/help" className="icon-button" aria-label="Trợ giúp"><Icon name="help" size={18} /></Link><UserMenu /></div>
         </header>
-        <div className={`page-wrap ${pathname === "/timelapse" ? "timelapse-page-wrap" : ""} ${pathname.startsWith("/sales-video") ? "sales-video-page-wrap" : ""}`}>{error && <div className="workspace-error"><span>!</span>Không tải được dữ liệu server: {error}<button onClick={() => window.location.reload()}>Tải lại</button></div>}{children}</div>
+        <div className={`page-wrap ${pathname === "/timelapse" ? "timelapse-page-wrap" : ""} ${pathname.startsWith("/sales-video") ? "sales-video-page-wrap" : ""} ${pathname.startsWith("/video-remake") ? "video-remake-page-wrap" : ""}`}>{error && <div className="workspace-error"><span>!</span>Không tải được dữ liệu server: {error}<button onClick={() => window.location.reload()}>Tải lại</button></div>}{children}</div>
       </main>
     </div>
   );

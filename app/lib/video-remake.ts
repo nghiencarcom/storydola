@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { normalizeAiDramaSceneDuration, type AiDramaSceneDurationSec } from "./ai-drama-scene-timing";
 import type { CodingAgentPreference } from "./coding-agent-preferences";
+import { MAX_PROJECT_CHUNK_SIZE } from "./project-types";
 
 export const remakeOptionsSchema = z.object({
   language: z.enum(["vi", "en"]),
@@ -157,4 +158,39 @@ export function mergeRemakeWindows(windows: RemakeWindow[], groups: number[]) {
   });
   if (offset !== windows.length) throw new Error("Nhịp cảnh do Code Agent đề xuất chưa bao phủ đầy đủ video nguồn.");
   return merged;
+}
+
+export type RemakeEpisodePlan = {
+  index: number;
+  sceneStart: number;
+  sceneEnd: number;
+  sourceStart: number;
+  sourceEnd: number;
+  duration: number;
+};
+
+/** Split the remake into source-time episodes and keep every project chunk within its scene cap. */
+export function planRemakeEpisodes(windows: RemakeWindow[]): RemakeEpisodePlan[] {
+  if (!windows.length) return [];
+  const sourceDuration = windows.at(-1)?.sourceEnd || 0;
+  const segmentDuration = Math.max(300, Math.ceil(sourceDuration / (12 * 60)) * 60);
+  const episodes: Array<RemakeEpisodePlan & { segment: number }> = [];
+
+  windows.forEach((window, index) => {
+    const segment = Math.floor(window.sourceStart / segmentDuration);
+    let episode = episodes.at(-1);
+    if (!episode || episode.segment !== segment || episode.sceneEnd - episode.sceneStart + 1 >= MAX_PROJECT_CHUNK_SIZE) {
+      episode = {
+        index: episodes.length, segment, sceneStart: index + 1, sceneEnd: index + 1,
+        sourceStart: window.sourceStart, sourceEnd: window.sourceEnd, duration: window.end - window.start,
+      };
+      episodes.push(episode);
+      return;
+    }
+    episode.sceneEnd = index + 1;
+    episode.sourceEnd = window.sourceEnd;
+    episode.duration = window.end - windows[episode.sceneStart - 1].start;
+  });
+
+  return episodes.map(({ segment: _segment, ...episode }) => episode);
 }

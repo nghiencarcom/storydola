@@ -3,12 +3,12 @@ import { buildContinuityQaReport } from "./continuity-qa";
 import { dramaPlanSourceText, normalizeDramaPlan } from "./drama-plan";
 import { reconcileEpisodeLocations } from "./episode-locations";
 import { validateEpisode } from "./episode-script-validation";
-import { MAX_PROJECT_CHUNK_SIZE } from "./project-types";
+import { MAX_PROJECT_CHUNK_SIZE, type ProjectChunk } from "./project-types";
 import { evaluateChunkScenes } from "./scene-ai-review";
-import { createChunks, makeActivity, makeProject, saveChunkOutput, updateDataForUser } from "./server-store";
+import { makeActivity, makeProject, saveChunkOutput, updateDataForUser } from "./server-store";
 import { continuityContextFromOutput } from "./story-context";
 import { normalizeProjectStyleSettings } from "./visual-styles";
-import type { RemakeJob } from "./video-remake";
+import { planRemakeEpisodes, type RemakeJob } from "./video-remake";
 
 function composeRemakeVideoPrompt(scene: RemakeJob["result"] extends infer R ? R extends { draft: { scenes: Array<infer S> } } ? S : never : never) {
   const base = scene.videoPrompt.trim();
@@ -23,32 +23,32 @@ export async function createRemakeProject(owner: string, job: RemakeJob & { resu
   const slug = `remake-${job.id}`;
   const durationSeconds = windows[windows.length - 1].end;
   const durationMinutes = Number((durationSeconds / 60).toFixed(3));
-  const chunkSize = Math.min(windows.length, MAX_PROJECT_CHUNK_SIZE);
-  const chunks = createChunks(windows.length, chunkSize);
+  const episodePlan = planRemakeEpisodes(windows);
+  const chunkSize = Math.min(MAX_PROJECT_CHUNK_SIZE, Math.max(1, Math.ceil(windows.length / episodePlan.length)));
   const contentGenre = normalizeContentGenre(job.input.contentGenre || draft.contentGenre);
   const storySetting = normalizeStorySetting(job.input.storySetting || draft.storySetting);
   const { visualStyle, imageStyle } = normalizeProjectStyleSettings(
     job.input.visualStyle || draft.visualStyle,
     job.input.imageStyle || draft.imageStyle,
   );
-  const episodes = chunks.map((chunk, index) => {
-    if (chunks.length === 1) {
+  const episodes = episodePlan.map((plannedEpisode, index) => {
+    if (episodePlan.length === 1) {
       return { title: draft.title, summary: draft.synopsis, openingHook: draft.openingHook, turningPoint: draft.turningPoint, endHook: draft.ending };
     }
-    const first = draft.scenes[chunk.sceneStart - 1];
-    const last = draft.scenes[chunk.sceneEnd - 1];
-    const turningPoint = draft.scenes[Math.floor((chunk.sceneStart + chunk.sceneEnd) / 2) - 1].action;
+    const first = draft.scenes[plannedEpisode.sceneStart - 1];
+    const last = draft.scenes[plannedEpisode.sceneEnd - 1];
+    const turningPoint = draft.scenes[Math.floor((plannedEpisode.sceneStart + plannedEpisode.sceneEnd) / 2) - 1].action;
     return {
       title: `${draft.title.slice(0, 145)} · Tập ${index + 1}`,
       summary: [first.action, first === last ? "" : last.action].filter(Boolean).join("\n"),
       openingHook: index === 0 ? draft.openingHook : first.action,
       turningPoint,
-      endHook: index === chunks.length - 1 ? draft.ending : last.continuityOut,
+      endHook: index === episodePlan.length - 1 ? draft.ending : last.continuityOut,
     };
   });
   const dramaPlan = normalizeDramaPlan({
     ...draft, videoTitle: draft.title, continuityRules: draft.continuity, episodes,
-  }, chunks.length);
+  }, episodePlan.length);
 
   return updateDataForUser(owner, async (data) => {
     if (data.projects.some((item) => item.slug === slug)) return slug;
@@ -64,6 +64,14 @@ export async function createRemakeProject(owner: string, job: RemakeJob & { resu
       }),
     }, slug);
     const timestamp = project.createdAt;
+    const chunks: ProjectChunk[] = episodePlan.map((episode, index) => ({
+      id: `A${String(index + 1).padStart(2, "0")}`,
+      sceneStart: episode.sceneStart,
+      sceneEnd: episode.sceneEnd,
+      generatedScenes: 0,
+      status: "queued" as const,
+      updatedAt: timestamp,
+    }));
     const referenceFields = {
       referenceImagePath: "", referenceImageName: "", referenceImageMimeType: "", createdAt: timestamp, updatedAt: timestamp,
     };

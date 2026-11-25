@@ -3198,7 +3198,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .sales-project-clip-retry-controls .sales-project-clip-model { flex: 1; }
 .sales-project-clip-retry-controls > button { flex: 0 0 auto; min-height: 42px; white-space: nowrap; }
 
-.video-remake { display: grid; gap: 18px; max-width: 980px; margin-inline: auto; }
+.video-remake-page-wrap { width: 100%; max-width: 1920px; padding: 30px 42px 32px; }
+.video-remake { display: grid; gap: 18px; width: 100%; max-width: 1600px; margin-inline: auto; }
+.video-remake .heading-subtitle { max-width: 82ch; line-height: 1.55; }
 .remake-panel { padding: clamp(14px, 3vw, 24px); min-width: 0; }
 .remake-panel h3 { margin-block: 22px 8px; font-size: 15px; }
 .remake-panel p, .remake-panel dd, .remake-transcript summary { color: #545b70; line-height: 1.55; overflow-wrap: anywhere; }
@@ -3217,13 +3219,24 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .remake-advanced-grid { margin-top: 8px; }
 .remake-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 17px; }
 .remake-detail { scroll-margin-top: 18px; }
+.remake-detail > .card-heading > h2 { flex: 1 1 240px; min-width: 0; overflow-wrap: anywhere; }
 .remake-detail-links { display: flex; align-items: center; justify-content: flex-end; gap: 12px; flex-wrap: wrap; }
+.remake-detail .remake-quick-approve { min-height: 38px; padding: 8px 12px; white-space: nowrap; }
 .remake-panel .remake-error { color: #a02c3a; }
+.remake-detail > p:not(.remake-meta), .remake-detail .remake-facts dd, .remake-detail .remake-characters p, .remake-detail .remake-scene dd { max-width: 94ch; }
 .remake-jobs, .remake-characters { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 8px; }
 .remake-job { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px; border: 1px solid #e2e5ef; border-radius: 8px; background: #fff; text-align: left; cursor: pointer; }
 .remake-job[aria-pressed="true"] { border-color: #7666d8; background: #f7f5ff; }
-.remake-job > span:first-child { min-width: 0; display: grid; gap: 5px; overflow-wrap: anywhere; }
+.remake-job-copy { min-width: 0; display: grid; gap: 5px; overflow-wrap: anywhere; }
+.remake-job-copy small { line-height: 1.4; }
 .remake-job .project-status { flex-shrink: 0; }
+.remake-list-count { margin: 2px 0 0; color: #6b7280; font-size: 12px; }
+.remake-queue-tools, .remake-scene-tools { display: grid; grid-template-columns: minmax(0, 1fr) minmax(190px, .48fr); align-items: end; gap: 12px; margin-top: 15px; }
+.remake-scene-tools { grid-template-columns: minmax(0, 1fr) minmax(230px, 320px); }
+.remake-filter-field { display: grid; min-width: 0; gap: 6px; color: #454d62; font-size: 12px; font-weight: 650; }
+.remake-filter-field input, .remake-filter-field select { box-sizing: border-box; width: 100%; min-width: 0; height: 42px; padding: 0 12px; border: 1px solid #d6deeb; border-radius: 9px; outline: 0; color: #27364f; background: #fff; font: inherit; font-size: 13px; }
+.remake-filter-field :is(input, select):focus-visible { border-color: #7a83e8; outline: 3px solid rgba(99,102,241,.14); }
+.remake-empty-filter { margin: 12px 0 0; color: #687790; }
 .remake-facts { display: grid; gap: 10px; margin: 12px 0; }
 .remake-facts dt { font-weight: 700; }
 .remake-facts dd { margin: 4px 0 0; white-space: pre-wrap; }
@@ -3232,3 +3245,19 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .remake-characters p { margin: 4px 0 0; }
 .remake-scene { margin-bottom: 8px; }
 .remake-scene summary, .remake-transcript summary { cursor: pointer; }
+.remake-long-section { padding: 12px 14px; border: 1px solid #e2e5ef; border-radius: 9px; background: #fbfcff; }
+.remake-long-section summary { color: #4a5268; font-size: 13px; font-weight: 650; cursor: pointer; }
+.remake-long-section[open] summary { margin-bottom: 10px; }
+.remake-long-section h4 { margin: 17px 0 8px; color: #41495f; font-size: 14px; }
+.remake-scene-count { grid-column: 1 / -1; margin: -2px 0 0; color: #687790; font-size: 12px; }
+.remake-pagination { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px; margin: 15px 0; color: #626b80; font-size: 12px; }
+.remake-pagination .secondary-button { min-height: 38px; }
+@media (max-width: 1200px) { .video-remake-page-wrap { padding: 24px; } }
+@media (max-width: 768px) {
+  .video-remake-page-wrap { padding: 20px 14px 24px; }
+  .video-remake { gap: 14px; }
+  .remake-detail > .card-heading { flex-direction: column; align-items: stretch; }
+  .remake-detail-links { justify-content: flex-start; }
+  .remake-queue-tools, .remake-scene-tools { grid-template-columns: minmax(0, 1fr); }
+  .remake-scene-count { grid-column: auto; }
+}

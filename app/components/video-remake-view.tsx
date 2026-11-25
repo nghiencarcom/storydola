@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { CONTENT_GENRES, STORY_SETTING_OPTIONS } from "../lib/content-genres";
-import type { RemakeInput, RemakeJob, RemakeJobSummary, RemakeStage, RemakeTranscript } from "../lib/video-remake";
+import { planRemakeEpisodes, type RemakeInput, type RemakeJob, type RemakeJobSummary, type RemakeStage, type RemakeTranscript } from "../lib/video-remake";
 import { IMAGE_STYLE_PRESETS, VISUAL_STYLE_PRESETS } from "../lib/visual-styles";
 import { useProjects } from "../lib/project-store";
 
@@ -26,6 +26,16 @@ const transcriptLabels: Record<RemakeTranscript, string> = {
 
 function seconds(value: number) {
   return `${value.toLocaleString("vi-VN", { maximumFractionDigits: 3 })}s`;
+}
+
+function timeline(value: number) {
+  const totalSeconds = Math.max(0, Math.floor(value));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+  return hours
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`
+    : `${minutes}:${String(remainingSeconds).padStart(2, "0")}`;
 }
 
 async function remakeRequest<T>(options?: RequestInit, id?: string): Promise<T> {
@@ -55,6 +65,11 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
   const [jobs, setJobs] = useState<RemakeJobSummary[]>([]);
   const [job, setJob] = useState<RemakeJob>();
   const [selected, setSelected] = useState(initialJobId);
+  const [queueQuery, setQueueQuery] = useState("");
+  const [queueStatus, setQueueStatus] = useState<"" | RemakeStage>("");
+  const [sceneQuery, setSceneQuery] = useState("");
+  const [sceneEpisode, setSceneEpisode] = useState("all");
+  const [scenePage, setScenePage] = useState(0);
   const [copiedJobId, setCopiedJobId] = useState("");
   const [revision, setRevision] = useState(0);
   const [saving, setSaving] = useState(false);
@@ -74,6 +89,12 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
     setJob(undefined);
     setDetailError("");
   }, [initialJobId]);
+
+  useEffect(() => {
+    setSceneQuery("");
+    setSceneEpisode("all");
+    setScenePage(0);
+  }, [selected]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -211,6 +232,33 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
   const selectedJob = job?.id === selected ? job : undefined;
   const result = selectedJob?.result;
   const agent = selectedJob?.agent;
+  const normalizedQueueQuery = queueQuery.trim().toLowerCase();
+  const filteredJobs = jobs.filter((entry) => {
+    if (queueStatus && entry.status !== queueStatus) return false;
+    if (!normalizedQueueQuery) return true;
+    const searchable = [entry.title, entry.sourceName, entry.url, statusLabels[entry.status]].filter(Boolean).join(" ").toLowerCase();
+    return searchable.includes(normalizedQueueQuery);
+  });
+  const sceneRows = result
+    ? result.draft.scenes.flatMap((scene, index) => result.windows[index] ? [{ scene, index, window: result.windows[index] }] : [])
+    : [];
+  const remakeEpisodes = result ? planRemakeEpisodes(result.windows) : [];
+  const normalizedSceneQuery = sceneQuery.trim().toLowerCase();
+  const selectedEpisode = remakeEpisodes.find(({ index }) => String(index) === sceneEpisode);
+  const filteredSceneRows = sceneRows.filter(({ scene, index }) => {
+    if (selectedEpisode && (index + 1 < selectedEpisode.sceneStart || index + 1 > selectedEpisode.sceneEnd)) return false;
+    if (!normalizedSceneQuery) return true;
+    const searchable = [
+      scene.sourceVisuals, scene.sourceStory, scene.sourceRole, scene.purpose, scene.action,
+      scene.location, scene.characters.join(" "), scene.dialogue.map(({ speaker, text }) => `${speaker} ${text}`).join(" "),
+      scene.shotSize, scene.cameraMovement, scene.actingBeat, scene.imagePrompt, scene.videoPrompt,
+    ].filter(Boolean).join(" ").toLowerCase();
+    return searchable.includes(normalizedSceneQuery);
+  });
+  const scenePageSize = 24;
+  const scenePageCount = Math.max(1, Math.ceil(filteredSceneRows.length / scenePageSize));
+  const visibleScenePage = Math.min(scenePage, scenePageCount - 1);
+  const visibleSceneRows = filteredSceneRows.slice(visibleScenePage * scenePageSize, (visibleScenePage + 1) * scenePageSize);
 
   return <div className="video-remake">
     <section className="page-heading">
@@ -314,22 +362,36 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
     </form>
 
     <section className="panel-card remake-panel">
-      <div className="card-heading"><h2>Hàng đợi remake</h2></div>
+      <div className="card-heading"><div><h2>Hàng đợi remake</h2><p className="remake-list-count">{filteredJobs.length === jobs.length ? `${jobs.length} job` : `${filteredJobs.length}/${jobs.length} job`}</p></div></div>
       {loadError && <p className="remake-error" role="alert">{loadError}</p>}
       {!jobs.length && !loadError && <p>Job phân tích sẽ xuất hiện ở đây.</p>}
+      {!!jobs.length && <div className="remake-queue-tools">
+        <label className="remake-filter-field">
+          <span>Tìm job</span>
+          <input type="search" value={queueQuery} onChange={(event) => setQueueQuery(event.currentTarget.value)} placeholder="Tên video, nền tảng hoặc link" />
+        </label>
+        <label className="remake-filter-field remake-status-filter">
+          <span>Trạng thái</span>
+          <select value={queueStatus} onChange={(event) => setQueueStatus(event.currentTarget.value as "" | RemakeStage)}>
+            <option value="">Tất cả</option>
+            {Object.entries(statusLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}
+          </select>
+        </label>
+      </div>}
       <ul className="remake-jobs">
-        {jobs.map((entry) => <li key={entry.id}>
+        {filteredJobs.map((entry) => <li key={entry.id}>
           <button type="button" className="remake-job" aria-pressed={selected === entry.id} onClick={() => {
             if (selected === entry.id && detailError) setRevision((value) => value + 1);
             setSelected(entry.id);
             if (selected !== entry.id) router.push(`/video-remake/${encodeURIComponent(entry.id)}`);
             setDetailError("");
           }}>
-            <span><strong>{entry.title || entry.sourceName || (() => { try { return new URL(entry.url).hostname; } catch { return "Video local"; } })()}</strong><small>{entry.sceneCount ? `${entry.sceneCount} cảnh` : "Nhịp tự động"} · {new Date(entry.createdAt).toLocaleString("vi-VN")}</small></span>
+            <span className="remake-job-copy"><strong>{entry.title || entry.sourceName || (() => { try { return new URL(entry.url).hostname; } catch { return "Video local"; } })()}</strong><small>{entry.sourceName || (() => { try { return new URL(entry.url).hostname.replace(/^www\./, ""); } catch { return "Video trên máy"; } })()} · {entry.sceneCount ? `${entry.sceneCount} cảnh` : "Nhịp tự động"}</small><small>Cập nhật {new Date(entry.updatedAt).toLocaleString("vi-VN")}</small></span>
             <span className={`project-status ${statusClasses[entry.status]}`}>{statusLabels[entry.status]}</span>
           </button>
         </li>)}
       </ul>
+      {!!jobs.length && !filteredJobs.length && <p className="remake-empty-filter">Không tìm thấy job phù hợp. Hãy đổi từ khóa hoặc trạng thái.</p>}
     </section>
 
     {selectedSummary && <section ref={detailRef} id="remake-job-detail" className="panel-card remake-panel remake-detail">
@@ -341,6 +403,9 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
           <button type="button" className="text-button" onClick={() => void copyJobLink(selectedSummary.id)}>
             {copiedJobId === selectedSummary.id ? "Đã sao chép link" : "Sao chép link job"}
           </button>
+          {result && (selectedSummary.projectSlug
+            ? <Link className="primary-button remake-quick-approve" href={`/projects/${encodeURIComponent(selectedSummary.projectSlug)}`}>Mở dự án Phim AI</Link>
+            : <button type="button" className="primary-button remake-quick-approve" disabled={acting} onClick={() => void act(selectedSummary.id, "create-project")}>{acting ? "Đang tạo dự án…" : `Duyệt & tạo Phim AI · ${remakeEpisodes.length} tập`}</button>)}
         </div>
       </div>
       {detailError && <p className="remake-error" role="alert">{detailError}</p>}
@@ -351,28 +416,50 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
       </>}
       {result && <>
         <h3>Phân tích video nguồn</h3>
-        <p>{result.draft.sourceSummary}</p>
+        <details className="remake-long-section">
+          <summary>Xem tóm tắt phân tích nguồn</summary>
+          <p>{result.draft.sourceSummary}</p>
+        </details>
         <h3>Kịch bản đề xuất</h3>
         <p><strong>{result.draft.logline}</strong></p>
-        <p>{result.draft.synopsis}</p>
-        <dl className="remake-facts">
-          {(result.draft.imageStyle || result.draft.visualStyle || result.draft.contentGenre) && (
-            <div><dt>Phong cách &amp; thể loại</dt><dd>{[result.draft.imageStyle, result.draft.visualStyle, result.draft.contentGenre, result.draft.storySetting].filter(Boolean).join(" · ")}</dd></div>
-          )}
-          <div><dt>Hook mở đầu</dt><dd>{result.draft.openingHook}</dd></div>
-          <div><dt>Bước ngoặt</dt><dd>{result.draft.turningPoint}</dd></div>
-          <div><dt>Kết thúc</dt><dd>{result.draft.ending}</dd></div>
-          <div><dt>Quy tắc nối cảnh</dt><dd>{result.draft.continuity}</dd></div>
-        </dl>
-        <h3>Nhân vật mới</h3>
-        <ul className="remake-characters">{result.draft.characters.map(({ name, description }) => <li key={name}><strong>{name}</strong><p>{description}</p></li>)}</ul>
-        <h3>Bối cảnh mới</h3>
-        <ul className="remake-characters">{result.draft.locations.map(({ name, description }) => <li key={name}><strong>{name}</strong><p>{description}</p></li>)}</ul>
+        <details className="remake-long-section">
+          <summary>Xem tóm tắt, cấu trúc và thiết kế nhân vật</summary>
+          <p>{result.draft.synopsis}</p>
+          <dl className="remake-facts">
+            {(result.draft.imageStyle || result.draft.visualStyle || result.draft.contentGenre) && (
+              <div><dt>Phong cách &amp; thể loại</dt><dd>{[result.draft.imageStyle, result.draft.visualStyle, result.draft.contentGenre, result.draft.storySetting].filter(Boolean).join(" · ")}</dd></div>
+            )}
+            <div><dt>Hook mở đầu</dt><dd>{result.draft.openingHook}</dd></div>
+            <div><dt>Bước ngoặt</dt><dd>{result.draft.turningPoint}</dd></div>
+            <div><dt>Kết thúc</dt><dd>{result.draft.ending}</dd></div>
+            <div><dt>Quy tắc nối cảnh</dt><dd>{result.draft.continuity}</dd></div>
+          </dl>
+          <h4>Nhân vật mới</h4>
+          <ul className="remake-characters">{result.draft.characters.map(({ name, description }) => <li key={name}><strong>{name}</strong><p>{description}</p></li>)}</ul>
+          <h4>Bối cảnh mới</h4>
+          <ul className="remake-characters">{result.draft.locations.map(({ name, description }) => <li key={name}><strong>{name}</strong><p>{description}</p></li>)}</ul>
+        </details>
         <h3>Phân cảnh</h3>
-        {result.draft.scenes.map((scene, index) => {
-          const window = result.windows[index];
+        <div className="remake-scene-tools">
+          <label className="remake-filter-field">
+            <span>Tìm trong cảnh</span>
+            <input type="search" value={sceneQuery} onChange={(event) => { setSceneQuery(event.currentTarget.value); setScenePage(0); }} placeholder="Bối cảnh, nhân vật, hành động…" />
+          </label>
+          <label className="remake-filter-field remake-episode-filter">
+            <span>Tập</span>
+            <select value={sceneEpisode} onChange={(event) => { setSceneEpisode(event.currentTarget.value); setScenePage(0); }}>
+              <option value="all">Toàn bộ video · {remakeEpisodes.length} tập</option>
+              {remakeEpisodes.map((episode) => <option value={String(episode.index)} key={episode.index}>
+                Tập {String(episode.index + 1).padStart(2, "0")} · {timeline(episode.sourceStart)}–{timeline(episode.sourceEnd)} · {episode.sceneEnd - episode.sceneStart + 1} cảnh
+              </option>)}
+            </select>
+          </label>
+          <p className="remake-scene-count" role="status">{filteredSceneRows.length ? `Cảnh ${visibleScenePage * scenePageSize + 1}–${Math.min((visibleScenePage + 1) * scenePageSize, filteredSceneRows.length)} / ${filteredSceneRows.length}${selectedEpisode ? ` trong Tập ${String(selectedEpisode.index + 1).padStart(2, "0")}` : ` trên ${remakeEpisodes.length} tập`}` : "Không có cảnh phù hợp"}</p>
+        </div>
+        {visibleSceneRows.map(({ scene, index, window }) => {
+          const episode = remakeEpisodes.find((item) => index + 1 >= item.sceneStart && index + 1 <= item.sceneEnd);
           return <details className="remake-scene" key={window.start}>
-            <summary>Cảnh {index + 1} · Nguồn {seconds(window.sourceStart)}–{seconds(window.sourceEnd)} · Bản mới {seconds(window.duration)}{scene.dialogueMode ? ` · ${scene.dialogueMode === "dialogue_led" ? "Thoại dẫn nhịp" : "Hình ảnh dẫn nhịp"}` : ""}</summary>
+            <summary>Tập {String((episode?.index || 0) + 1).padStart(2, "0")} · Cảnh {index + 1} · Nguồn {seconds(window.sourceStart)}–{seconds(window.sourceEnd)} · Bản mới {seconds(window.duration)}{scene.dialogueMode ? ` · ${scene.dialogueMode === "dialogue_led" ? "Thoại dẫn nhịp" : "Hình ảnh dẫn nhịp"}` : ""}</summary>
             <dl className="remake-facts">
               <div><dt>Hình ảnh nguồn</dt><dd>{scene.sourceVisuals}</dd></div>
               <div><dt>Nội dung và nhịp kể</dt><dd>{scene.sourceStory} {scene.sourceRole}</dd></div>
@@ -385,10 +472,15 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
             </dl>
           </details>;
         })}
+        {filteredSceneRows.length > scenePageSize && <div className="remake-pagination" aria-label="Điều hướng phân cảnh">
+          <button type="button" className="secondary-button" disabled={visibleScenePage === 0} onClick={() => setScenePage((page) => Math.max(0, page - 1))}>Cảnh trước</button>
+          <span>Trang {visibleScenePage + 1} / {scenePageCount}</span>
+          <button type="button" className="secondary-button" disabled={visibleScenePage >= scenePageCount - 1} onClick={() => setScenePage((page) => Math.min(scenePageCount - 1, page + 1))}>Cảnh tiếp</button>
+        </div>}
         <div className="remake-actions">
           {selectedSummary.projectSlug
             ? <Link className="primary-button" href={`/projects/${encodeURIComponent(selectedSummary.projectSlug)}`}>Mở dự án Phim AI</Link>
-            : <button type="button" className="primary-button" disabled={acting} onClick={() => void act(selectedSummary.id, "create-project")}>{acting ? "Đang tạo dự án…" : "Duyệt và tạo dự án Phim AI"}</button>}
+            : <button type="button" className="primary-button" disabled={acting} onClick={() => void act(selectedSummary.id, "create-project")}>{acting ? "Đang tạo dự án…" : `Duyệt và tạo dự án Phim AI · ${remakeEpisodes.length} tập`}</button>}
         </div>
       </>}
     </section>}
