@@ -21,6 +21,8 @@ function loadModule(name, imports = {}) {
 }
 
 const {
+  FLOW_INLINE_REQUEST_MAX_ENCODED_BYTES,
+  FLOW_PER_IMAGE_MAX_ENCODED_BYTES,
   GATEWAY_INLINE_REQUEST_MAX_ENCODED_BYTES,
   prepareGatewayReferenceImageDataUrls,
   validateGatewayReferenceImageDataUrls,
@@ -39,7 +41,7 @@ const {
     /Muse\.ai: ảnh tham chiếu 1/,
   );
 
-  // Compress large 2K PNGs into WebP well below the 8 MiB encoded payload budget.
+  // Compress large 2K PNGs into WebP well below the encoded payload budget.
   const width = 2400;
   const height = 1350;
   const rawPixels = Buffer.alloc(width * height * 3);
@@ -62,6 +64,30 @@ const {
   const totalBytes = prepared.reduce((sum, item) => sum + item.length, 0);
   assert.ok(totalBytes <= GATEWAY_INLINE_REQUEST_MAX_ENCODED_BYTES, `Total encoded bytes ${totalBytes} should stay within budget`);
 
+  // Multi-image Google Flow batch (5+ high-res references) must compress every image <= 1024px & compact bytes.
+  const oversizedJpeg = await sharp({
+    create: { width: 2400, height: 2400, channels: 3, background: { r: 220, g: 185, b: 120 } },
+  }).jpeg({ quality: 50 }).toBuffer();
+  const oversizedJpegDataUrl = `data:image/jpeg;base64,${oversizedJpeg.toString("base64")}`;
+  assert.ok(oversizedJpeg.length < 250 * 1024, "Fixture JPEG has small byte size despite 2400x2400 dimensions");
+
+  const flowBatch = await prepareGatewayReferenceImageDataUrls([
+    largePngDataUrl,
+    largePngDataUrl,
+    largePngDataUrl,
+    largePngDataUrl,
+    oversizedJpegDataUrl,
+  ], "Flow");
+  assert.equal(flowBatch.length, 5);
+  const flowTotalBytes = flowBatch.reduce((sum, item) => sum + item.length, 0);
+  assert.ok(flowTotalBytes <= FLOW_INLINE_REQUEST_MAX_ENCODED_BYTES, `Flow 5-image batch ${flowTotalBytes} must stay within ${FLOW_INLINE_REQUEST_MAX_ENCODED_BYTES}`);
+  for (const item of flowBatch) {
+    assert.ok(item.length <= FLOW_PER_IMAGE_MAX_ENCODED_BYTES, `Each Flow image (${item.length}) must fit per-image budget (${FLOW_PER_IMAGE_MAX_ENCODED_BYTES})`);
+    const encoded = item.split(",")[1];
+    const meta = await sharp(Buffer.from(encoded, "base64")).metadata();
+    assert.ok(meta.width <= 1024 && meta.height <= 1024, `Flow multi-image dimensions (${meta.width}x${meta.height}) must be <= 1024px`);
+  }
+
   // Adaptive compression should shrink further when budget is tight.
   const tightPrepared = await prepareGatewayReferenceImageDataUrls([largePngDataUrl], "Muse.ai", 300 * 1024);
   assert.ok(tightPrepared[0].length <= 300 * 1024, `Tight budget output ${tightPrepared[0].length} should fit 300 KiB`);
@@ -72,7 +98,7 @@ const {
     /vượt giới hạn 10 MB/,
   );
 
-  console.log("Passed gateway reference image validation and compression tests.");
+  console.log("Passed gateway reference image validation, Flow multi-image compression, and budget tests.");
 })().catch((error) => {
   console.error(error);
   process.exit(1);

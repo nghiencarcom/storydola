@@ -1199,6 +1199,7 @@ async function generateMaiVideoImage(
   let created: JsonRecord = {};
   let jobId = existingJobId || "";
   if (!jobId) {
+    const preparedReferenceImages = await prepareGatewayReferenceImageDataUrls(referenceImageUrls, "MaiVideo");
     try {
       created = await requestJson(`${base}/api/v1/image-generation`, {
         method: "POST",
@@ -1210,7 +1211,7 @@ async function generateMaiVideoImage(
           ...(detailLevel ? { detail_level: detailLevel } : {}),
           aspect_ratio: aspectRatio,
           n: 1,
-          ...(referenceImageUrls.length ? { reference_image_urls: referenceImageUrls } : {}),
+          ...(preparedReferenceImages.length ? { reference_image_urls: preparedReferenceImages } : {}),
         }),
       }, Number(process.env.MAIVIDEO_CREATE_TIMEOUT_MS) || 180_000);
     } catch (cause) {
@@ -1750,6 +1751,7 @@ async function generateMaiVideoVideo(
   let created: JsonRecord = {};
   let jobId = existingJobId || "";
   if (!jobId) {
+    const preparedReferenceImages = await prepareGatewayReferenceImageDataUrls(referenceImageUrls, "MaiVideo");
     try {
       created = await requestJson(`${base}${createPath}`, {
         method: "POST",
@@ -1764,7 +1766,7 @@ async function generateMaiVideoVideo(
           multi_shot: videoMultiShot,
           audio: videoAudio,
           off_peak: offPeak,
-          reference_image_urls: referenceImageUrls,
+          reference_image_urls: preparedReferenceImages,
         }),
       }, Number(process.env.MAIVIDEO_CREATE_TIMEOUT_MS) || 180_000, undefined, signal);
     } catch (cause) {
@@ -2143,6 +2145,7 @@ async function generateHiggsfieldVideo(
   const durationSec = normalizeVideoDuration(settings.videoDurationSec, HIGGSFIELD_SEEDANCE_VIDEO_MODELS[0], settings.videoQuality);
 
   if (!jobId) {
+    const preparedReferenceImages = await prepareGatewayReferenceImageDataUrls(referenceImageUrls, "Higgsfield");
     if (onCreateStarted) {
       try {
         await onCreateStarted();
@@ -2158,8 +2161,8 @@ async function generateHiggsfieldVideo(
     form.append("resolution", settings.videoQuality || "720p");
     form.append("mode", speedMode);
     form.append("sound", String(settings.videoAudio));
-    for (let index = 0; index < referenceImageUrls.length; index += 1) {
-      appendReferenceImage(form, referenceImageUrls[index], referenceImageNames[index] || "reference-" + (index + 1));
+    for (let index = 0; index < preparedReferenceImages.length; index += 1) {
+      appendReferenceImage(form, preparedReferenceImages[index], referenceImageNames[index] || "reference-" + (index + 1));
     }
     const created = await requestJson(base + "/api/higgsfield/video", {
       method: "POST",
@@ -2977,15 +2980,20 @@ export async function generateMaiVideoPixverseV6ReferenceSegment(input: {
   form.append("multi_shot", "false");
   form.append("audio", "false");
   form.append("off_peak", "true");
-  for (const [index, reference] of input.references.entries()) {
+  const checkpoint = await videoCheckpoint();
+  const preparedReferences = checkpoint.existingJobId
+    ? []
+    : await prepareGatewayReferenceImageDataUrls(input.references, "MaiVideo");
+  for (const [index, reference] of preparedReferences.entries()) {
     const match = reference.match(/^data:(image\/[a-z0-9.+-]+);base64,([\s\S]+)$/i);
     if (!match) throw new Error("Ảnh tham chiếu không hợp lệ cho PixVerse V6 Reference.");
-    const image = new File([new Uint8Array(Buffer.from(match[2], "base64"))], `reference-${index + 1}.webp`, { type: match[1] });
+    const mimeType = match[1].toLowerCase();
+    const ext = mimeType === "image/png" ? "png" : mimeType === "image/jpeg" ? "jpg" : "webp";
+    const image = new File([new Uint8Array(Buffer.from(match[2], "base64"))], `reference-${index + 1}.${ext}`, { type: mimeType });
     form.append("reference_image_urls", image, image.name);
   }
   form.append("reference_videos", input.referenceVideo, input.referenceVideo.name || "reference.mp4");
 
-  const checkpoint = await videoCheckpoint();
   const created = checkpoint.existingJobId ? { job: { id: checkpoint.existingJobId } } : await requestJson(`${base}/api/pixverse-video/bulk`, {
     method: "POST",
     headers,
