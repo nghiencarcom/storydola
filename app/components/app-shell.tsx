@@ -12,6 +12,7 @@ const navItems: { icon: IconName; label: string; href: string }[] = [
   { icon: "folder", label: "Dự án của tôi", href: "/projects" },
   { icon: "scene", label: "Phim AI", href: "/ai-drama" },
   { icon: "scene", label: "Video bán hàng", href: "/sales-video" },
+  { icon: "scissors", label: "Auto Edit Video", href: "/auto-edit" },
   { icon: "spark", label: "Remake video", href: "/video-remake" },
   { icon: "clock", label: "Timelapse", href: "/timelapse" },
   { icon: "spark", label: "Story", href: "/story" },
@@ -31,7 +32,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const sidebarRef = useRef<HTMLElement>(null);
   const queuedTaskCount = projects.reduce((sum, project) => sum + project.chunks.filter((chunk) => chunk.status === "processing" || chunk.status === "queued").length, 0);
   const currentProject = pathname.startsWith("/projects/") ? projects.find((project) => pathname.includes(project.slug)) : undefined;
-  const pageName = pathname.startsWith("/projects/new") ? pathname.endsWith("/ai-drama") ? "Tạo Phim AI" : pathname.endsWith("/audio-story") ? "Tạo Audio Story" : pathname.endsWith("/ai-story") ? "Tạo AI Story" : "Chọn loại dự án" : pathname.startsWith("/projects/") && pathname.includes("/settings") ? "Tùy chỉnh dự án" : currentProject?.title || (pathname === "/projects" ? "Dự án của tôi" : pathname === "/ai-drama" ? "Phim AI" : pathname === "/timelapse" ? "Timelapse" : pathname.startsWith("/video-remake") ? "Remake video" : pathname === "/sales-video" ? "Video bán hàng" : pathname === "/story" ? "Story" : pathname === "/library" ? "Kho cảnh & preset" : pathname === "/tasks" ? "Tác vụ đang chạy" : pathname === "/settings" ? "Cài đặt" : "Tổng quan");
+  const pageName = pathname.startsWith("/projects/new") ? pathname.endsWith("/ai-drama") ? "Tạo Phim AI" : pathname.endsWith("/audio-story") ? "Tạo Audio Story" : pathname.endsWith("/ai-story") ? "Tạo AI Story" : "Chọn loại dự án" : pathname.startsWith("/projects/") && pathname.includes("/settings") ? "Tùy chỉnh dự án" : currentProject?.title || (pathname === "/projects" ? "Dự án của tôi" : pathname === "/ai-drama" ? "Phim AI" : pathname === "/timelapse" ? "Timelapse" : pathname.startsWith("/auto-edit") ? "Auto Edit Video" : pathname.startsWith("/video-remake") ? "Remake video" : pathname === "/sales-video" ? "Video bán hàng" : pathname === "/story" ? "Story" : pathname === "/library" ? "Kho cảnh & preset" : pathname === "/tasks" ? "Tác vụ đang chạy" : pathname === "/settings" ? "Cài đặt" : "Tổng quan");
 
   useEffect(() => {
     setMobileNavOpen(false);
@@ -105,7 +106,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
           <div className="topbar-actions"><Link href="/help" className="icon-button" aria-label="Trợ giúp"><Icon name="help" size={18} /></Link><UserMenu /></div>
         </header>
-        <div className={`page-wrap ${pathname === "/timelapse" ? "timelapse-page-wrap" : ""} ${pathname.startsWith("/sales-video") ? "sales-video-page-wrap" : ""} ${pathname.startsWith("/video-remake") ? "video-remake-page-wrap" : ""}`}>{error && <div className="workspace-error"><span>!</span>Không tải được dữ liệu server: {error}<button onClick={() => window.location.reload()}>Tải lại</button></div>}{children}</div>
+        <div className={`page-wrap ${pathname === "/timelapse" ? "timelapse-page-wrap" : ""} ${pathname.startsWith("/sales-video") ? "sales-video-page-wrap" : ""} ${pathname.startsWith("/video-remake") ? "video-remake-page-wrap" : ""} ${pathname.startsWith("/auto-edit") ? "auto-edit-page-wrap" : ""}`}>{error && <div className="workspace-error"><span>!</span>Không tải được dữ liệu server: {error}<button onClick={() => window.location.reload()}>Tải lại</button></div>}{children}</div>
       </main>
     </div>
   );

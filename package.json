@@ -14,10 +14,13 @@
   "dependencies": {
     "@fal-ai/client": "^1.11.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "@remotion/captions": "^4.0.547",
+    "@remotion/player": "^4.0.547",
     "next": "16.4.6",
     "playwright-core": "1.65.1",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "remotion": "^4.0.547",
     "sharp": "^0.35.5",
     "smol-toml": "^1.9.1",
     "zod": "^4.6.7"
