@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 import sharp from "sharp";
 import { isPublicIp } from "./public-product-page";
 import { ingestSourceUrl } from "./source-ingest";
-import { makeRemakeWindows, type RemakeInput, type RemakeTranscript, type RemakeWindow } from "./video-remake";
+import { makeRemakeWindows, type RemakeAudioCue, type RemakeInput, type RemakeTranscript, type RemakeWindow } from "./video-remake";
 
 import { classifyRemakeSource } from "./video-remake-source";
 import { downloadFromMaiVideo } from "./video-remake-maivideo";
@@ -173,10 +173,86 @@ async function probeVideo(file: string) {
   };
 }
 
-function runFfmpeg(args: string[], timeout?: number) {
+function runFfmpeg(args: string[], timeout?: number, maxBuffer = 1_000_000) {
   return exec(ffmpeg(), ["-nostdin", "-hide_banner", "-loglevel", "error", ...args], {
-    timeout, maxBuffer: 1_000_000, encoding: "buffer",
+    timeout, maxBuffer, encoding: "buffer",
   });
+}
+
+export function extractAudioWindowCues(pcm: Buffer, sampleRate: number, windows: RemakeWindow[]): RemakeAudioCue[] {
+  const totalSamples = Math.floor(pcm.length / 2);
+  if (!totalSamples || sampleRate <= 0) return [];
+  const bucketSec = 0.2;
+  const bucketSize = Math.max(1, Math.round(sampleRate * bucketSec));
+  return windows.map((window, index) => {
+    const startSample = Math.max(0, Math.floor(window.sourceStart * sampleRate));
+    const endSample = Math.min(totalSamples, Math.ceil(window.sourceEnd * sampleRate));
+    if (endSample <= startSample) return { scene: index + 1, rmsDb: null, peaksAt: [], pauses: [] };
+    const buckets: Array<{ relTime: number; rmsDb: number; peakDb: number }> = [];
+    let sumSqAll = 0;
+    for (let pos = startSample; pos < endSample; pos += bucketSize) {
+      const limit = Math.min(endSample, pos + bucketSize);
+      let sumSq = 0;
+      let peak = 0;
+      for (let i = pos; i < limit; i++) {
+        const sample = pcm.readInt16LE(i * 2) / 32768;
+        const abs = Math.abs(sample);
+        if (abs > peak) peak = abs;
+        sumSq += sample * sample;
+      }
+      sumSqAll += sumSq;
+      const rms = Math.sqrt(sumSq / (limit - pos));
+      const rmsDb = rms > 1e-5 ? 20 * Math.log10(rms) : -90;
+      const peakDb = peak > 1e-5 ? 20 * Math.log10(peak) : -90;
+      const relTime = Number((((pos - startSample) + (limit - pos) * 0.5) / sampleRate).toFixed(2));
+      buckets.push({ relTime, rmsDb, peakDb });
+    }
+    const windowRms = Math.sqrt(sumSqAll / (endSample - startSample));
+    const windowRmsDb = windowRms > 1e-5 ? Math.round(20 * Math.log10(windowRms) * 10) / 10 : null;
+    const sortedRms = buckets.map((b) => b.rmsDb).sort((a, b) => a - b);
+    const medianRms = sortedRms[Math.floor(sortedRms.length / 2)] ?? -90;
+    const spikeCandidates = buckets
+      .filter((b) => b.peakDb >= -30 && (b.peakDb - medianRms >= 5.5 || b.rmsDb - medianRms >= 4.5))
+      .sort((a, b) => b.peakDb - a.peakDb);
+    const peaksAt: number[] = [];
+    for (const candidate of spikeCandidates) {
+      if (peaksAt.length >= 3) break;
+      if (peaksAt.every((existing) => Math.abs(existing - candidate.relTime) >= 0.5)) {
+        peaksAt.push(candidate.relTime);
+      }
+    }
+    peaksAt.sort((a, b) => a - b);
+
+    const pauses: Array<[number, number]> = [];
+    let quietStart: number | null = null;
+    for (let i = 0; i < buckets.length; i++) {
+      const isQuiet = buckets[i].rmsDb < -38;
+      const tStart = Number((i * bucketSec).toFixed(2));
+      if (isQuiet && quietStart === null) quietStart = tStart;
+      if (!isQuiet && quietStart !== null) {
+        if (tStart - quietStart >= 0.6 && pauses.length < 2) pauses.push([quietStart, tStart]);
+        quietStart = null;
+      }
+    }
+    const windowDur = Number((window.sourceEnd - window.sourceStart).toFixed(2));
+    if (quietStart !== null && windowDur - quietStart >= 0.6 && pauses.length < 2) {
+      pauses.push([quietStart, windowDur]);
+    }
+    return { scene: index + 1, rmsDb: windowRmsDb, peaksAt, pauses };
+  });
+}
+
+async function analyzeAudioWindows(source: string, hasAudio: boolean | undefined, windows: RemakeWindow[]): Promise<RemakeAudioCue[]> {
+  if (!hasAudio || !windows.length) return [];
+  const sampleRate = 500;
+  try {
+    const { stdout } = await runFfmpeg([
+      ...inputOptions, "-i", source, "-vn", "-map", "0:a:0", "-ac", "1", "-ar", String(sampleRate), "-f", "s16le", "pipe:1",
+    ], 45_000, 24_000_000);
+    return extractAudioWindowCues(stdout, sampleRate, windows);
+  } catch {
+    return [];
+  }
 }
 
 type TranscriptEvidence = { kind: RemakeTranscript; text: string };
@@ -271,5 +347,9 @@ export async function prepareRemakeMedia(input: RemakeInput, work: string, sourc
       scene: offset + index + 1, framesAt: row.map(({ time }) => time),
     })) });
   }
-  return { windows, sheets, aspectRatio: video.aspectRatio, transcript: await getTranscript(input, source, platform, work, video) };
+  const [transcript, audioCues] = await Promise.all([
+    getTranscript(input, source, platform, work, video),
+    analyzeAudioWindows(source, video.audio, windows),
+  ]);
+  return { windows, sheets, aspectRatio: video.aspectRatio, transcript, audioCues };
 }

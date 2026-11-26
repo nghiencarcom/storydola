@@ -8,6 +8,7 @@ export const remakeOptionsSchema = z.object({
   direction: z.string().trim().max(2000).default(""),
   transcript: z.string().trim().max(8000).default(""),
   remakeMode: z.enum(["faithful", "creative"]).default("faithful"),
+  dialoguePolicy: z.enum(["auto", "silent_sfx", "spoken"]).default("auto"),
   visualStyle: z.string().trim().max(80).default(""),
   imageStyle: z.string().trim().max(80).default(""),
   contentGenre: z.string().trim().max(80).default(""),
@@ -37,15 +38,17 @@ export const remakePlanSchema = z.object({
   turningPoint: required(700),
   ending: required(700),
   continuity: required(1500),
+  dialoguePolicy: z.enum(["silent_sfx", "spoken"]).optional(),
   visualStyle: z.string().trim().max(80).optional(),
   imageStyle: z.string().trim().max(80).optional(),
   contentGenre: z.string().trim().max(80).optional(),
   storySetting: z.string().trim().max(80).optional(),
   characters: z.array(remakeEntitySchema).min(1).max(12),
-  locations: z.array(remakeEntitySchema).min(1).max(24),
+  locations: z.array(remakeEntitySchema).min(1).max(30),
 });
 
 export const remakePlanGenerationSchema = remakePlanSchema.extend({
+  dialoguePolicy: z.enum(["silent_sfx", "spoken"]),
   visualStyle: required(80),
   imageStyle: required(80),
   contentGenre: required(80),
@@ -58,7 +61,7 @@ export const remakeSceneSchema = z.object({
   sourceRole: required(500),
   purpose: required(500),
   action: required(1200),
-  characters: z.array(required(100)).max(12),
+  characters: z.array(required(100)).max(5),
   location: required(100),
   dialogueMode: z.enum(["dialogue_led", "visual_led"]).optional(),
   actingBeat: z.string().trim().max(500).optional(),
@@ -99,6 +102,12 @@ export type RemakeOptions = Omit<RemakeInput, "url">;
 export type RemakeLocalSource = { uploadId: string; filename: string; extension: string };
 export type RemakeDraft = z.infer<typeof remakeDraftSchema>;
 export type RemakeWindow = ReturnType<typeof makeRemakeWindows>[number];
+export type RemakeAudioCue = {
+  scene: number;
+  rmsDb: number | null;
+  peaksAt: number[];
+  pauses: Array<[number, number]>;
+};
 export type RemakeStage = "queued" | "reading" | "analyzing" | "ready" | "failed";
 export type RemakeTranscript = "manual" | "captions" | "transcribed" | "unavailable" | "silent";
 export type RemakeJob = {
@@ -192,5 +201,7 @@ export function planRemakeEpisodes(windows: RemakeWindow[]): RemakeEpisodePlan[]
     episode.duration = window.end - windows[episode.sceneStart - 1].start;
   });
 
-  return episodes.map(({ segment: _segment, ...episode }) => episode);
+  return episodes.map(({ index, sceneStart, sceneEnd, sourceStart, sourceEnd, duration }) => ({
+    index, sceneStart, sceneEnd, sourceStart, sourceEnd, duration,
+  }));
 }

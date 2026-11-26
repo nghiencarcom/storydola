@@ -69,7 +69,8 @@ export async function beginRemakeUpload(owner: string, filename: string, size: n
   const manifest: UploadManifest = {
     id, filename: normalizedName, extension, size, uploaded: 0,
     language: options.language, direction: options.direction, transcript: options.transcript,
-    remakeMode: options.remakeMode, visualStyle: options.visualStyle, imageStyle: options.imageStyle,
+    remakeMode: options.remakeMode, dialoguePolicy: options.dialoguePolicy,
+    visualStyle: options.visualStyle, imageStyle: options.imageStyle,
     contentGenre: options.contentGenre, storySetting: options.storySetting,
     agent, complete: false,
   };
@@ -150,6 +151,7 @@ export async function finishRemakeUpload(owner: string, id: string) {
     const jobId = await addLocalRemakeJob(owner, {
       language: manifest.language, direction: manifest.direction, transcript: manifest.transcript,
       remakeMode: manifest.remakeMode ?? "faithful",
+      dialoguePolicy: manifest.dialoguePolicy ?? "auto",
       visualStyle: manifest.visualStyle ?? "",
       imageStyle: manifest.imageStyle ?? "",
       contentGenre: manifest.contentGenre ?? "",

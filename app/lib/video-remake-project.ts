@@ -10,6 +10,14 @@ import { continuityContextFromOutput } from "./story-context";
 import { normalizeProjectStyleSettings } from "./visual-styles";
 import { planRemakeEpisodes, type RemakeJob } from "./video-remake";
 
+function englishStockKeywords(text: string, fallback: string) {
+  const words = text
+    .replace(/@/gu, "")
+    .match(/[A-Za-z][A-Za-z0-9'-]{2,}/gu)
+    ?.filter((word) => !/^(?:the|and|with|from|into|over|under|near|side|shot|frame|camera|primary|combo|axis|screen|left|right|single|opening|finished|end|state)$/iu.test(word));
+  return words?.length ? [...new Set(words)].slice(0, 8).join(" ").slice(0, 120) : fallback.slice(0, 120);
+}
+
 function composeRemakeVideoPrompt(scene: RemakeJob["result"] extends infer R ? R extends { draft: { scenes: Array<infer S> } } ? S : never : never) {
   const base = scene.videoPrompt.trim();
   const extras: string[] = [];
@@ -83,14 +91,25 @@ export async function createRemakeProject(owner: string, job: RemakeJob & { resu
     project.characters = dramaPlan.characters.map((item, index) => ({ ...item, ...referenceFields, id: `char-ai-${index + 1}` }));
     project.locations = dramaPlan.locations.map((item, index) => ({ ...item, ...referenceFields, id: `loc-ai-${index + 1}` }));
     const characterIds = new Map(project.characters.map(({ name, id }) => [name, id]));
+    const locationDescriptions = new Map(draft.locations.map(({ name, description, imagePrompt }) => [name, description || imagePrompt]));
+    const episodeStarts = new Set(episodePlan.map(({ sceneStart }) => sceneStart));
+    const episodeEnds = new Set(episodePlan.map(({ sceneEnd }) => sceneEnd));
     const scenes = draft.scenes.map((scene, index) => {
+      const sceneNum = index + 1;
       const window = windows[index];
       const dialogueMode = scene.dialogueMode || (scene.dialogue.length ? "dialogue_led" : "visual_led");
       const primarySpeaker = scene.dialogue[0]?.speaker || "";
+      const act = sceneNum === 1 || episodeStarts.has(sceneNum)
+        ? "Opening hook"
+        : sceneNum === draft.scenes.length
+          ? "Payoff"
+          : episodeEnds.has(sceneNum)
+            ? "Episode end hook"
+            : "Development";
       return {
-        id: `S${String(index + 1).padStart(3, "0")}`,
+        id: `S${String(sceneNum).padStart(3, "0")}`,
         start_sec: window.start, end_sec: window.end, duration_sec: window.duration,
-        act: index === 0 ? "Hook" : index === draft.scenes.length - 1 ? "Payoff" : "Development",
+        act,
         purpose: scene.purpose, beat_summary: scene.action, media_type: "video",
         dialogue_mode: dialogueMode,
         speaker_character: dialogueMode === "visual_led" && scene.dialogue.length === 0 ? "NONE" : primarySpeaker,
@@ -99,8 +118,11 @@ export async function createRemakeProject(owner: string, job: RemakeJob & { resu
           speaker_character: speaker, speaker_character_id: characterIds.get(speaker), text, start_sec: start, end_sec: end,
         })),
         voiceover_target_sec: scene.dialogue.at(-1)?.end || 0,
-        characters: scene.characters, character_ids: scene.characters.map((name) => characterIds.get(name)!), location_name: scene.location,
-        image_keyword: scene.location, video_keyword: scene.action.slice(0, 120),
+        characters: scene.characters, character_ids: scene.characters.map((name) => characterIds.get(name)!),
+        location_name: scene.location,
+        location_description: locationDescriptions.get(scene.location) || "",
+        image_keyword: englishStockKeywords(scene.imagePrompt, scene.location),
+        video_keyword: englishStockKeywords(scene.actingBeat || scene.videoPrompt, scene.action),
         image_prompt: scene.imagePrompt, video_prompt: composeRemakeVideoPrompt(scene),
         acting_beat: scene.actingBeat || scene.action,
         blocking: scene.blocking || scene.continuityIn,

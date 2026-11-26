@@ -17,7 +17,11 @@ function load(name, imports = {}) {
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "storyai-remake-queue-test-"));
 async function main() {
-  const remake = load("video-remake", { "./ai-drama-scene-timing": load("ai-drama-scene-timing") });
+  const projectTypes = load("project-types");
+  const remake = load("video-remake", {
+    "./ai-drama-scene-timing": load("ai-drama-scene-timing"),
+    "./project-types": projectTypes,
+  });
   const windows = remake.makeRemakeWindows(610, 5);
   const sheets = Array.from({ length: Math.ceil(windows.length / 4) }, (_, sheet) => ({
     imagePath: `sheet-${sheet + 1}`,
@@ -28,6 +32,7 @@ async function main() {
   const plan = {
     sourceSummary: "Nguồn", title: "Phiên bản mới", logline: "Mục tiêu", synopsis: "Câu chuyện",
     openingHook: "Mở đầu", turningPoint: "Bước ngoặt", ending: "Kết thúc", continuity: "Giữ đạo cụ",
+    dialoguePolicy: "spoken",
     visualStyle: "Warm & emotional", imageStyle: "Stylized 3D", contentGenre: "comedy", storySetting: "modern",
     characters: [{ name: "Mai", description: "Người giao hàng", imagePrompt: "Full-body character design of a cheerful young courier, plain clean white studio background" }],
     locations: [
@@ -45,6 +50,7 @@ async function main() {
   const contentGenres = load("content-genres");
   const visualStyles = load("visual-styles");
   const videoPromptPolicy = load("video-prompt-policy");
+  const visualPromptSafety = load("visual-prompt-safety");
   const dialoguePacing = load("dialogue-pacing", {
     "./dialogue-segments": load("dialogue-segments", { "./entity-name": entityName }),
   });
@@ -53,6 +59,7 @@ async function main() {
     "./content-genres": contentGenres,
     "./visual-styles": visualStyles,
     "./video-prompt-policy": videoPromptPolicy,
+    "./visual-prompt-safety": visualPromptSafety,
     "./dialogue-pacing": dialoguePacing,
     "./data-directory": { dataPath: (...parts) => path.join(root, ...parts) },
     "./video-remake": remake,
@@ -98,7 +105,7 @@ async function main() {
   });
   jobId = await queue.addRemakeJob("test-user", {
     url: "https://example.test/video.mp4", language: "vi", direction: "", transcript: "",
-    remakeMode: "faithful", visualStyle: "", imageStyle: "", contentGenre: "", storySetting: "",
+    remakeMode: "faithful", dialoguePolicy: "auto", visualStyle: "", imageStyle: "", contentGenre: "", storySetting: "",
   }, { agent: "codex", model: "", quality: "auto", speed: "standard" });
 
   await queue.runRemakeQueue();
@@ -126,10 +133,10 @@ async function main() {
   assert.match(observed.at(-1).prompt, /Sau cảnh 120/);
   const projects = [];
   const payloads = new Map();
-  const projectTypes = load("project-types");
   const projectModule = load("video-remake-project", {
     "./content-genres": contentGenres,
     "./visual-styles": visualStyles,
+    "./video-remake": remake,
     "./continuity-qa": { buildContinuityQaReport: async () => ({}) },
     "./drama-plan": { normalizeDramaPlan: (plan) => plan, dramaPlanSourceText: () => "Nguồn" },
     "./episode-locations": { reconcileEpisodeLocations: (locations, { scenes }) => ({ locations, scenes }) },
@@ -159,13 +166,18 @@ async function main() {
   assert.equal(projects[0].storySetting, "modern");
   assert.equal(projects[0].durationSeconds, 610);
   assert.equal(projects[0].completedScenes, 119);
-  assert.equal(projects[0].completedChunks, 2);
+  assert.equal(projects[0].completedChunks, 3);
+  assert.equal(payloads.get("A01").scenes[0].act, "Opening hook");
+  assert.equal(payloads.get("A01").scenes.at(-1).act, "Episode end hook");
+  assert.equal(payloads.get("A02").scenes[0].act, "Opening hook");
+  assert.equal(payloads.get("A03").scenes.at(-1).act, "Payoff");
   assert.equal(payloads.get("A01").scenes[0].speaker_character, "NONE");
   assert.equal(payloads.get("A01").scenes[0].shot_size, "Medium Shot");
+  assert.match(payloads.get("A01").scenes[0].image_keyword, /^[A-Za-z0-9 '-]+$/);
   assert.match(payloads.get("A01").scenes[0].video_prompt, /SFX:/);
-  assert.equal(payloads.get("A01").scenes.at(-1).id, "S100");
-  assert.equal(payloads.get("A02").scenes[0].id, "S101");
-  assert.equal(payloads.get("A02").scenes.at(-1).end_sec, 610);
+  assert.equal(payloads.get("A01").scenes.at(-1).id, "S057");
+  assert.equal(payloads.get("A02").scenes[0].id, "S058");
+  assert.equal(payloads.get("A03").scenes.at(-1).end_sec, 610);
 
   // Verify reference-identity lock auto-repair, pacing auto-repair, and compactRetry preserving all batch sheets & transcript.
   const shortWindows = remake.makeRemakeWindows(15, 5);
@@ -177,10 +189,11 @@ async function main() {
     "./content-genres": contentGenres,
     "./visual-styles": visualStyles,
     "./video-prompt-policy": videoPromptPolicy,
+    "./visual-prompt-safety": visualPromptSafety,
     "./dialogue-pacing": dialoguePacing,
     "./data-directory": { dataPath: (...parts) => path.join(root, ...parts) },
     "./video-remake": remake,
-    "./entity-name": load("entity-name"),
+    "./entity-name": entityName,
     "./video-remake-media": { prepareRemakeMedia: async () => ({
       windows: shortWindows, sheets: shortSheets, aspectRatio: "16:9",
       transcript: { kind: "captions", text: "1\n00:00:01,000 --> 00:00:03,000\nCANHMO" },
@@ -221,7 +234,7 @@ async function main() {
   });
   const shortJobId = await repairQueue.addRemakeJob("test-user-2", {
     url: "https://example.test/short.mp4", language: "vi", direction: "", transcript: "",
-    remakeMode: "creative", visualStyle: "", imageStyle: "", contentGenre: "", storySetting: "",
+    remakeMode: "creative", dialoguePolicy: "auto", visualStyle: "", imageStyle: "", contentGenre: "", storySetting: "",
   }, { agent: "codex", model: "", quality: "auto", speed: "standard" });
   await repairQueue.runRemakeQueue();
   const shortJob = await repairQueue.getRemakeJob("test-user-2", shortJobId);
@@ -230,7 +243,103 @@ async function main() {
   assert.match(repairObserved[1].prompt, /CANHMO/);
   assert.deepEqual(repairObserved[1].images, ["short-1"]);
   assert.match(repairObserved[2].prompt, /tuổi\/ngoại hình/);
-  console.log("Passed 10-minute queue, newLocations, style/genre mapping, reference lock repair, compactRetry preservation and two-episode handoff.");
+
+  // Verify non-dialogue funny SFX+VFX auto workflow: audio spike/pause extraction, auto_silent detection, slapstick verb & timestamp repair.
+  const { extractAudioWindowCues } = load("video-remake-media", {
+    sharp: () => ({ resize: () => ({ jpeg: () => ({ toBuffer: async () => Buffer.alloc(0) }) }) }),
+    "./public-product-page": { isPublicIp: () => true },
+    "./source-ingest": { ingestSourceUrl: async () => undefined },
+    "./video-remake": remake,
+    "./video-remake-source": { classifyRemakeSource: () => undefined },
+    "./video-remake-maivideo": { downloadFromMaiVideo: async () => "" },
+  });
+  const sampleRate = 500;
+  const pcm = Buffer.alloc(5 * sampleRate * 2, 0);
+  // 0.0-1.4s silent comedic pause; 1.4-2.8s moderate foley; 1.8-2.0s sharp loud boing spike.
+  for (let i = Math.floor(1.4 * sampleRate); i < 5 * sampleRate; i++) pcm.writeInt16LE(1500, i * 2);
+  for (let i = Math.floor(1.8 * sampleRate); i < Math.floor(2.0 * sampleRate); i++) pcm.writeInt16LE(26000, i * 2);
+  const funnyWindows = remake.makeRemakeWindows(5, 5);
+  const audioCues = extractAudioWindowCues(pcm, sampleRate, funnyWindows);
+  assert.equal(audioCues.length, 1);
+  assert.ok(audioCues[0].pauses.some(([s, e]) => s === 0 && e >= 1.2));
+  assert.ok(audioCues[0].peaksAt.some((t) => Math.abs(t - 1.9) <= 0.25));
+
+  let funnyAttempt = 0;
+  const funnyObserved = [];
+  const funnyQueue = load("video-remake-worker", {
+    "./ai-drama-video-prompt-guidance": aiDramaGuidance,
+    "./content-genres": contentGenres,
+    "./visual-styles": visualStyles,
+    "./video-prompt-policy": videoPromptPolicy,
+    "./visual-prompt-safety": visualPromptSafety,
+    "./dialogue-pacing": dialoguePacing,
+    "./data-directory": { dataPath: (...parts) => path.join(root, ...parts) },
+    "./video-remake": remake,
+    "./entity-name": entityName,
+    "./video-remake-media": { prepareRemakeMedia: async () => ({
+      windows: funnyWindows,
+      sheets: [{ imagePath: "funny-1", rows: [{ scene: 1, framesAt: [0.4, 1.75, 3.25, 4.5] }] }],
+      aspectRatio: "9:16",
+      transcript: { kind: "unavailable", text: "" },
+      audioCues,
+    }) },
+    "./coding-agent-cli": { generateWithCodingAgent: async (_agent, prompt) => {
+      funnyAttempt += 1;
+      funnyObserved.push(prompt);
+      const badSlapstick = funnyAttempt === 1;
+      const badTimestampAndSpeech = funnyAttempt === 2;
+      return { result: {
+        ...plan,
+        dialoguePolicy: "silent_sfx",
+        contentGenre: "animal-adventure",
+        characters: [{ name: "Barnaby", description: "Sóc đất", imagePrompt: "Stylized 3D desert squirrel on plain white background" }],
+        locations: [{ name: "Canyon", description: "Mỏm đá", imagePrompt: "Stylized 3D sandstone ledge, empty of animals, no text" }],
+        scenes: [{
+          sourceWindows: 1,
+          sourceVisuals: "Sóc ấn nắp thùng", sourceStory: "Hài hình thể", sourceRole: "Comedic payoff",
+          purpose: "Cú bật lò xo hài hước", action: "Barnaby bật lộn nhào vào đống cát",
+          characters: ["Barnaby"], location: "Canyon",
+          dialogueMode: "visual_led",
+          actingBeat: "@Barnaby freezes then tumbles in comic shock.",
+          blocking: "@Barnaby center-right rebounding screen-left.",
+          shotSize: "Low-Angle Medium Shot",
+          cameraMovement: "22 Push-In + Rapid Pull-Back",
+          eyelineAction: "@Barnaby squints at latch then eyes pop wide.",
+          sfx: "0.0-1.2s comedic pause; 1.9s spring boing; 2.8s sand thump.",
+          vfx: "1.9-2.7s spiral golden dust burst and brass coil motion trail fading by 2.7s.",
+          continuityIn: "Barnaby rón rén bên thùng", continuityOut: "Barnaby ngồi choáng trên cát",
+          imagePrompt: "@Barnaby leans on tiptoe pressing a trembling crate latch on Canyon, 9:16 Stylized 3D.",
+          videoPrompt: badSlapstick
+            ? "0.0-5.0s: Crate lid hits Barnaby violently onto the sand."
+            : badTimestampAndSpeech
+              ? "10-20: Barnaby tumbles onto sand and speaks loudly."
+              : "PRIMARY CAMERA COMBO: 22 Push-In + Rapid Pull-Back. 0.0-1.8s: Barnaby freezes in a silent pause and does not speak. 1.9-5.0s: Crate lid springs open, launching Barnaby bouncing playfully onto a soft sand dune, dizzy without talking.",
+          dialogue: [],
+        }],
+      } };
+    } },
+  });
+  const funnyJobId = await funnyQueue.addRemakeJob("test-user-3", {
+    url: "https://example.test/funny.mp4", language: "vi", direction: "", transcript: "",
+    remakeMode: "faithful", dialoguePolicy: "auto", visualStyle: "", imageStyle: "", contentGenre: "", storySetting: "",
+  }, { agent: "codex", model: "", quality: "auto", speed: "standard" });
+  await funnyQueue.runRemakeQueue();
+  const funnyJob = await funnyQueue.getRemakeJob("test-user-3", funnyJobId);
+  assert.equal(funnyJob.status, "ready", funnyJob.error);
+  assert.equal(funnyAttempt, 3);
+  assert.match(funnyObserved[0], /TỰ ĐỘNG PHÁT HIỆN NGUỒN KHÔNG HỘI THOẠI/);
+  assert.match(funnyObserved[0], /peaksAt/);
+  assert.match(funnyObserved[1], /từ nhạy cảm/);
+  assert.match(funnyObserved[2], /mốc thời gian trong videoPrompt sai/);
+  const funnySlug = await projectModule.createRemakeProject("test-user-3", funnyJob);
+  assert.ok(funnySlug.startsWith("remake-"));
+  const funnyScene = payloads.get("A01").scenes[0];
+  assert.equal(funnyScene.dialogue_mode, "visual_led");
+  assert.equal(funnyScene.speaker_character, "NONE");
+  assert.match(funnyScene.video_prompt, /SFX: 0\.0-1\.2s comedic pause/);
+  assert.match(funnyScene.video_prompt, /VFX: 1\.9-2\.7s spiral golden dust burst/);
+
+  console.log("Passed 10-minute queue, newLocations, style/genre mapping, reference lock repair, funny silent SFX/VFX auto workflow and two-episode handoff.");
 }
 
 main().catch((error) => { console.error(error); process.exitCode = 1; })

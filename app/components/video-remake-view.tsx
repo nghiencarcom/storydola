@@ -146,9 +146,16 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
     event.preventDefault();
     const form = event.currentTarget;
     const fields = new FormData(form);
+    const rawPolicy = fields.get("dialoguePolicy");
+    const dialoguePolicy: RemakeInput["dialoguePolicy"] = rawPolicy === "silent_sfx"
+      ? "silent_sfx"
+      : rawPolicy === "spoken"
+        ? "spoken"
+        : "auto";
     const options = {
       language: fields.get("language") === "en" ? "en" as const : "vi" as const,
       remakeMode: fields.get("remakeMode") === "creative" ? "creative" as const : "faithful" as const,
+      dialoguePolicy,
       imageStyle: String(fields.get("imageStyle") || ""),
       visualStyle: String(fields.get("visualStyle") || ""),
       contentGenre: String(fields.get("contentGenre") || ""),
@@ -305,6 +312,14 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
           </select>
         </label>
         <label className="form-field">
+          <span>Lời thoại &amp; âm thanh</span>
+          <select name="dialoguePolicy" defaultValue="auto">
+            <option value="auto">Tự động theo nguồn (giữ câm/SFX nếu không lời)</option>
+            <option value="silent_sfx">Không lời thoại — chỉ diễn xuất, SFX &amp; VFX</option>
+            <option value="spoken">Có lời thoại nhân vật</option>
+          </select>
+        </label>
+        <label className="form-field">
           <span>Phong cách hình ảnh</span>
           <select name="imageStyle" defaultValue="">
             <option value="">Tự nhận diện theo video nguồn</option>
@@ -426,8 +441,14 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
           <summary>Xem tóm tắt, cấu trúc và thiết kế nhân vật</summary>
           <p>{result.draft.synopsis}</p>
           <dl className="remake-facts">
-            {(result.draft.imageStyle || result.draft.visualStyle || result.draft.contentGenre) && (
-              <div><dt>Phong cách &amp; thể loại</dt><dd>{[result.draft.imageStyle, result.draft.visualStyle, result.draft.contentGenre, result.draft.storySetting].filter(Boolean).join(" · ")}</dd></div>
+            {(result.draft.imageStyle || result.draft.visualStyle || result.draft.contentGenre || result.draft.dialoguePolicy) && (
+              <div><dt>Phong cách &amp; chế độ âm thanh</dt><dd>{[
+                result.draft.dialoguePolicy === "silent_sfx" ? "Không lời thoại (SFX & VFX)" : result.draft.dialoguePolicy === "spoken" ? "Có lời thoại" : "",
+                result.draft.imageStyle,
+                result.draft.visualStyle,
+                result.draft.contentGenre,
+                result.draft.storySetting,
+              ].filter(Boolean).join(" · ")}</dd></div>
             )}
             <div><dt>Hook mở đầu</dt><dd>{result.draft.openingHook}</dd></div>
             <div><dt>Bước ngoặt</dt><dd>{result.draft.turningPoint}</dd></div>
@@ -466,6 +487,7 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
               <div><dt>Hành động mới · {scene.location}</dt><dd>{scene.action}</dd></div>
               {(scene.shotSize || scene.cameraMovement) && <div><dt>Cỡ cảnh &amp; máy quay</dt><dd>{[scene.shotSize, scene.cameraMovement].filter(Boolean).join(" — ")}</dd></div>}
               {scene.actingBeat && <div><dt>Diễn xuất &amp; trục nhìn</dt><dd>{[scene.actingBeat, scene.eyelineAction].filter(Boolean).join(" · ")}</dd></div>}
+              {(scene.sfx || scene.vfx) && <div><dt>SFX &amp; VFX</dt><dd>{[scene.sfx ? `SFX: ${scene.sfx}` : "", scene.vfx && scene.vfx.toLowerCase() !== "none" ? `VFX: ${scene.vfx}` : ""].filter(Boolean).join("\n") || "Không có hiệu ứng đặc biệt"}</dd></div>}
               {scene.dialogue.length > 0 && <div><dt>Lời thoại</dt><dd><ul>{scene.dialogue.map(({ speaker, text, start, end }) => <li key={start}>{seconds(start)}–{seconds(end)} · <strong>{speaker}</strong> {text}</li>)}</ul></dd></div>}
               <div><dt>Prompt ảnh</dt><dd>{scene.imagePrompt}</dd></div>
               <div><dt>Prompt video</dt><dd>{scene.videoPrompt}</dd></div>

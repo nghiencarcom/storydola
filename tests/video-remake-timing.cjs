@@ -16,6 +16,7 @@ function loadModule(name, imports = {}) {
 
 const { makeRemakeWindows, mergeRemakeWindows, remakeInputSchema } = loadModule("video-remake", {
   "./ai-drama-scene-timing": loadModule("ai-drama-scene-timing"),
+  "./project-types": loadModule("project-types"),
 });
 
 for (const [sourceSeconds, step, expected] of [
