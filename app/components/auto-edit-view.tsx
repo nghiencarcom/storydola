@@ -14,8 +14,10 @@ import {
   type AutoEditOverlay,
   type AutoEditPresetId,
   type AutoEditStage,
+  type AutoEditVerticalFit,
 } from "../lib/auto-edit";
 import { AutoEditRemotionComposition } from "./auto-edit-remotion-composition";
+import { SFX_CATALOG, SFX_CATEGORY_LABELS, type SfxCategory } from "../lib/sfx-library";
 import { Icon } from "./ui-icon";
 
 const uploadChunkSize = 8 * 1024 * 1024;
@@ -87,14 +89,19 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
   const [imageItems, setImageItems] = useState<PendingImageItem[]>([]);
   const [preset, setPreset] = useState<AutoEditPresetId>("ugc-review");
   const [aspectRatio, setAspectRatio] = useState<AutoEditAspectRatio>("9:16");
+  const [verticalFit, setVerticalFit] = useState<AutoEditVerticalFit>("auto");
   const [language, setLanguage] = useState<"vi" | "en">("vi");
   const [silenceThresholdMs, setSilenceThresholdMs] = useState(450);
   const [voiceTargetPeakDb, setVoiceTargetPeakDb] = useState(-1.2);
+  const [autoSfx, setAutoSfx] = useState(true);
+  const [sfxVolumeDb, setSfxVolumeDb] = useState(-8.5);
   const [safeZoneGuard, setSafeZoneGuard] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ doneBytes: number; totalBytes: number; label: string }>();
 
-  // Studio controls
+  // Studio controls (including live Output Aspect Ratio & Vertical Fit override)
+  const [studioAspectRatio, setStudioAspectRatio] = useState<AutoEditAspectRatio>("9:16");
+  const [studioVerticalFit, setStudioVerticalFit] = useState<AutoEditVerticalFit>("auto");
   const [showSafeZoneGuide, setShowSafeZoneGuide] = useState(false);
   const [savingEdl, setSavingEdl] = useState(false);
   const [copilotPrompt, setCopilotPrompt] = useState("");
@@ -142,6 +149,10 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
       .then(({ job: fetched }) => {
         if (controller.signal.aborted) return;
         setJob(fetched);
+        if (fetched.id !== job?.id || !dirtyEdl) {
+          setStudioAspectRatio(fetched.options.aspectRatio);
+          setStudioVerticalFit(fetched.options.verticalFit || "auto");
+        }
         setDraftEdl((prev) => {
           if (!fetched.edl) return undefined;
           if (!prev || fetched.id !== job?.id || !dirtyEdl) return fetched.edl;
@@ -159,10 +170,28 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
     return computeAutoEditTimeline(
       draftEdl,
       job.analysis?.words || [],
-      job.options.aspectRatio,
+      studioAspectRatio,
       job.analysis?.rawDurationMs,
+      { autoSfx: job.options.autoSfx, sfxVolumeDb: job.options.sfxVolumeDb },
     );
-  }, [job, draftEdl]);
+  }, [job, draftEdl, studioAspectRatio]);
+
+  const sfxGroups = useMemo(() => {
+    const grouped = new Map<SfxCategory, typeof SFX_CATALOG[number][]>();
+    for (const item of SFX_CATALOG) {
+      const list = grouped.get(item.category) || [];
+      list.push(item);
+      grouped.set(item.category, list);
+    }
+    return [...grouped.entries()];
+  }, []);
+
+  function previewSfxSound(sfxId?: string) {
+    if (!sfxId || sfxId === "none") return;
+    const audio = new Audio(`/api/auto-edit/sfx/${encodeURIComponent(sfxId)}`);
+    audio.volume = 0.55;
+    void audio.play().catch(() => undefined);
+  }
 
   function addVideos(files: FileList | null) {
     if (!files?.length) return;
@@ -196,6 +225,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
       sourceUrl: sourceMode === "url" ? sourceUrl.trim() : "",
       preset,
       aspectRatio,
+      verticalFit,
       language,
       productName: String(fd.get("productName") || ""),
       productHighlights: String(fd.get("productHighlights") || ""),
@@ -203,6 +233,8 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
       manualTranscript: String(fd.get("manualTranscript") || ""),
       silenceThresholdMs,
       voiceTargetPeakDb,
+      autoSfx,
+      sfxVolumeDb,
       safeZoneGuard,
     };
 
@@ -423,9 +455,16 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
       const { job: updated } = await apiAutoEdit<{ job: AutoEditJob }>({
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: job.id, action: "update-edl", edl: draftEdl }),
+        body: JSON.stringify({
+          id: job.id,
+          action: "update-edl",
+          edl: draftEdl,
+          optionsPatch: { aspectRatio: studioAspectRatio, verticalFit: studioVerticalFit },
+        }),
       });
       setJob(updated);
+      setStudioAspectRatio(updated.options.aspectRatio);
+      setStudioVerticalFit(updated.options.verticalFit || "auto");
       setDraftEdl(updated.edl);
       setDirtyEdl(false);
       setStudioNotice("Đã lưu thay đổi timeline.");
@@ -478,9 +517,13 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
       await apiAutoEdit({
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: job.id, action: "render" }),
+        body: JSON.stringify({
+          id: job.id,
+          action: "render",
+          optionsPatch: { aspectRatio: studioAspectRatio, verticalFit: studioVerticalFit },
+        }),
       });
-      setStudioNotice("Đã bắt đầu xuất MP4 (FFmpeg + HyperFrames). Tiến trình sẽ tự cập nhật sau ít giây.");
+      setStudioNotice(`Đã bắt đầu xuất MP4 tỷ lệ ${studioAspectRatio} (FFmpeg + HyperFrames). Tiến trình sẽ tự cập nhật sau ít giây.`);
       setRevision((r) => r + 1);
     } catch (err) {
       setStudioNotice((err as Error).message);
@@ -677,13 +720,30 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
               <input name="productName" type="text" placeholder="VD: Kem chống nắng kiềm dầu SkinAqua..." />
             </label>
             <label className="form-field">
-              <span>Khung hình xuất</span>
-              <select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value as AutoEditAspectRatio)}>
-                <option value="9:16">9:16 Dọc (TikTok / Reels / Shorts)</option>
-                <option value="16:9">16:9 Ngang (YouTube / Review chi tiết)</option>
-                <option value="1:1">1:1 Vuông (Feed Facebook / Instagram)</option>
-              </select>
+              <span>Tỷ lệ Video Output (Đầu ra)</span>
+              <div className="auto-edit-ratio-pills" role="radiogroup" aria-label="Tỷ lệ Video Output">
+                {(["9:16", "16:9", "1:1"] as const).map((ratio) => (
+                  <button
+                    key={ratio}
+                    type="button"
+                    className={`auto-edit-ratio-btn ${aspectRatio === ratio ? "is-active" : ""}`}
+                    onClick={() => setAspectRatio(ratio)}
+                  >
+                    {ratio === "9:16" ? "9:16 Dọc" : ratio === "16:9" ? "16:9 Ngang" : "1:1 Vuông"}
+                  </button>
+                ))}
+              </div>
             </label>
+            {aspectRatio === "9:16" && (
+              <label className="form-field">
+                <span>Chế độ khi video gốc là 16:9 ngang</span>
+                <select value={verticalFit} onChange={(e) => setVerticalFit(e.target.value as AutoEditVerticalFit)}>
+                  <option value="auto">Tự động (Nền mờ giữ trọn khung nếu clip ngang)</option>
+                  <option value="blur-fit">Khung ngang giữa + Nền mờ Cinema (Không mất chữ)</option>
+                  <option value="fill-crop">Cắt dọc lấp đầy 9:16 (Cho video quay người nói)</option>
+                </select>
+              </label>
+            )}
             <label className="form-field">
               <span>Ngôn ngữ lời thoại</span>
               <select value={language} onChange={(e) => setLanguage(e.target.value === "en" ? "en" : "vi")}>
@@ -734,6 +794,27 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
           <details className="remake-long-section">
             <summary>Tuỳ chọn nâng cao (Safe-Zone & Transcript thủ công nếu không dùng Whisper)</summary>
             <div className="auto-edit-advanced-inner">
+              <label className="auto-edit-checkbox">
+                <input
+                  type="checkbox"
+                  checked={autoSfx}
+                  onChange={(e) => setAutoSfx(e.target.checked)}
+                />
+                <span>Tự động chèn hiệu ứng âm thanh từ kho 59 SFX (Whoosh, Pop, Sparkle, Ding, Click...)</span>
+              </label>
+              {autoSfx && (
+                <label className="form-field">
+                  <span>Độ lớn hiệu ứng SFX ({sfxVolumeDb} dB · Rõ nét dưới giọng đọc 0 đến -3 dB)</span>
+                  <input
+                    type="range"
+                    min={-22}
+                    max={-4}
+                    step={0.5}
+                    value={sfxVolumeDb}
+                    onChange={(e) => setSfxVolumeDb(Number(e.target.value))}
+                  />
+                </label>
+              )}
               <label className="auto-edit-checkbox">
                 <input
                   type="checkbox"
@@ -835,6 +916,24 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                   <Icon name="refresh" size={15} /> Chạy phân tích lại
                 </button>
               )}
+              {draftEdl && (
+                <div className="auto-edit-ratio-pills" role="group" aria-label="Chọn tỷ lệ xuất MP4">
+                  {(["9:16", "16:9", "1:1"] as const).map((ratio) => (
+                    <button
+                      key={ratio}
+                      type="button"
+                      className={`auto-edit-ratio-btn ${studioAspectRatio === ratio ? "is-active" : ""}`}
+                      onClick={() => {
+                        setStudioAspectRatio(ratio);
+                        setDirtyEdl(true);
+                      }}
+                      title={`Đổi tỷ lệ xuất sang ${ratio}`}
+                    >
+                      Out {ratio}
+                    </button>
+                  ))}
+                </div>
+              )}
               {dirtyEdl && (
                 <button type="button" className="secondary-button" disabled={savingEdl} onClick={saveEdlChanges}>
                   <Icon name="save" size={15} /> {savingEdl ? "Đang lưu..." : "Lưu chỉnh sửa"}
@@ -848,7 +947,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                   onClick={handleExportMp4}
                 >
                   <Icon name="bolt" size={15} />
-                  {job.status === "rendering" || rendering ? "Đang xuất MP4..." : "Xuất MP4 (HyperFrames)"}
+                  {job.status === "rendering" || rendering ? "Đang xuất MP4..." : `Xuất MP4 (${studioAspectRatio})`}
                 </button>
               )}
               {job.render?.status === "ready" && job.render.outputPath && (
@@ -888,8 +987,8 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                   </strong>
                 </div>
                 <div>
-                  <span>Lớp phủ HyperFrames</span>
-                  <strong>{computedTimeline.overlays.length} thẻ đồ hoạ</strong>
+                  <span>Đồ hoạ & Âm thanh SFX</span>
+                  <strong>{computedTimeline.overlays.length} thẻ · {computedTimeline.sfxEvents.length} SFX</strong>
                 </div>
                 <div>
                   <span>Độ lớn Giọng đọc (Voice dB)</span>
@@ -981,30 +1080,46 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                         <option value="clean-pill">Phụ đề Hộp mờ Clean Pill</option>
                         <option value="minimal-line">Phụ đề Tối giản</option>
                       </select>
-                      {job.options.aspectRatio === "9:16" && (
-                        <label className="auto-edit-safezone-toggle">
-                          <input
-                            type="checkbox"
-                            checked={showSafeZoneGuide}
-                            onChange={(e) => setShowSafeZoneGuide(e.target.checked)}
-                          />
-                          <span>Khung Safe-Zone</span>
-                        </label>
+                      {studioAspectRatio === "9:16" && (
+                        <>
+                          <select
+                            value={studioVerticalFit}
+                            onChange={(e) => {
+                              setStudioVerticalFit(e.target.value as AutoEditVerticalFit);
+                              setDirtyEdl(true);
+                            }}
+                            title="Cách hiển thị video gốc 16:9 trong khung dọc 9:16"
+                          >
+                            <option value="auto">16:9→9:16: Tự động</option>
+                            <option value="blur-fit">Giữ trọn khung + Nền mờ</option>
+                            <option value="fill-crop">Cắt dọc đầy màn hình</option>
+                          </select>
+                          <label className="auto-edit-safezone-toggle">
+                            <input
+                              type="checkbox"
+                              checked={showSafeZoneGuide}
+                              onChange={(e) => setShowSafeZoneGuide(e.target.checked)}
+                            />
+                            <span>Khung Safe-Zone</span>
+                          </label>
+                        </>
                       )}
                     </div>
                   </div>
 
-                  <div className={`auto-edit-player-stage ratio-${job.options.aspectRatio.replace(":", "-")}`}>
+                  <div className={`auto-edit-player-stage ratio-${studioAspectRatio.replace(":", "-")}`}>
                     <Player
                       ref={playerRef}
                       component={AutoEditRemotionComposition}
                       inputProps={{
                         jobId: job.id,
                         timeline: computedTimeline,
+                        videos: job.videos,
                         captionStyle: draftEdl.captionStyle,
                         safeZoneGuard: job.options.safeZoneGuard,
                         showSafeZoneGuide,
-                        aspectRatio: job.options.aspectRatio,
+                        aspectRatio: studioAspectRatio,
+                        verticalFit: studioVerticalFit,
                       }}
                       durationInFrames={totalFrames}
                       fps={computedTimeline.fps}
@@ -1013,7 +1128,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                       controls
                       style={{
                         width: "100%",
-                        maxHeight: job.options.aspectRatio === "9:16" ? 580 : 420,
+                        maxHeight: studioAspectRatio === "9:16" ? 580 : 420,
                         borderRadius: 14,
                         overflow: "hidden",
                       }}
@@ -1127,6 +1242,33 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                                 ))}
                               </select>
                             )}
+                            <div className="auto-edit-ov-inline">
+                              <select
+                                value={ov.sfxId || "none"}
+                                onChange={(e) => updateOverlayField(ov.id, { sfxId: e.target.value })}
+                                aria-label="Hiệu ứng âm thanh SFX"
+                              >
+                                <option value="none">🔇 Không phát SFX</option>
+                                {sfxGroups.map(([cat, list]) => (
+                                  <optgroup key={cat} label={SFX_CATEGORY_LABELS[cat]}>
+                                    {list.map((sfx) => (
+                                      <option key={sfx.id} value={sfx.id}>
+                                        🔊 {sfx.label} ({(sfx.durationMs / 1000).toFixed(1)}s)
+                                      </option>
+                                    ))}
+                                  </optgroup>
+                                ))}
+                              </select>
+                              <button
+                                type="button"
+                                className="auto-edit-mini-btn"
+                                disabled={!ov.sfxId || ov.sfxId === "none"}
+                                onClick={() => previewSfxSound(ov.sfxId)}
+                                title="Nghe thử SFX này"
+                              >
+                                Nghe
+                              </button>
+                            </div>
                           </div>
                         </div>
                       ))}

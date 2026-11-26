@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { getSfxById, isValidSfxId, pickDefaultOverlaySfx } from "./sfx-library";
 
 export const AUTO_EDIT_PRESETS = [
   {
@@ -34,12 +35,15 @@ export type AutoEditHighlightColor = "amber" | "emerald" | "rose" | "cyan";
 
 export const autoEditPresetSchema = z.enum(["ugc-review", "fast-tiktok", "minimal-aesthetic", "tech-unbox"]);
 export const autoEditAspectSchema = z.enum(["9:16", "16:9", "1:1"]);
+export const autoEditVerticalFitSchema = z.enum(["auto", "blur-fit", "fill-crop"]);
+export type AutoEditVerticalFit = z.infer<typeof autoEditVerticalFitSchema>;
 
 export const autoEditOptionsSchema = z.object({
   title: z.string().trim().max(180).default(""),
   sourceUrl: z.string().trim().max(1_000).default(""),
   preset: autoEditPresetSchema.default("ugc-review"),
   aspectRatio: autoEditAspectSchema.default("9:16"),
+  verticalFit: autoEditVerticalFitSchema.default("auto"),
   language: z.enum(["vi", "en"]).default("vi"),
   productName: z.string().trim().max(160).default(""),
   productHighlights: z.string().trim().max(2_000).default(""),
@@ -47,6 +51,8 @@ export const autoEditOptionsSchema = z.object({
   manualTranscript: z.string().trim().max(24_000).default(""),
   silenceThresholdMs: z.number().int().min(250).max(2_000).default(450),
   voiceTargetPeakDb: z.number().min(-3).max(-0.3).default(-1.2),
+  autoSfx: z.boolean().default(true),
+  sfxVolumeDb: z.number().min(-26).max(-4).default(-8.5),
   safeZoneGuard: z.boolean().default(true),
 });
 
@@ -125,9 +131,21 @@ export type AutoEditOverlay = {
   priceTag?: string;
   emoji?: string;
   accentColor?: AutoEditHighlightColor;
+  /** ID from assets/sfx/catalog.json, or "none" to mute SFX on this overlay. */
+  sfxId?: string;
+  sfxVolumeDb?: number;
   /** Optional safe HyperFrames HTML fragment using CSS var(--hf-progress) for deterministic frame seeking. */
   hyperframesHtml?: string;
   hyperframesCss?: string;
+};
+
+export type AutoEditSfxCue = {
+  id: string;
+  sfxId: string;
+  anchorSegmentId?: string;
+  offsetMs: number;
+  volumeDb?: number;
+  note?: string;
 };
 
 export type AutoEditEdl = {
@@ -140,6 +158,7 @@ export type AutoEditEdl = {
   captionStyle: "karaoke-pop" | "clean-pill" | "minimal-line";
   segments: AutoEditSegment[];
   overlays: AutoEditOverlay[];
+  sfxCues?: AutoEditSfxCue[];
   keywordHighlights: AutoEditKeywordHighlight[];
   directorNotes: string[];
 };
@@ -224,6 +243,17 @@ export type ComputedTimelineOverlay = AutoEditOverlay & {
   timelineEndMs: number;
 };
 
+export type ComputedTimelineSfxEvent = {
+  id: string;
+  sfxId: string;
+  filename: string;
+  label: string;
+  timelineStartMs: number;
+  durationMs: number;
+  peakDb: number;
+  volumeDb: number;
+};
+
 export type ComputedAutoEditTimeline = {
   fps: number;
   width: number;
@@ -235,6 +265,7 @@ export type ComputedAutoEditTimeline = {
   keptSegments: ComputedTimelineSegment[];
   words: ComputedTimelineWord[];
   overlays: ComputedTimelineOverlay[];
+  sfxEvents: ComputedTimelineSfxEvent[];
 };
 
 export const agentAutoEditGenerationSchema = z.object({
@@ -270,8 +301,18 @@ export const agentAutoEditGenerationSchema = z.object({
     priceTag: z.string().trim().max(48).optional(),
     emoji: z.string().trim().max(16).optional(),
     accentColor: z.enum(["amber", "emerald", "rose", "cyan"]).optional().default("amber"),
+    sfxId: z.string().trim().max(80).optional(),
+    sfxVolumeDb: z.number().min(-32).max(-6).optional(),
     hyperframesHtml: z.string().max(4_000).optional(),
     hyperframesCss: z.string().max(4_000).optional(),
+  })).max(60).default([]),
+  sfxCues: z.array(z.object({
+    id: z.string().trim().min(1).max(64).optional(),
+    sfxId: z.string().trim().min(1).max(80),
+    anchorSegmentId: z.string().trim().max(64).optional(),
+    offsetMs: z.number().min(0).max(600_000).default(0),
+    volumeDb: z.number().min(-32).max(-6).optional(),
+    note: z.string().trim().max(160).optional(),
   })).max(60).default([]),
   keywordHighlights: z.array(z.object({
     word: z.string().trim().min(1).max(48),
@@ -336,6 +377,7 @@ export function computeAutoEditTimeline(
   words: readonly AutoEditWord[],
   aspectRatio: AutoEditAspectRatio,
   rawDurationMsInput?: number,
+  sfxOptions?: { autoSfx?: boolean; sfxVolumeDb?: number },
 ): ComputedAutoEditTimeline {
   const { width, height, fps } = autoEditDimensions(aspectRatio);
   let cursorMs = 0;
@@ -420,6 +462,87 @@ export function computeAutoEditTimeline(
 
   computedOverlays.sort((a, b) => a.timelineStartMs - b.timelineStartMs);
 
+  const sfxEnabled = sfxOptions?.autoSfx !== false;
+  const baseSfxDb = Math.min(-4, Math.max(-26, sfxOptions?.sfxVolumeDb ?? -8.5));
+  const rawSfxCandidates: ComputedTimelineSfxEvent[] = [];
+
+  if (sfxEnabled && totalDurationMs > 0) {
+    // 1. Overlay-bound SFX (Hook Banner, HyperFrames Product Cards, Callouts, Emojis)
+    for (const ov of computedOverlays) {
+      if (ov.sfxId === "none") continue;
+      const entry = getSfxById(ov.sfxId);
+      if (!entry) continue;
+      rawSfxCandidates.push({
+        id: `sfx_ov_${ov.id}`,
+        sfxId: entry.id,
+        filename: entry.filename,
+        label: entry.label,
+        timelineStartMs: ov.timelineStartMs,
+        durationMs: Math.min(entry.durationMs, 2_400),
+        peakDb: entry.peakDb,
+        volumeDb: ov.sfxVolumeDb ?? baseSfxDb,
+      });
+    }
+
+    // 2. Explicit standalone Agent SFX cues
+    for (let i = 0; i < (edl.sfxCues || []).length; i++) {
+      const cue = edl.sfxCues![i];
+      const entry = getSfxById(cue.sfxId);
+      if (!entry) continue;
+      let startMs = Math.max(0, Math.round(cue.offsetMs));
+      if (cue.anchorSegmentId) {
+        const anchor = segmentById.get(cue.anchorSegmentId);
+        if (!anchor) continue;
+        startMs = anchor.timelineStartMs + Math.max(0, Math.round(cue.offsetMs));
+      }
+      if (startMs >= totalDurationMs) continue;
+      rawSfxCandidates.push({
+        id: cue.id || `sfx_cue_${i + 1}`,
+        sfxId: entry.id,
+        filename: entry.filename,
+        label: entry.label,
+        timelineStartMs: startMs,
+        durationMs: Math.min(entry.durationMs, 2_400),
+        peakDb: entry.peakDb,
+        volumeDb: cue.volumeDb ?? baseSfxDb,
+      });
+    }
+
+    // 3. Subtle transition whoosh on spaced jump-cut punch-in zooms (>= 5s apart)
+    const subtleWhoosh = getSfxById("whoosh-soft");
+    if (subtleWhoosh) {
+      let lastTransitionMs = -5_000;
+      for (let i = 1; i < keptSegments.length; i++) {
+        const prev = keptSegments[i - 1];
+        const cur = keptSegments[i];
+        if (Math.abs(cur.zoom - prev.zoom) >= 0.08 && cur.timelineStartMs - lastTransitionMs >= 5_500) {
+          rawSfxCandidates.push({
+            id: `sfx_zoom_${cur.id}`,
+            sfxId: subtleWhoosh.id,
+            filename: subtleWhoosh.filename,
+            label: subtleWhoosh.label,
+            timelineStartMs: Math.max(0, cur.timelineStartMs - 60),
+            durationMs: Math.min(subtleWhoosh.durationMs, 900),
+            peakDb: subtleWhoosh.peakDb,
+            volumeDb: Math.max(-30, baseSfxDb - 3),
+          });
+          lastTransitionMs = cur.timelineStartMs;
+        }
+      }
+    }
+  }
+
+  rawSfxCandidates.sort((a, b) => a.timelineStartMs - b.timelineStartMs);
+  const sfxEvents: ComputedTimelineSfxEvent[] = [];
+  for (const candidate of rawSfxCandidates) {
+    // Prevent overlapping SFX clutter within 240ms
+    const prev = sfxEvents[sfxEvents.length - 1];
+    if (prev && Math.abs(candidate.timelineStartMs - prev.timelineStartMs) < 240) {
+      continue;
+    }
+    sfxEvents.push(candidate);
+  }
+
   return {
     fps,
     width,
@@ -431,6 +554,7 @@ export function computeAutoEditTimeline(
     keptSegments,
     words: mappedWords,
     overlays: computedOverlays,
+    sfxEvents,
   };
 }
 
@@ -585,6 +709,11 @@ export function normalizeAgentAutoEditEdl(
         ? images[0].id
         : undefined;
     const resolvedAnchor = ov.anchorSegmentId && keptIds.has(ov.anchorSegmentId) ? ov.anchorSegmentId : undefined;
+    const chosenSfx = ov.sfxId && isValidSfxId(ov.sfxId)
+      ? ov.sfxId
+      : options.autoSfx !== false
+        ? pickDefaultOverlaySfx(ov, index, options.preset)
+        : undefined;
     return {
       id: ov.id || `ov_${String(index + 1).padStart(2, "0")}`,
       kind: ov.kind,
@@ -599,6 +728,8 @@ export function normalizeAgentAutoEditEdl(
       priceTag: ov.priceTag,
       emoji: ov.emoji,
       accentColor: ov.accentColor || "amber",
+      sfxId: chosenSfx,
+      sfxVolumeDb: ov.sfxVolumeDb,
       hyperframesHtml: sanitized.html,
       hyperframesCss: sanitized.css,
     };
@@ -617,8 +748,20 @@ export function normalizeAgentAutoEditEdl(
       subtitle: parsed.hookSubtext || undefined,
       emoji: parsed.hookEmoji || "🔥",
       accentColor: options.preset === "minimal-aesthetic" ? "cyan" : "amber",
+      sfxId: options.autoSfx !== false ? pickDefaultOverlaySfx({ kind: "hook_banner" }, 0, options.preset) : undefined,
     });
   }
+
+  const sfxCues: AutoEditSfxCue[] = (parsed.sfxCues || [])
+    .filter((cue) => isValidSfxId(cue.sfxId) && cue.sfxId !== "none")
+    .map((cue, idx) => ({
+      id: cue.id || `sfx_${String(idx + 1).padStart(2, "0")}`,
+      sfxId: cue.sfxId.trim().toLowerCase(),
+      anchorSegmentId: cue.anchorSegmentId && keptIds.has(cue.anchorSegmentId) ? cue.anchorSegmentId : undefined,
+      offsetMs: Math.max(0, Math.round(cue.offsetMs)),
+      volumeDb: cue.volumeDb,
+      note: cue.note,
+    }));
 
   return {
     schema: "auto-edit-edl.v1",
@@ -630,6 +773,7 @@ export function normalizeAgentAutoEditEdl(
     captionStyle: parsed.captionStyle,
     segments: finalSegments,
     overlays,
+    sfxCues,
     keywordHighlights: parsed.keywordHighlights,
     directorNotes: parsed.directorNotes,
   };

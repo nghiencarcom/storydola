@@ -1,9 +1,5 @@
 import { validateEpisode, type ImportEpisode } from "../../../../lib/episode-script-validation";
-import { after } from "next/server";
-import { getCurrentUserId } from "../../../../lib/auth-server";
-import { readMaiVideoAuthCookie } from "../../../../lib/maivideo-auth-shared";
 import { reconcileEpisodeLocations } from "../../../../lib/episode-locations";
-import { ensureLocationReference } from "../../../../lib/location-reference-generation";
 import { NextResponse } from "next/server";
 import { claimProjectChunkRun, isProjectChunkRunActive, releaseProjectChunkRun } from "../../../../lib/chunk-generation-lock";
 import { buildContinuityQaReport } from "../../../../lib/continuity-qa";
@@ -190,8 +186,6 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       return errorResponse(cause instanceof Error ? cause.message : "Location Bible không hợp lệ.");
     }
   }
-  const userId = await getCurrentUserId();
-  const providerAuthToken = readMaiVideoAuthCookie(request.headers.get("cookie"));
   const pristine = isPristine(existing);
   if (pristine && !bundle && (parsedEpisodes[0].chunkId !== "A01" || parsedEpisodes[0].sceneStart !== 1)) {
     return errorResponse("Project mới chỉ nhận tập đầu tiên A01 bắt đầu từ S001. Để nhập tập tiếp theo, hãy thêm tập tương ứng trong project hoặc nhập gói series có đủ các tập trước.", 409);
@@ -276,10 +270,6 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
           episode.warnings.push(...reconciled.warnings);
           for (const id of reconciled.usedIds) {
             locationIds.add(id);
-            const location = project.locations.find(item => item.id === id);
-            if (location && !location.referenceImagePath && location.imageGeneration?.status !== "running") {
-              location.imageGeneration = { ...location.imageGeneration, status: "queued", updatedAt: timestamp };
-            }
           }
           addedLocations += reconciled.addedIds.length;
         }
@@ -401,14 +391,6 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       };
     });
 
-    if (updated.pendingLocationIds.length) {
-      after(async () => {
-        for (const id of updated.pendingLocationIds) {
-          try { await ensureLocationReference(userId, slug, id, providerAuthToken); }
-          catch { /* Error/status is persisted per location; importing the script remains successful. */ }
-        }
-      });
-    }
     return NextResponse.json({ ok: true, locationReferences: { added: updated.addedLocations, pending: updated.pendingLocationIds.length }, warnings: parsedEpisodes.flatMap(episode => episode.warnings), project: updated.project, imported: updated.imported, publishingImported: updated.publishingImported, replaced: replace ? conflicts.map((item) => item.chunkId) : [] });
   } catch (cause) {
     const code = cause instanceof Error ? cause.message : "SCRIPT_IMPORT_FAILED";

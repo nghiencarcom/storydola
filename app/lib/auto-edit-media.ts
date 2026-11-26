@@ -711,20 +711,36 @@ export function parseYoutubeJson3Words(payload: unknown, clipId: string): AutoEd
 
     for (let i = 0; i < validSegs.length; i++) {
       const cur = validSegs[i];
-      const nextOffset = i + 1 < validSegs.length ? validSegs[i + 1].offsetMs : durMs;
-      const startMs = Math.max(0, Math.round(baseMs + cur.offsetMs));
-      const endMs = Math.max(startMs + 60, Math.round(baseMs + Math.max(cur.offsetMs + 80, nextOffset)));
-      for (const tok of cur.text.split(/\s+/u).filter(Boolean)) {
+      const nextOffset = i + 1 < validSegs.length ? validSegs[i + 1].offsetMs : Math.min(durMs, cur.offsetMs + 480);
+      const spanStartMs = Math.max(0, Math.round(baseMs + cur.offsetMs));
+      const spanEndMs = Math.max(spanStartMs + 60, Math.round(baseMs + Math.max(cur.offsetMs + 80, nextOffset)));
+      const tokens = cur.text.split(/\s+/u).filter(Boolean);
+      const step = (spanEndMs - spanStartMs) / Math.max(1, tokens.length);
+      for (let t = 0; t < tokens.length; t++) {
+        const wStart = Math.round(spanStartMs + t * step);
+        const wEnd = Math.round(Math.max(wStart + 45, spanStartMs + (t + 1) * step));
         words.push({
           id: `w_${clipId}_${counter++}`,
           clipId,
-          text: tok,
-          startMs,
-          endMs,
+          text: tokens[t],
+          startMs: wStart,
+          endMs: wEnd,
           confidence: 0.91,
-          filler: isLikelyFillerWord(tok),
+          filler: isLikelyFillerWord(tokens[t]),
         });
       }
+    }
+  }
+
+  // Eliminate roll-up caption overlaps so every word ends cleanly before the next word starts
+  words.sort((a, b) => a.startMs - b.startMs);
+  for (let i = 0; i < words.length - 1; i++) {
+    const nextStart = words[i + 1].startMs;
+    if (words[i].endMs > nextStart) {
+      words[i].endMs = Math.max(words[i].startMs + 40, nextStart - 10);
+    }
+    if (words[i].endMs - words[i].startMs > 700) {
+      words[i].endMs = words[i].startMs + 700;
     }
   }
   return words;
@@ -747,6 +763,8 @@ export async function downloadUrlForAutoEdit(
   }
 
   const ytDlp = process.env.STORYAI_YT_DLP_PATH?.trim() || process.env.VIBE_TOOL_YT_DLP_PATH?.trim() || "yt-dlp";
+  const ffmpegDir = path.dirname(autoEditFfmpeg());
+  const ffmpegLocArgs = ffmpegDir && ffmpegDir !== "." ? ["--ffmpeg-location", ffmpegDir] : [];
   const subLang = language === "en" ? "en,en.*" : "vi,vi.*";
   const outputTemplate = path.join(videosDir, "clip_01.%(ext)s");
 
@@ -756,11 +774,12 @@ export async function downloadUrlForAutoEdit(
       [
         "--ignore-config",
         "--no-playlist",
+        ...ffmpegLocArgs,
         "--js-runtimes", `node:${process.execPath}`,
         "--socket-timeout", "25",
         "--retries", "2",
         "--match-filter", "!is_live",
-        "-f", "b[ext=mp4][height<=?720]/bv*[ext=mp4][height<=?720]+ba[ext=m4a]/b[height<=?720]",
+        "-f", "bv*[ext=mp4][height<=?1080]+ba[ext=m4a]/b[ext=mp4][height<=?1080]/bv*[height<=?1080]+ba/b[height<=?1080]",
         "--merge-output-format", "mp4",
         "--write-auto-subs",
         "--write-subs",

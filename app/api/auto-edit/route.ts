@@ -4,7 +4,13 @@ import path from "node:path";
 import { after, NextResponse } from "next/server";
 import { z } from "zod";
 import { getCurrentUserId } from "../../lib/auth-server";
-import { autoEditOptionsSchema, sanitizeHyperframesMarkup, type AutoEditEdl } from "../../lib/auto-edit";
+import {
+  autoEditAspectSchema,
+  autoEditOptionsSchema,
+  autoEditVerticalFitSchema,
+  sanitizeHyperframesMarkup,
+  type AutoEditEdl,
+} from "../../lib/auto-edit";
 import { downloadUrlForAutoEdit } from "../../lib/auto-edit-media";
 import { renderAutoEditMp4 } from "../../lib/auto-edit-render";
 import { autoEditJobMediaDir, autoEditOwnerFolder } from "../../lib/auto-edit-upload";
@@ -59,9 +65,19 @@ const edlPatchSchema = z.object({
     priceTag: z.string().trim().max(48).optional(),
     emoji: z.string().trim().max(16).optional(),
     accentColor: z.enum(["amber", "emerald", "rose", "cyan"]).optional(),
+    sfxId: z.string().trim().max(80).optional(),
+    sfxVolumeDb: z.number().min(-32).max(-6).optional(),
     hyperframesHtml: z.string().max(4_000).optional(),
     hyperframesCss: z.string().max(4_000).optional(),
   })).max(80),
+  sfxCues: z.array(z.object({
+    id: z.string().trim().min(1).max(64),
+    sfxId: z.string().trim().min(1).max(80),
+    anchorSegmentId: z.string().trim().max(64).optional(),
+    offsetMs: z.number().min(0).max(600_000),
+    volumeDb: z.number().min(-32).max(-6).optional(),
+    note: z.string().max(200).optional(),
+  })).max(80).optional(),
   keywordHighlights: z.array(z.object({
     word: z.string().trim().min(1).max(48),
     color: z.enum(["amber", "emerald", "rose", "cyan"]),
@@ -69,6 +85,15 @@ const edlPatchSchema = z.object({
   })).max(50),
   directorNotes: z.array(z.string().max(350)).max(20),
 });
+
+const optionsPatchSchema = z.object({
+  aspectRatio: autoEditAspectSchema.optional(),
+  verticalFit: autoEditVerticalFitSchema.optional(),
+  safeZoneGuard: z.boolean().optional(),
+  voiceTargetPeakDb: z.number().min(-3).max(-0.3).optional(),
+  autoSfx: z.boolean().optional(),
+  sfxVolumeDb: z.number().min(-26).max(-4).optional(),
+}).optional();
 
 export async function GET(request: Request) {
   const owner = await getCurrentUserId().catch(() => null);
@@ -129,8 +154,9 @@ export async function PATCH(request: Request) {
 
   if (body.action === "update-edl") {
     const parsed = edlPatchSchema.safeParse(body.edl);
-    if (!parsed.success) {
-      return respond({ message: "Dữ liệu timeline chỉnh sửa không hợp lệ." }, 400);
+    const parsedOpts = optionsPatchSchema.safeParse(body.optionsPatch);
+    if (!parsed.success || !parsedOpts.success) {
+      return respond({ message: "Dữ liệu timeline hoặc tuỳ chọn khung hình không hợp lệ." }, 400);
     }
     const cleanEdl: AutoEditEdl = {
       ...parsed.data,
@@ -139,7 +165,7 @@ export async function PATCH(request: Request) {
         return { ...ov, hyperframesHtml: sanitized.html, hyperframesCss: sanitized.css };
       }),
     };
-    const updated = await updateAutoEditJobEdl(owner, id, cleanEdl);
+    const updated = await updateAutoEditJobEdl(owner, id, cleanEdl, parsedOpts.data);
     if (!updated) return respond({ message: "Không tìm thấy job Auto Edit." }, 404);
     return respond({ job: updated });
   }
@@ -162,10 +188,16 @@ export async function PATCH(request: Request) {
     if (!job || !job.edl) return respond({ message: "Bản dựng chưa sẵn sàng để xuất MP4." }, 409);
     if (job.status === "rendering") return respond({ message: "Đang xuất MP4 cho bản dựng này." }, 409);
 
+    const parsedOpts = optionsPatchSchema.safeParse(body.optionsPatch);
+    const mergedOptions = parsedOpts.success && parsedOpts.data
+      ? { ...job.options, ...parsedOpts.data }
+      : job.options;
+
     await saveAutoEditJobState(autoEditOwnerFolder(owner), {
       ...job,
+      options: mergedOptions,
       status: "rendering",
-      progress: "Đang khởi chạy tiến trình xuất MP4 (FFmpeg + HyperFrames)...",
+      progress: `Đang khởi chạy tiến trình xuất MP4 tỷ lệ ${mergedOptions.aspectRatio} (FFmpeg + HyperFrames)...`,
       render: { status: "rendering", updatedAt: new Date().toISOString() },
     });
 

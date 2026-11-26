@@ -36,7 +36,7 @@ for (const template of [initial, episode]) {
   assert(!guide.dialogue.includes('scene-level target is at most 3 words per second'));
   assert(guide.episode_locations.includes('never to meet a count'));
   assert(guide.episode_locations.includes('top-level location_bible'));
-  assert(guide.episode_locations.includes('starts generating missing location reference images'));
+  assert(guide.episode_locations.includes('without auto-generating images on import'));
   assert(guide.natural_timing.includes('not equal divisions'));
   assert(guide.natural_timing.includes('do not randomize timestamps arbitrarily'));
   assert(guide.camera_precision.includes('one concrete target'));

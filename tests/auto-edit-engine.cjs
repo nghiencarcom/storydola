@@ -18,7 +18,10 @@ function loadTsModule(relPath, mocks = {}) {
   const mod = { exports: {} };
   const customRequire = (specifier) => {
     if (specifier in mocks) return mocks[specifier];
-    if (specifier.startsWith("./")) {
+    if (specifier.endsWith(".json")) {
+      return require(path.resolve(path.dirname(fullPath), specifier));
+    }
+    if (specifier.startsWith("./") || specifier.startsWith("../")) {
       const targetRel = path.relative(
         path.join(__dirname, ".."),
         path.resolve(path.dirname(fullPath), `${specifier}.ts`),
@@ -171,6 +174,62 @@ const autoEditMedia = loadTsModule("app/lib/auto-edit-media.ts");
   const levels = autoEditMedia.measurePcmVoiceLevelsDb(pcm, sampleRate);
   assert.ok(levels.maxVolumeDb <= 0 && levels.maxVolumeDb >= -3, `Expected maxVolumeDb in [-3, 0], got ${levels.maxVolumeDb}`);
   assert.ok(levels.speechPeakDb <= 0 && levels.speechPeakDb >= -3, `Expected speechPeakDb in [-3, 0], got ${levels.speechPeakDb}`);
+}
+
+// 5. Verify 59 Google Drive SFX catalog & automatic timeline SFX placement
+{
+  const sfxLib = loadTsModule("app/lib/sfx-library.ts");
+  assert.equal(sfxLib.SFX_CATALOG.length, 59);
+  for (const item of sfxLib.SFX_CATALOG) {
+    const fileOnDisk = path.join(__dirname, "..", "assets", "sfx", item.filename);
+    assert.ok(fs.existsSync(fileOnDisk), `Missing SFX file on disk: ${item.filename}`);
+  }
+
+  const videos = [{ id: "clip_01", filename: "raw.mp4", extension: ".mp4", size: 1000, order: 0, durationMs: 10000 }];
+  const images = [{ id: "img_01", filename: "sp.png", extension: ".png", size: 500, width: 800, height: 800, label: "SP" }];
+  const options = autoEdit.autoEditOptionsSchema.parse({ productName: "SP", autoSfx: true, sfxVolumeDb: -16 });
+  const edl = autoEdit.normalizeAgentAutoEditEdl(
+    {
+      title: "Test SFX",
+      summary: "SFX check",
+      hookHeadline: "HOOK SFX",
+      captionStyle: "karaoke-pop",
+      segments: [{ id: "seg_01", clipId: "clip_01", sourceStartMs: 0, sourceEndMs: 8000, keep: true, zoom: 1 }],
+      overlays: [
+        { id: "ov_p1", kind: "product_card", anchorSegmentId: "seg_01", offsetMs: 2000, durationMs: 2500, imageId: "img_01", title: "Giá 199K", priceTag: "199K" },
+      ],
+      sfxCues: [
+        { id: "cue_1", sfxId: "tada", anchorSegmentId: "seg_01", offsetMs: 6500 },
+      ],
+      keywordHighlights: [],
+      directorNotes: [],
+    },
+    videos,
+    images,
+    [],
+    [],
+    options,
+  );
+
+  const timeline = autoEdit.computeAutoEditTimeline(edl, [], "9:16", 10000, { autoSfx: true, sfxVolumeDb: -8.5 });
+  assert.ok(timeline.sfxEvents.length >= 3, `Expected >= 3 SFX events (hook + product card + tada cue), got ${timeline.sfxEvents.length}`);
+  assert.ok(timeline.sfxEvents.some((e) => e.sfxId === "tada" && e.timelineStartMs === 6500));
+
+  // Verify YouTube json3 roll-up caption parser produces zero overlapping word timestamps
+  const sampleJson3 = {
+    events: [
+      { tStartMs: 1800, dDurationMs: 5600, segs: [{ utf8: "Hướng dẫn ", tOffsetMs: 0 }, { utf8: "mọi người", tOffsetMs: 900 }] },
+      { tStartMs: 4900, dDurationMs: 4300, segs: [{ utf8: "cài đặt ", tOffsetMs: 0 }, { utf8: "StoryAI", tOffsetMs: 600 }] },
+    ],
+  };
+  const ytWords = autoEditMedia.parseYoutubeJson3Words(sampleJson3, "clip_01");
+  assert.ok(ytWords.length >= 4);
+  for (let i = 1; i < ytWords.length; i++) {
+    assert.ok(
+      ytWords[i].startMs >= ytWords[i - 1].endMs,
+      `Word overlap detected between ${ytWords[i - 1].text}[${ytWords[i - 1].endMs}] and ${ytWords[i].text}[${ytWords[i].startMs}]`,
+    );
+  }
 }
 
 console.log("auto-edit-engine tests passed!");

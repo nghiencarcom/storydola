@@ -300,17 +300,17 @@ async function main() {
           purpose: "Cú bật lò xo hài hước", action: "Barnaby bật lộn nhào vào đống cát",
           characters: ["Barnaby"], location: "Canyon",
           dialogueMode: "visual_led",
-          actingBeat: "@Barnaby freezes then tumbles in comic shock.",
-          blocking: "@Barnaby center-right rebounding screen-left.",
+          actingBeat: "Barnaby freezes then tumbles in comic shock.",
+          blocking: "Barnaby center-right rebounding screen-left.",
           shotSize: "Low-Angle Medium Shot",
           cameraMovement: "22 Push-In + Rapid Pull-Back",
-          eyelineAction: "@Barnaby squints at latch then eyes pop wide.",
+          eyelineAction: "Barnaby squints at latch then eyes pop wide.",
           sfx: "0.0-1.2s comedic pause; 1.9s spring boing; 2.8s sand thump.",
           vfx: "1.9-2.7s spiral golden dust burst and brass coil motion trail fading by 2.7s.",
           continuityIn: "Barnaby rón rén bên thùng", continuityOut: "Barnaby ngồi choáng trên cát",
-          imagePrompt: "@Barnaby leans on tiptoe pressing a trembling crate latch on Canyon, 9:16 Stylized 3D.",
+          imagePrompt: "Barnaby leans on tiptoe pressing a trembling crate latch on Canyon, 9:16 Stylized 3D.",
           videoPrompt: badSlapstick
-            ? "0.0-5.0s: Crate lid hits Barnaby violently onto the sand."
+            ? "0.0-2.0s: Fast cut to crate lid as Barnaby watches. 2.0-5.0s: Crate lid bounces Barnaby onto the sand."
             : badTimestampAndSpeech
               ? "10-20: Barnaby tumbles onto sand and speaks loudly."
               : "PRIMARY CAMERA COMBO: 22 Push-In + Rapid Pull-Back. 0.0-1.8s: Barnaby freezes in a silent pause and does not speak. 1.9-5.0s: Crate lid springs open, launching Barnaby bouncing playfully onto a soft sand dune, dizzy without talking.",
@@ -329,7 +329,8 @@ async function main() {
   assert.equal(funnyAttempt, 3);
   assert.match(funnyObserved[0], /TỰ ĐỘNG PHÁT HIỆN NGUỒN KHÔNG HỘI THOẠI/);
   assert.match(funnyObserved[0], /peaksAt/);
-  assert.match(funnyObserved[1], /từ nhạy cảm/);
+  assert.match(funnyObserved[0], /SPOILER FRAME-0/);
+  assert.match(funnyObserved[1], /lệnh cắt cảnh/);
   assert.match(funnyObserved[2], /mốc thời gian trong videoPrompt sai/);
   const funnySlug = await projectModule.createRemakeProject("test-user-3", funnyJob);
   assert.ok(funnySlug.startsWith("remake-"));

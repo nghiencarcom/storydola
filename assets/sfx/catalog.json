@@ -1,0 +1,537 @@
+{
+  "version": 1,
+  "count": 59,
+  "items": [
+    {
+      "id": "boing",
+      "filename": "boing.mp3",
+      "label": "Boing",
+      "category": "reaction_glitch",
+      "durationMs": 940,
+      "peakDb": -3.9,
+      "usage": "Phản ứng cảm xúc bất ngờ (Wow/Funny), cảnh lỗi sai (Buzzer) hoặc chuyển cảnh Glitch"
+    },
+    {
+      "id": "button-press",
+      "filename": "button-press.mp3",
+      "label": "Button Press",
+      "category": "ui_tech",
+      "durationMs": 860,
+      "peakDb": -0.2,
+      "usage": "Thao tác bấm chuột, gõ phím, chụp màn hình, đếm nhịp hoặc hướng dẫn phần mềm/công nghệ"
+    },
+    {
+      "id": "buzzer",
+      "filename": "buzzer.mp3",
+      "label": "Buzzer",
+      "category": "reaction_glitch",
+      "durationMs": 1780,
+      "peakDb": 0.0,
+      "usage": "Phản ứng cảm xúc bất ngờ (Wow/Funny), cảnh lỗi sai (Buzzer) hoặc chuyển cảnh Glitch"
+    },
+    {
+      "id": "camera-flash-1",
+      "filename": "camera-flash-1.wav",
+      "label": "Camera Flash 1",
+      "category": "ui_tech",
+      "durationMs": 1240,
+      "peakDb": -0.2,
+      "usage": "Thao tác bấm chuột, gõ phím, chụp màn hình, đếm nhịp hoặc hướng dẫn phần mềm/công nghệ"
+    },
+    {
+      "id": "camera-flash",
+      "filename": "camera-flash.mp3",
+      "label": "Camera Flash",
+      "category": "ui_tech",
+      "durationMs": 6140,
+      "peakDb": -0.2,
+      "usage": "Thao tác bấm chuột, gõ phím, chụp màn hình, đếm nhịp hoặc hướng dẫn phần mềm/công nghệ"
+    },
+    {
+      "id": "camera-shutter",
+      "filename": "camera-shutter.mp3",
+      "label": "Camera Shutter",
+      "category": "ui_tech",
+      "durationMs": 340,
+      "peakDb": 0.0,
+      "usage": "Thao tác bấm chuột, gõ phím, chụp màn hình, đếm nhịp hoặc hướng dẫn phần mềm/công nghệ"
+    },
+    {
+      "id": "capcut-keyboard-typing",
+      "filename": "capcut-keyboard-typing.mp3",
+      "label": "Capcut Keyboard Typing",
+      "category": "ui_tech",
+      "durationMs": 14050,
+      "peakDb": 0.0,
+      "usage": "Thao tác bấm chuột, gõ phím, chụp màn hình, đếm nhịp hoặc hướng dẫn phần mềm/công nghệ"
+    },
+    {
+      "id": "chime",
+      "filename": "chime.mp3",
+      "label": "Chime",
+      "category": "highlight_pop",
+      "durationMs": 1930,
+      "peakDb": -7.9,
+      "usage": "Nảy chữ Karaoke từ khoá ăn tiền, hiện giá bán, ưu đãi, CTA hoặc Emoji"
+    },
+    {
+      "id": "computer-data-processing-sci-fi",
+      "filename": "computer-data-processing-sci-fi.mp3",
+      "label": "Computer Data Processing Sci Fi",
+      "category": "ui_tech",
+      "durationMs": 14240,
+      "peakDb": -4.8,
+      "usage": "Thao tác bấm chuột, gõ phím, chụp màn hình, đếm nhịp hoặc hướng dẫn phần mềm/công nghệ"
+    },
+    {
+      "id": "digital-tv-glitch",
+      "filename": "digital-tv-glitch.mp3",
+      "label": "Digital Tv Glitch",
+      "category": "reaction_glitch",
+      "durationMs": 1060,
+      "peakDb": -5.3,
+      "usage": "Phản ứng cảm xúc bất ngờ (Wow/Funny), cảnh lỗi sai (Buzzer) hoặc chuyển cảnh Glitch"
+    },
+    {
+      "id": "ding",
+      "filename": "ding.mp3",
+      "label": "Ding",
+      "category": "highlight_pop",
+      "durationMs": 2980,
+      "peakDb": -6.8,
+      "usage": "Nảy chữ Karaoke từ khoá ăn tiền, hiện giá bán, ưu đãi, CTA hoặc Emoji"
+    },
+    {
+      "id": "elevator-bell",
+      "filename": "elevator-bell.wav",
+      "label": "Elevator Bell",
+      "category": "highlight_pop",
+      "durationMs": 1700,
+      "peakDb": -6.1,
+      "usage": "Nảy chữ Karaoke từ khoá ăn tiền, hiện giá bán, ưu đãi, CTA hoặc Emoji"
+    },
+    {
+      "id": "fast-glitch",
+      "filename": "fast-glitch.mp3",
+      "label": "Fast Glitch",
+      "category": "reaction_glitch",
+      "durationMs": 1060,
+      "peakDb": -5.1,
+      "usage": "Phản ứng cảm xúc bất ngờ (Wow/Funny), cảnh lỗi sai (Buzzer) hoặc chuyển cảnh Glitch"
+    },
+    {
+      "id": "funny",
+      "filename": "funny.mp3",
+      "label": "Funny",
+      "category": "reaction_glitch",
+      "durationMs": 2590,
+      "peakDb": 0.0,
+      "usage": "Phản ứng cảm xúc bất ngờ (Wow/Funny), cảnh lỗi sai (Buzzer) hoặc chuyển cảnh Glitch"
+    },
+    {
+      "id": "iphone-typing",
+      "filename": "iphone-typing.mp3",
+      "label": "Iphone Typing",
+      "category": "ui_tech",
+      "durationMs": 16870,
+      "peakDb": -9.0,
+      "usage": "Thao tác bấm chuột, gõ phím, chụp màn hình, đếm nhịp hoặc hướng dẫn phần mềm/công nghệ"
+    },
+    {
+      "id": "keyboard-enter-key",
+      "filename": "keyboard-enter-key.mp3",
+      "label": "Keyboard Enter Key",
+      "category": "ui_tech",
+      "durationMs": 5280,
+      "peakDb": -0.6,
+      "usage": "Thao tác bấm chuột, gõ phím, chụp màn hình, đếm nhịp hoặc hướng dẫn phần mềm/công nghệ"
+    },
+    {
+      "id": "loud-whip",
+      "filename": "loud-whip.mp3",
+      "label": "Loud Whip",
+      "category": "hook_impact",
+      "durationMs": 1260,
+      "peakDb": -1.7,
+      "usage": "Điểm nhấn mở đầu Hook 0–3s, cú bẻ lái bất ngờ (Pattern Interrupt) hoặc nhấn mạnh cảnh quan trọng"
+    },
+    {
+      "id": "macbook-keyboard-typing",
+      "filename": "macbook-keyboard-typing.mp3",
+      "label": "Macbook Keyboard Typing",
+      "category": "ui_tech",
+      "durationMs": 21160,
+      "peakDb": -2.5,
+      "usage": "Thao tác bấm chuột, gõ phím, chụp màn hình, đếm nhịp hoặc hướng dẫn phần mềm/công nghệ"
+    },
+    {
+      "id": "money-counter",
+      "filename": "money-counter.mp3",
+      "label": "Money Counter",
+      "category": "highlight_pop",
+      "durationMs": 4940,
+      "peakDb": -15.4,
+      "usage": "Nảy chữ Karaoke từ khoá ăn tiền, hiện giá bán, ưu đãi, CTA hoặc Emoji"
+    },
+    {
+      "id": "money",
+      "filename": "money.mp3",
+      "label": "Money",
+      "category": "highlight_pop",
+      "durationMs": 2480,
+      "peakDb": -4.9,
+      "usage": "Nảy chữ Karaoke từ khoá ăn tiền, hiện giá bán, ưu đãi, CTA hoặc Emoji"
+    },
+    {
+      "id": "mouse-clicks",
+      "filename": "mouse-clicks.mp3",
+      "label": "Mouse Clicks",
+      "category": "ui_tech",
+      "durationMs": 3290,
+      "peakDb": -7.7,
+      "usage": "Thao tác bấm chuột, gõ phím, chụp màn hình, đếm nhịp hoặc hướng dẫn phần mềm/công nghệ"
+    },
+    {
+      "id": "mouse-double-click",
+      "filename": "mouse-double-click.mp3",
+      "label": "Mouse Double Click",
+      "category": "ui_tech",
+      "durationMs": 4610,
+      "peakDb": -1.9,
+      "usage": "Thao tác bấm chuột, gõ phím, chụp màn hình, đếm nhịp hoặc hướng dẫn phần mềm/công nghệ"
+    },
+    {
+      "id": "mouse-scroll-wheel",
+      "filename": "mouse-scroll-wheel.mp3",
+      "label": "Mouse Scroll Wheel",
+      "category": "ui_tech",
+      "durationMs": 22800,
+      "peakDb": -26.3,
+      "usage": "Thao tác bấm chuột, gõ phím, chụp màn hình, đếm nhịp hoặc hướng dẫn phần mềm/công nghệ"
+    },
+    {
+      "id": "notification",
+      "filename": "notification.mp3",
+      "label": "Notification",
+      "category": "highlight_pop",
+      "durationMs": 500,
+      "peakDb": -0.9,
+      "usage": "Nảy chữ Karaoke từ khoá ăn tiền, hiện giá bán, ưu đãi, CTA hoặc Emoji"
+    },
+    {
+      "id": "office-keyboard-typing",
+      "filename": "office-keyboard-typing.mp3",
+      "label": "Office Keyboard Typing",
+      "category": "ui_tech",
+      "durationMs": 53190,
+      "peakDb": -2.5,
+      "usage": "Thao tác bấm chuột, gõ phím, chụp màn hình, đếm nhịp hoặc hướng dẫn phần mềm/công nghệ"
+    },
+    {
+      "id": "omg-wow",
+      "filename": "omg-wow.mp3",
+      "label": "Omg Wow",
+      "category": "reaction_glitch",
+      "durationMs": 6640,
+      "peakDb": 0.0,
+      "usage": "Phản ứng cảm xúc bất ngờ (Wow/Funny), cảnh lỗi sai (Buzzer) hoặc chuyển cảnh Glitch"
+    },
+    {
+      "id": "pop",
+      "filename": "pop.mp3",
+      "label": "Pop",
+      "category": "highlight_pop",
+      "durationMs": 310,
+      "peakDb": -5.0,
+      "usage": "Nảy chữ Karaoke từ khoá ăn tiền, hiện giá bán, ưu đãi, CTA hoặc Emoji"
+    },
+    {
+      "id": "reveal-bell",
+      "filename": "reveal-bell.wav",
+      "label": "Reveal Bell",
+      "category": "card_reveal",
+      "durationMs": 280,
+      "peakDb": -12.0,
+      "usage": "Hiện thẻ sản phẩm, thông số nổi bật, nhãn ưu điểm hoặc huy hiệu"
+    },
+    {
+      "id": "reveal-blip",
+      "filename": "reveal-blip.wav",
+      "label": "Reveal Blip",
+      "category": "card_reveal",
+      "durationMs": 120,
+      "peakDb": -24.8,
+      "usage": "Hiện thẻ sản phẩm, thông số nổi bật, nhãn ưu điểm hoặc huy hiệu"
+    },
+    {
+      "id": "reveal-bubble",
+      "filename": "reveal-bubble.wav",
+      "label": "Reveal Bubble",
+      "category": "card_reveal",
+      "durationMs": 220,
+      "peakDb": -16.7,
+      "usage": "Hiện thẻ sản phẩm, thông số nổi bật, nhãn ưu điểm hoặc huy hiệu"
+    },
+    {
+      "id": "reveal-chime",
+      "filename": "reveal-chime.wav",
+      "label": "Reveal Chime",
+      "category": "card_reveal",
+      "durationMs": 220,
+      "peakDb": -13.3,
+      "usage": "Hiện thẻ sản phẩm, thông số nổi bật, nhãn ưu điểm hoặc huy hiệu"
+    },
+    {
+      "id": "reveal-click",
+      "filename": "reveal-click.wav",
+      "label": "Reveal Click",
+      "category": "ui_tech",
+      "durationMs": 100,
+      "peakDb": -28.8,
+      "usage": "Thao tác bấm chuột, gõ phím, chụp màn hình, đếm nhịp hoặc hướng dẫn phần mềm/công nghệ"
+    },
+    {
+      "id": "reveal-drop",
+      "filename": "reveal-drop.wav",
+      "label": "Reveal Drop",
+      "category": "card_reveal",
+      "durationMs": 160,
+      "peakDb": -16.8,
+      "usage": "Hiện thẻ sản phẩm, thông số nổi bật, nhãn ưu điểm hoặc huy hiệu"
+    },
+    {
+      "id": "reveal-ping",
+      "filename": "reveal-ping.wav",
+      "label": "Reveal Ping",
+      "category": "card_reveal",
+      "durationMs": 180,
+      "peakDb": -18.4,
+      "usage": "Hiện thẻ sản phẩm, thông số nổi bật, nhãn ưu điểm hoặc huy hiệu"
+    },
+    {
+      "id": "reveal-pop",
+      "filename": "reveal-pop.wav",
+      "label": "Reveal Pop",
+      "category": "card_reveal",
+      "durationMs": 160,
+      "peakDb": -14.7,
+      "usage": "Hiện thẻ sản phẩm, thông số nổi bật, nhãn ưu điểm hoặc huy hiệu"
+    },
+    {
+      "id": "reveal-snap",
+      "filename": "reveal-snap.wav",
+      "label": "Reveal Snap",
+      "category": "card_reveal",
+      "durationMs": 110,
+      "peakDb": -32.1,
+      "usage": "Hiện thẻ sản phẩm, thông số nổi bật, nhãn ưu điểm hoặc huy hiệu"
+    },
+    {
+      "id": "reveal-sparkle",
+      "filename": "reveal-sparkle.wav",
+      "label": "Reveal Sparkle",
+      "category": "card_reveal",
+      "durationMs": 220,
+      "peakDb": -16.3,
+      "usage": "Hiện thẻ sản phẩm, thông số nổi bật, nhãn ưu điểm hoặc huy hiệu"
+    },
+    {
+      "id": "reveal-tick",
+      "filename": "reveal-tick.wav",
+      "label": "Reveal Tick",
+      "category": "ui_tech",
+      "durationMs": 90,
+      "peakDb": -30.5,
+      "usage": "Thao tác bấm chuột, gõ phím, chụp màn hình, đếm nhịp hoặc hướng dẫn phần mềm/công nghệ"
+    },
+    {
+      "id": "reveal-woosh",
+      "filename": "reveal-woosh.wav",
+      "label": "Reveal Woosh",
+      "category": "transition_whoosh",
+      "durationMs": 220,
+      "peakDb": -30.8,
+      "usage": "Chuyển cảnh mượt, lướt thẻ sản phẩm HyperFrames hoặc hiệu ứng Dynamic Zoom"
+    },
+    {
+      "id": "run",
+      "filename": "run.mp3",
+      "label": "Run",
+      "category": "reaction_glitch",
+      "durationMs": 2140,
+      "peakDb": -0.8,
+      "usage": "Phản ứng cảm xúc bất ngờ (Wow/Funny), cảnh lỗi sai (Buzzer) hoặc chuyển cảnh Glitch"
+    },
+    {
+      "id": "slow-keyboard-typing",
+      "filename": "slow-keyboard-typing.mp3",
+      "label": "Slow Keyboard Typing",
+      "category": "ui_tech",
+      "durationMs": 83590,
+      "peakDb": -3.2,
+      "usage": "Thao tác bấm chuột, gõ phím, chụp màn hình, đếm nhịp hoặc hướng dẫn phần mềm/công nghệ"
+    },
+    {
+      "id": "swoosh",
+      "filename": "swoosh.mp3",
+      "label": "Swoosh",
+      "category": "transition_whoosh",
+      "durationMs": 360,
+      "peakDb": -0.1,
+      "usage": "Chuyển cảnh mượt, lướt thẻ sản phẩm HyperFrames hoặc hiệu ứng Dynamic Zoom"
+    },
+    {
+      "id": "tada",
+      "filename": "tada.mp3",
+      "label": "Tada",
+      "category": "highlight_pop",
+      "durationMs": 2610,
+      "peakDb": -8.9,
+      "usage": "Nảy chữ Karaoke từ khoá ăn tiền, hiện giá bán, ưu đãi, CTA hoặc Emoji"
+    },
+    {
+      "id": "tick",
+      "filename": "tick.mp3",
+      "label": "Tick",
+      "category": "ui_tech",
+      "durationMs": 3740,
+      "peakDb": -4.0,
+      "usage": "Thao tác bấm chuột, gõ phím, chụp màn hình, đếm nhịp hoặc hướng dẫn phần mềm/công nghệ"
+    },
+    {
+      "id": "time-freeze",
+      "filename": "time-freeze.wav",
+      "label": "Time Freeze",
+      "category": "hook_impact",
+      "durationMs": 960,
+      "peakDb": -0.0,
+      "usage": "Điểm nhấn mở đầu Hook 0–3s, cú bẻ lái bất ngờ (Pattern Interrupt) hoặc nhấn mạnh cảnh quan trọng"
+    },
+    {
+      "id": "transition-alarm",
+      "filename": "transition-alarm.wav",
+      "label": "Transition Alarm",
+      "category": "hook_impact",
+      "durationMs": 500,
+      "peakDb": -14.8,
+      "usage": "Điểm nhấn mở đầu Hook 0–3s, cú bẻ lái bất ngờ (Pattern Interrupt) hoặc nhấn mạnh cảnh quan trọng"
+    },
+    {
+      "id": "transition-ascending",
+      "filename": "transition-ascending.wav",
+      "label": "Transition Ascending",
+      "category": "transition_whoosh",
+      "durationMs": 720,
+      "peakDb": -1.3,
+      "usage": "Chuyển cảnh mượt, lướt thẻ sản phẩm HyperFrames hoặc hiệu ứng Dynamic Zoom"
+    },
+    {
+      "id": "transition-bass",
+      "filename": "transition-bass.wav",
+      "label": "Transition Bass",
+      "category": "hook_impact",
+      "durationMs": 620,
+      "peakDb": -0.5,
+      "usage": "Điểm nhấn mở đầu Hook 0–3s, cú bẻ lái bất ngờ (Pattern Interrupt) hoặc nhấn mạnh cảnh quan trọng"
+    },
+    {
+      "id": "transition-boom",
+      "filename": "transition-boom.wav",
+      "label": "Transition Boom",
+      "category": "hook_impact",
+      "durationMs": 650,
+      "peakDb": -0.2,
+      "usage": "Điểm nhấn mở đầu Hook 0–3s, cú bẻ lái bất ngờ (Pattern Interrupt) hoặc nhấn mạnh cảnh quan trọng"
+    },
+    {
+      "id": "transition-chime",
+      "filename": "transition-chime.wav",
+      "label": "Transition Chime",
+      "category": "highlight_pop",
+      "durationMs": 850,
+      "peakDb": -3.8,
+      "usage": "Nảy chữ Karaoke từ khoá ăn tiền, hiện giá bán, ưu đãi, CTA hoặc Emoji"
+    },
+    {
+      "id": "transition-chord",
+      "filename": "transition-chord.wav",
+      "label": "Transition Chord",
+      "category": "transition_whoosh",
+      "durationMs": 800,
+      "peakDb": -0.2,
+      "usage": "Chuyển cảnh mượt, lướt thẻ sản phẩm HyperFrames hoặc hiệu ứng Dynamic Zoom"
+    },
+    {
+      "id": "transition-dramatic",
+      "filename": "transition-dramatic.wav",
+      "label": "Transition Dramatic",
+      "category": "hook_impact",
+      "durationMs": 1000,
+      "peakDb": -2.5,
+      "usage": "Điểm nhấn mở đầu Hook 0–3s, cú bẻ lái bất ngờ (Pattern Interrupt) hoặc nhấn mạnh cảnh quan trọng"
+    },
+    {
+      "id": "transition-gong",
+      "filename": "transition-gong.wav",
+      "label": "Transition Gong",
+      "category": "hook_impact",
+      "durationMs": 1150,
+      "peakDb": -0.2,
+      "usage": "Điểm nhấn mở đầu Hook 0–3s, cú bẻ lái bất ngờ (Pattern Interrupt) hoặc nhấn mạnh cảnh quan trọng"
+    },
+    {
+      "id": "transition-minimal",
+      "filename": "transition-minimal.wav",
+      "label": "Transition Minimal",
+      "category": "transition_whoosh",
+      "durationMs": 550,
+      "peakDb": -13.3,
+      "usage": "Chuyển cảnh mượt, lướt thẻ sản phẩm HyperFrames hoặc hiệu ứng Dynamic Zoom"
+    },
+    {
+      "id": "transition-retro",
+      "filename": "transition-retro.wav",
+      "label": "Transition Retro",
+      "category": "transition_whoosh",
+      "durationMs": 350,
+      "peakDb": -13.3,
+      "usage": "Chuyển cảnh mượt, lướt thẻ sản phẩm HyperFrames hoặc hiệu ứng Dynamic Zoom"
+    },
+    {
+      "id": "transition-rise",
+      "filename": "transition-rise.wav",
+      "label": "Transition Rise",
+      "category": "hook_impact",
+      "durationMs": 800,
+      "peakDb": -2.0,
+      "usage": "Điểm nhấn mở đầu Hook 0–3s, cú bẻ lái bất ngờ (Pattern Interrupt) hoặc nhấn mạnh cảnh quan trọng"
+    },
+    {
+      "id": "transition-sweep",
+      "filename": "transition-sweep.wav",
+      "label": "Transition Sweep",
+      "category": "transition_whoosh",
+      "durationMs": 800,
+      "peakDb": -2.9,
+      "usage": "Chuyển cảnh mượt, lướt thẻ sản phẩm HyperFrames hoặc hiệu ứng Dynamic Zoom"
+    },
+    {
+      "id": "whoosh-soft",
+      "filename": "whoosh-soft.mp3",
+      "label": "Whoosh Soft",
+      "category": "transition_whoosh",
+      "durationMs": 1020,
+      "peakDb": -4.7,
+      "usage": "Chuyển cảnh mượt, lướt thẻ sản phẩm HyperFrames hoặc hiệu ứng Dynamic Zoom"
+    },
+    {
+      "id": "zapsplat-bell-service-desk-press-x2",
+      "filename": "zapsplat-bell-service-desk-press-x2.mp3",
+      "label": "Zapsplat Bell Service Desk Press X2",
+      "category": "highlight_pop",
+      "durationMs": 2520,
+      "peakDb": -3.3,
+      "usage": "Nảy chữ Karaoke từ khoá ăn tiền, hiện giá bán, ưu đãi, CTA hoặc Emoji"
+    }
+  ]
+}

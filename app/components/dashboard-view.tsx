@@ -1603,7 +1603,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
           : " · JSON không có gói title/thumbnail"
         : "";
       const pacingWarnings = Array.isArray(payload.warnings) ? payload.warnings : [];
-      setRunMessage({ tone: "success", text: `Đã nhập ${imported.length} tập · ${sceneCount} cảnh từ JSON${publishingSummary}${replaced}.${payload.locationReferences?.pending ? ` Đang tự tạo ${payload.locationReferences.pending} ảnh bối cảnh còn thiếu.` : ""}${pacingWarnings.length ? ` Cảnh báo: ${pacingWarnings.join("; ")}` : ""}` });
+      setRunMessage({ tone: "success", text: `Đã nhập ${imported.length} tập · ${sceneCount} cảnh từ JSON${publishingSummary}${replaced}.${payload.locationReferences?.pending ? ` Còn ${payload.locationReferences.pending} bối cảnh chưa có ảnh tham chiếu.` : ""}${pacingWarnings.length ? ` Cảnh báo: ${pacingWarnings.join("; ")}` : ""}` });
       return true;
     } catch (cause) {
       setRunMessage({ tone: "error", text: cause instanceof Error ? cause.message : "Không thể nhập kịch bản JSON." });

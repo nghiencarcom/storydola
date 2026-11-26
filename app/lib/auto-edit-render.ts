@@ -82,6 +82,8 @@ function accentHex(color?: AutoEditHighlightColor) {
 async function renderSegmentClip(
   sourceFile: string,
   hasAudio: boolean,
+  isLandscapeSource: boolean,
+  verticalFit: "auto" | "blur-fit" | "fill-crop",
   startMs: number,
   durationMs: number,
   width: number,
@@ -97,17 +99,67 @@ async function renderSegmentClip(
   const scaledH = Math.round((height * Math.max(1, zoom)) / 2) * 2;
   const cropX = Math.max(0, Math.round((scaledW - width) / 2));
   const cropY = Math.max(0, Math.min(scaledH - height, Math.round((scaledH - height) * zoomFocusY)));
-
-  // Scale-to-cover + zoom punch-in so any clip aspect ratio fills target cleanly
-  const vf = [
-    `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=increase`,
-    `crop=${width}:${height}:${cropX}:${cropY}`,
-    `fps=${fps}`,
-    "format=yuv420p",
-  ].join(",");
-
   const fadeOutStart = Math.max(0, Number(durSec) - 0.035).toFixed(3);
   const af = `aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,afade=t=in:st=0:d=0.025,afade=t=out:st=${fadeOutStart}:d=0.030`;
+
+  const useVerticalBlurCanvas =
+    height > width &&
+    (verticalFit === "blur-fit" || (verticalFit === "auto" && isLandscapeSource));
+
+  if (useVerticalBlurCanvas) {
+    // 16:9 -> 9:16 Cinema Blur-Fit: blurred dynamic vertical canvas + sharp uncropped foreground in center
+    const filterComplex = [
+      `[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},boxblur=20:4,eq=brightness=-0.20,fps=${fps}[bg]`,
+      `[0:v]scale=${scaledW}:-2,crop=${width}:ih:(iw-${width})/2:0,fps=${fps}[fg]`,
+      "[bg][fg]overlay=0:(H-h)/2,format=yuv420p[vout]",
+      ...(hasAudio ? [`[0:a]${af}[aout]`] : []),
+    ].join(";");
+
+    const blurArgs = hasAudio
+      ? [
+        "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+        "-ss", startSec,
+        "-t", durSec,
+        ...safeInputArgs,
+        "-i", sourceFile,
+        "-filter_complex", filterComplex,
+        "-map", "[vout]", "-map", "[aout]",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+        "-c:a", "aac", "-b:a", "192k",
+        outPath,
+      ]
+      : [
+        "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+        "-ss", startSec,
+        "-t", durSec,
+        ...safeInputArgs,
+        "-i", sourceFile,
+        "-f", "lavfi", "-t", durSec, "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+        "-filter_complex", filterComplex,
+        "-map", "[vout]", "-map", "1:a:0",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+        "-c:a", "aac", "-b:a", "192k",
+        "-shortest",
+        outPath,
+      ];
+    await exec(autoEditFfmpeg(), blurArgs, { timeout: 180_000, maxBuffer: 8_000_000 });
+    return;
+  }
+
+  // Preserve full screen UI when zoom is 1.0x on landscape; smoothly punch-in crop when zoom > 1.02x
+  const vf = zoom <= 1.02 && width >= height
+    ? [
+      `scale=${width}:${height}:force_original_aspect_ratio=decrease`,
+      `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:#0b0f19`,
+      `fps=${fps}`,
+      "format=yuv420p",
+    ].join(",")
+    : [
+      `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=increase`,
+      `crop=${width}:${height}:${cropX}:${cropY}`,
+      `fps=${fps}`,
+      "format=yuv420p",
+    ].join(",");
 
   const args = hasAudio
     ? [
@@ -118,7 +170,7 @@ async function renderSegmentClip(
       "-i", sourceFile,
       "-vf", vf,
       "-af", af,
-      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
       "-c:a", "aac", "-b:a", "192k",
       outPath,
     ]
@@ -131,7 +183,7 @@ async function renderSegmentClip(
       "-f", "lavfi", "-t", durSec, "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
       "-map", "0:v:0", "-map", "1:a:0",
       "-vf", vf,
-      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
       "-c:a", "aac", "-b:a", "192k",
       "-shortest",
       outPath,
@@ -197,9 +249,14 @@ async function buildBaseCutVideo(
     if (!clip) continue;
     const srcPath = path.join(mediaDir, "videos", `${clip.id}${clip.extension}`);
     const segOut = path.join(workDir, `seg_${String(i).padStart(3, "0")}.mp4`);
+    const isLandscapeSource = clip.width && clip.height
+      ? clip.width > clip.height * 1.12
+      : clip.aspectRatio === "16:9";
     await renderSegmentClip(
       srcPath,
       Boolean(clip.hasAudio),
+      Boolean(isLandscapeSource),
+      job.options.verticalFit || "auto",
       seg.sourceStartMs,
       seg.durationMs,
       timeline.width,
@@ -469,19 +526,27 @@ function buildHyperframesStageHtml(
   .caption-zone {
     position: absolute;
     left: 6%;
-    right: ${job.options.safeZoneGuard && job.options.aspectRatio === "9:16" ? "15%" : "6%"};
+    right: ${job.options.safeZoneGuard && job.options.aspectRatio === "9:16" ? "14%" : "6%"};
     bottom: ${safeBottomPx}px;
-    text-align: center;
     display: flex;
+    justify-content: center;
+    pointer-events: none;
+  }
+  .caption-inner {
+    display: inline-flex;
+    width: fit-content;
+    max-width: 100%;
     flex-wrap: wrap;
     justify-content: center;
-    gap: 8px 10px;
+    align-items: center;
+    gap: 8px 14px;
+    text-align: center;
   }
   .cap-word {
     display: inline-block;
-    font-size: ${timeline.width >= 1000 ? 38 : 33}px;
+    font-size: ${timeline.width >= 1000 ? 36 : 31}px;
     font-weight: 900;
-    line-height: 1.18;
+    line-height: 1.2;
     color: #ffffff;
     text-shadow: 0 3px 0 #090d16, 0 -2px 0 #090d16, 3px 0 0 #090d16, -3px 0 0 #090d16, 0 8px 20px rgba(0,0,0,.65);
   }
@@ -490,9 +555,11 @@ function buildHyperframesStageHtml(
     transform: scale(1.12);
   }
   .cap-pill-box {
-    padding: 10px 18px;
+    padding: 9px 22px;
     border-radius: 16px;
-    background: rgba(10, 14, 24, 0.78);
+    background: rgba(10, 14, 24, 0.84);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.42);
   }
   ${customStyles}
 </style>
@@ -572,7 +639,7 @@ function buildHyperframesStageHtml(
         return '<span class="cap-word' + (isCurrent ? ' active' : '') + '" style="--word-accent:' + accent + '">' + esc(t.text.trim()) + suffixEmoji + '</span>';
       }).join(" ");
       parts.push(
-        '<div class="caption-zone' + (DATA.captionStyle === "clean-pill" ? ' cap-pill-box' : '') + '">' + wordsHtml + '</div>'
+        '<div class="caption-zone"><div class="caption-inner' + (DATA.captionStyle === "clean-pill" ? ' cap-pill-box' : '') + '">' + wordsHtml + '</div></div>'
       );
     }
 
@@ -641,7 +708,7 @@ async function compositeWithHyperframesChromium(
           "-f", "image2pipe", "-framerate", String(overlayFps), "-c:v", "png", "-i", "pipe:0",
           "-filter_complex", "[0:v][1:v]overlay=0:0:shortest=1,format=yuv420p[v]",
           "-map", "[v]", "-map", "0:a:0",
-          "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+          "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
           "-c:a", "copy",
           "-movflags", "+faststart",
           outVideoPath,
@@ -792,6 +859,68 @@ async function compositeWithSharpFallback(
   );
 }
 
+async function mixSfxIntoMasterVideo(
+  voiceMasterPath: string,
+  timeline: ComputedAutoEditTimeline,
+  workDir: string,
+): Promise<string> {
+  if (!timeline.sfxEvents.length) return voiceMasterPath;
+
+  const sfxRoot = path.join(process.cwd(), "assets", "sfx");
+  const validEvents = [];
+  for (const ev of timeline.sfxEvents.slice(0, 40)) {
+    const file = path.join(sfxRoot, ev.filename);
+    try {
+      const st = await stat(file);
+      if (st.isFile()) validEvents.push({ ...ev, file });
+    } catch {
+      // Skip missing asset file
+    }
+  }
+  if (!validEvents.length) return voiceMasterPath;
+
+  const inputs = ["-i", voiceMasterPath, ...validEvents.flatMap((ev) => ["-i", ev.file])];
+  const filterChains: string[] = [];
+  const mixLabels: string[] = ["[0:a]"];
+
+  validEvents.forEach((ev, idx) => {
+    const inputIdx = idx + 1;
+    const maxSec = Math.max(0.12, Math.min(2.4, ev.durationMs / 1000));
+    const fadeStart = Math.max(0, maxSec - 0.12).toFixed(3);
+    const gainDb = Number(Math.min(14, Math.max(-32, ev.volumeDb - ev.peakDb)).toFixed(2));
+    const delayMs = Math.max(0, Math.round(ev.timelineStartMs));
+    const delayFilter = delayMs > 0 ? `,adelay=${delayMs}|${delayMs}` : "";
+    const label = `sfx${idx}`;
+    filterChains.push(
+      `[${inputIdx}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=0:${maxSec.toFixed(3)},asetpts=PTS-STARTPTS,afade=t=out:st=${fadeStart}:d=0.12,volume=${gainDb}dB${delayFilter}[${label}]`,
+    );
+    mixLabels.push(`[${label}]`);
+  });
+
+  // normalize=0 preserves exact 0..-3dB voice level while alimiter=0.944 (-0.5dB) prevents clipping on SFX hits
+  filterChains.push(
+    `${mixLabels.join("")}amix=inputs=${mixLabels.length}:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.944:attack=3:release=40:level=disabled[aout]`,
+  );
+
+  const mixedOut = path.join(workDir, "base_with_sfx.mp4");
+  await exec(
+    autoEditFfmpeg(),
+    [
+      "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+      ...inputs,
+      "-filter_complex", filterChains.join(";"),
+      "-map", "0:v:0",
+      "-map", "[aout]",
+      "-c:v", "copy",
+      "-c:a", "aac", "-b:a", "192k",
+      mixedOut,
+    ],
+    { timeout: 180_000, maxBuffer: 8_000_000 },
+  );
+
+  return mixedOut;
+}
+
 export async function renderAutoEditMp4(owner: string, jobId: string): Promise<AutoEditJob> {
   return renderAutoEditMp4ByFolder(autoEditOwnerFolder(owner), jobId, await getAutoEditJob(owner, jobId));
 }
@@ -813,6 +942,7 @@ export async function renderAutoEditMp4ByFolder(
     job.analysis?.words || [],
     job.options.aspectRatio,
     job.analysis?.rawDurationMs,
+    { autoSfx: job.options.autoSfx, sfxVolumeDb: job.options.sfxVolumeDb },
   );
   if (!timeline.keptSegments.length || timeline.totalDurationMs <= 0) {
     throw new Error("Bản dựng hiện không có đoạn video nào được giữ lại.");
@@ -835,7 +965,11 @@ export async function renderAutoEditMp4ByFolder(
 
   const workDir = await mkdtemp(path.join(tmpdir(), "storyai-ae-render-"));
   try {
-    const { baseVideoPath: baseMaster, audioStats } = await buildBaseCutVideo(job, timeline, mediaDir, workDir);
+    const { baseVideoPath: voiceMaster, audioStats: voiceOnlyStats } = await buildBaseCutVideo(job, timeline, mediaDir, workDir);
+    const baseMaster = await mixSfxIntoMasterVideo(voiceMaster, timeline, workDir);
+    const audioStats = baseMaster !== voiceMaster
+      ? await measureMediaVoiceLevelsDb(baseMaster)
+      : voiceOnlyStats;
     const browserPath = await resolveBrowserExecutable();
     if (browserPath) {
       await compositeWithHyperframesChromium(browserPath, baseMaster, finalMp4Path, job, timeline, mediaDir);

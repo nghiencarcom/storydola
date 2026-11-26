@@ -145,7 +145,7 @@ function getBuildFingerprint() {
     "tsconfig.json",
     "next-env.d.ts",
   ].map((name) => path.join(projectRoot, name));
-  for (const directory of ["app", "public", "gpt-config", "knowledge"]) {
+  for (const directory of ["app", "public", "assets", "prompts", "gpt-config", "knowledge"]) {
     collectSourceFiles(path.join(projectRoot, directory), files);
   }
 

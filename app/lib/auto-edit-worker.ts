@@ -18,6 +18,7 @@ import {
 } from "./auto-edit";
 import { analyzeAutoEditMedia, type ContactSheetEvidence } from "./auto-edit-media";
 import { autoEditJobMediaDir, autoEditOwnerFolder, autoEditRoot, isValidUuid } from "./auto-edit-upload";
+import { pickDefaultOverlaySfx, SFX_CATALOG } from "./sfx-library";
 
 const maxActiveJobsPerUser = 5;
 const staleJobLockMs = 30 * 60_000;
@@ -186,13 +187,22 @@ export function createQueuedAutoEditJob(
   });
 }
 
-export function updateAutoEditJobEdl(owner: string, id: string, edl: AutoEditEdl) {
+export function updateAutoEditJobEdl(
+  owner: string,
+  id: string,
+  edl: AutoEditEdl,
+  optionsPatch?: Partial<AutoEditOptions>,
+) {
   return serializeWrite(async () => {
     const folder = autoEditOwnerFolder(owner);
     const job = await readJobByFolder(folder, id);
     if (!job) return undefined;
+    const nextOptions: AutoEditOptions = optionsPatch
+      ? { ...job.options, ...optionsPatch }
+      : job.options;
     const updated: AutoEditJob = {
       ...job,
+      options: nextOptions,
       edl,
       status: job.status === "rendered" ? "ready" : job.status,
       render: job.render ? { ...job.render, status: job.render.status === "ready" ? "idle" : job.render.status, updatedAt: new Date().toISOString() } : undefined,
@@ -246,6 +256,7 @@ function buildHeuristicFallbackEdl(
       subtitle: job.options.productHighlights.split(/\r?\n|[,;•]/u)[0]?.trim().slice(0, 80) || undefined,
       emoji: "🔥",
       accentColor: job.options.preset === "minimal-aesthetic" ? "cyan" : "amber",
+      sfxId: job.options.autoSfx !== false ? pickDefaultOverlaySfx({ kind: "hook_banner" }, 0, job.options.preset) : undefined,
     },
   ];
 
@@ -264,6 +275,7 @@ function buildHeuristicFallbackEdl(
       subtitle: job.options.productHighlights.split(/\r?\n|[•;]/u)[index]?.trim().slice(0, 90) || "Chi tiết thực tế",
       emoji: index % 2 === 0 ? "✨" : "⚡",
       accentColor: index % 2 === 0 ? "emerald" : "amber",
+      sfxId: job.options.autoSfx !== false ? pickDefaultOverlaySfx({ kind: "product_card", title: img.label }, index, job.options.preset) : undefined,
       hyperframesHtml: "<div class=\"hf-meter\"><div class=\"hf-meter-bar\"></div></div>",
       hyperframesCss: ".hf-meter{height:5px;border-radius:99px;background:rgba(255,255,255,.2);overflow:hidden;margin-top:6px}.hf-meter-bar{height:100%;width:calc(var(--hf-progress,1)*100%);background:linear-gradient(90deg,#34d399,#fbbf24)}",
     });
@@ -344,6 +356,9 @@ async function buildDirectorPrompt(
       label: img.label,
       dimensions: `${img.width}x${img.height}`,
     })),
+    availableSfxLibrary: job.options.autoSfx !== false
+      ? SFX_CATALOG.map((s) => ({ id: s.id, category: s.category, durationMs: s.durationMs, usage: s.usage }))
+      : [],
     attachedVisualOrder: attachedImageNote,
     contactSheetRows: contactSheets.map((s, idx) => ({ sheetIndex: idx + 1, rows: s.rows })),
     transcriptEvidence: {

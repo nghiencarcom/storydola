@@ -2,9 +2,11 @@
 
 import { useMemo, type CSSProperties } from "react";
 import { createTikTokStyleCaptions, type Caption } from "@remotion/captions";
-import { AbsoluteFill, Html5Video, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion";
+import { AbsoluteFill, Html5Audio, Html5Video, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion";
 import type {
   AutoEditHighlightColor,
+  AutoEditSourceVideo,
+  AutoEditVerticalFit,
   ComputedAutoEditTimeline,
   ComputedTimelineOverlay,
 } from "../lib/auto-edit";
@@ -12,10 +14,12 @@ import type {
 export type AutoEditPlayerProps = {
   jobId: string;
   timeline: ComputedAutoEditTimeline;
+  videos?: readonly AutoEditSourceVideo[];
   captionStyle: "karaoke-pop" | "clean-pill" | "minimal-line";
   safeZoneGuard: boolean;
   showSafeZoneGuide: boolean;
   aspectRatio: "9:16" | "16:9" | "1:1";
+  verticalFit?: AutoEditVerticalFit;
 };
 
 function accentColorHex(color?: AutoEditHighlightColor) {
@@ -226,14 +230,17 @@ function OverlayLayer({
 export function AutoEditRemotionComposition({
   jobId,
   timeline,
+  videos = [],
   captionStyle,
   safeZoneGuard,
   showSafeZoneGuide,
   aspectRatio,
+  verticalFit = "auto",
 }: AutoEditPlayerProps) {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const currentTimeMs = (frame / fps) * 1000;
+  const clipMetaById = useMemo(() => new Map(videos.map((v) => [v.id, v])), [videos]);
 
   const { enrichedPages } = useMemo(() => {
     const captions: Caption[] = timeline.words.map((w) => ({
@@ -271,30 +278,88 @@ export function AutoEditRemotionComposition({
 
   return (
     <AbsoluteFill style={{ backgroundColor: "#0b0f19", overflow: "hidden" }}>
-      {/* Layer 1: Smart-Cut Video Segments + Dynamic Punch-in Zoom */}
+      {/* Layer 1: Smart-Cut Video Segments + Dynamic Punch-in Zoom & 16:9 -> 9:16 Blur-Fit */}
       {timeline.keptSegments.map((seg) => {
         const fromFrame = Math.round((seg.timelineStartMs / 1000) * fps);
         const durationInFrames = Math.max(1, Math.round((seg.durationMs / 1000) * fps));
         const startFrom = Math.round((seg.sourceStartMs / 1000) * fps);
         const endAt = Math.max(startFrom + 1, Math.round((seg.sourceEndMs / 1000) * fps));
         const videoSrc = `/api/auto-edit/${encodeURIComponent(jobId)}/media?kind=video&clipId=${encodeURIComponent(seg.clipId)}`;
+        const clipMeta = clipMetaById.get(seg.clipId);
+        const isLandscapeSource = clipMeta?.width && clipMeta?.height
+          ? clipMeta.width > clipMeta.height * 1.12
+          : clipMeta?.aspectRatio === "16:9";
+        const useVerticalBlurCanvas =
+          aspectRatio === "9:16" &&
+          (verticalFit === "blur-fit" || (verticalFit === "auto" && isLandscapeSource));
 
         return (
           <Sequence key={seg.id} from={fromFrame} durationInFrames={durationInFrames}>
-            <AbsoluteFill style={{ overflow: "hidden" }}>
-              <Html5Video
-                src={videoSrc}
-                startFrom={startFrom}
-                endAt={endAt}
-                style={{
-                  width: "100%",
-                  height: "100%",
-                  objectFit: "cover",
-                  transform: `scale(${seg.zoom})`,
-                  transformOrigin: `50% ${Math.round(seg.zoomFocusY * 100)}%`,
-                }}
-              />
+            <AbsoluteFill style={{ overflow: "hidden", backgroundColor: "#090d16" }}>
+              {useVerticalBlurCanvas ? (
+                <>
+                  <Html5Video
+                    src={videoSrc}
+                    startFrom={startFrom}
+                    endAt={endAt}
+                    muted
+                    style={{
+                      position: "absolute",
+                      inset: 0,
+                      width: "100%",
+                      height: "100%",
+                      objectFit: "cover",
+                      filter: "blur(26px) brightness(0.52)",
+                      transform: "scale(1.12)",
+                    }}
+                  />
+                  <AbsoluteFill style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <div style={{ width: "100%", overflow: "hidden", boxShadow: "0 18px 44px rgba(0,0,0,0.55)" }}>
+                      <Html5Video
+                        src={videoSrc}
+                        startFrom={startFrom}
+                        endAt={endAt}
+                        style={{
+                          width: "100%",
+                          height: "auto",
+                          display: "block",
+                          transform: `scale(${seg.zoom})`,
+                          transformOrigin: `50% ${Math.round(seg.zoomFocusY * 100)}%`,
+                        }}
+                      />
+                    </div>
+                  </AbsoluteFill>
+                </>
+              ) : (
+                <Html5Video
+                  src={videoSrc}
+                  startFrom={startFrom}
+                  endAt={endAt}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    objectFit: seg.zoom <= 1.02 && width >= height ? "contain" : "cover",
+                    transform: `scale(${seg.zoom})`,
+                    transformOrigin: `50% ${Math.round(seg.zoomFocusY * 100)}%`,
+                  }}
+                />
+              )}
             </AbsoluteFill>
+          </Sequence>
+        );
+      })}
+
+      {/* Layer 1.5: Synchronized Sound Effects (SFX) from assets/sfx */}
+      {timeline.sfxEvents.map((sfx) => {
+        const fromFrame = Math.round((sfx.timelineStartMs / 1000) * fps);
+        const durationInFrames = Math.max(3, Math.round((sfx.durationMs / 1000) * fps));
+        const linearVol = Math.min(1, Math.max(0.02, Math.pow(10, (sfx.volumeDb - sfx.peakDb) / 20)));
+        return (
+          <Sequence key={sfx.id} from={fromFrame} durationInFrames={durationInFrames}>
+            <Html5Audio
+              src={`/api/auto-edit/sfx/${encodeURIComponent(sfx.sfxId)}`}
+              volume={linearVol}
+            />
           </Sequence>
         );
       })}
@@ -310,51 +375,64 @@ export function AutoEditRemotionComposition({
         );
       })}
 
-      {/* Layer 3: Remotion Karaoke Word-by-Word Captions + Keyword Emoji Pops */}
+      {/* Layer 3: Remotion Karaoke Word-by-Word Captions (Snug fit-content pill, never full-width) */}
       {activePage && activePage.tokens.length > 0 && (
         <div
           style={{
             position: "absolute",
             left: "6%",
-            right: safeZoneGuard && aspectRatio === "9:16" ? "15%" : "6%",
+            right: safeZoneGuard && aspectRatio === "9:16" ? "14%" : "6%",
             bottom: safeBottomPx,
             display: "flex",
-            flexWrap: "wrap",
             justifyContent: "center",
-            gap: "8px 10px",
-            textAlign: "center",
-            ...(captionStyle === "clean-pill"
-              ? {
-                padding: "10px 18px",
-                borderRadius: 16,
-                background: "rgba(10, 14, 24, 0.78)",
-              }
-              : {}),
+            pointerEvents: "none",
           }}
         >
-          {activePage.tokens.map((tok, idx) => {
-            const isCurrent = currentTimeMs >= tok.fromMs && currentTimeMs <= tok.toMs + 65;
-            const activeColor = tok.color || "#fbbf24";
-            return (
-              <span
-                key={`${tok.fromMs}_${idx}`}
-                style={{
-                  display: "inline-block",
-                  fontSize: width >= 1000 ? 38 : 33,
-                  fontWeight: 900,
-                  lineHeight: 1.18,
-                  color: isCurrent ? activeColor : "#ffffff",
-                  transform: isCurrent && captionStyle === "karaoke-pop" ? "scale(1.12)" : "scale(1)",
-                  transition: "transform 80ms ease-out",
-                  textShadow:
-                    "0 3px 0 #090d16, 0 -2px 0 #090d16, 3px 0 0 #090d16, -3px 0 0 #090d16, 0 8px 20px rgba(0,0,0,0.65)",
-                }}
-              >
-                {tok.text.trim()}
-                {isCurrent && tok.emoji ? ` ${tok.emoji}` : ""}
-              </span>
-            );
-          })}
+          <div
+            style={{
+              display: "inline-flex",
+              width: "fit-content",
+              maxWidth: "100%",
+              flexWrap: "wrap",
+              justifyContent: "center",
+              alignItems: "center",
+              gap: "8px 14px",
+              textAlign: "center",
+              ...(captionStyle === "clean-pill"
+                ? {
+                  padding: "9px 22px",
+                  borderRadius: 16,
+                  background: "rgba(10, 14, 24, 0.84)",
+                  border: "1px solid rgba(255, 255, 255, 0.14)",
+                  boxShadow: "0 10px 28px rgba(0, 0, 0, 0.42)",
+                }
+                : {}),
+            }}
+          >
+            {activePage.tokens.map((tok, idx) => {
+              const isCurrent = currentTimeMs >= tok.fromMs && currentTimeMs <= tok.toMs + 65;
+              const activeColor = tok.color || "#fbbf24";
+              return (
+                <span
+                  key={`${tok.fromMs}_${idx}`}
+                  style={{
+                    display: "inline-block",
+                    fontSize: width >= 1000 ? 36 : 31,
+                    fontWeight: 900,
+                    lineHeight: 1.2,
+                    color: isCurrent ? activeColor : "#ffffff",
+                    transform: isCurrent && captionStyle === "karaoke-pop" ? "scale(1.12)" : "scale(1)",
+                    transition: "transform 80ms ease-out",
+                    textShadow:
+                      "0 3px 0 #090d16, 0 -2px 0 #090d16, 3px 0 0 #090d16, -3px 0 0 #090d16, 0 8px 20px rgba(0,0,0,0.65)",
+                  }}
+                >
+                  {tok.text.trim()}
+                  {isCurrent && tok.emoji ? ` ${tok.emoji}` : ""}
+                </span>
+              );
+            })}
+          </div>
         </div>
       )}
 
