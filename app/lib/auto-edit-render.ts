@@ -14,7 +14,7 @@ import {
   type ComputedAutoEditTimeline,
   type ComputedTimelineOverlay,
 } from "./auto-edit";
-import { autoEditFfmpeg } from "./auto-edit-media";
+import { autoEditFfmpeg, measurePcmVoiceLevelsDb } from "./auto-edit-media";
 import { readFile as readFileFs } from "node:fs/promises";
 import { autoEditJobMediaDir, autoEditOwnerFolder, autoEditRoot } from "./auto-edit-upload";
 import { getAutoEditJob, saveAutoEditJobState } from "./auto-edit-worker";
@@ -140,12 +140,54 @@ async function renderSegmentClip(
   await exec(autoEditFfmpeg(), args, { timeout: 180_000, maxBuffer: 8_000_000 });
 }
 
+export async function measureMediaVoiceLevelsDb(filePath: string): Promise<{
+  maxVolumeDb: number;
+  speechPeakDb: number;
+  meanVolumeDb: number;
+}> {
+  let volMaxDb: number | undefined;
+  let volMeanDb: number | undefined;
+  try {
+    const { stderr } = await exec(
+      autoEditFfmpeg(),
+      ["-nostdin", "-hide_banner", ...safeInputArgs, "-i", filePath, "-vn", "-af", "volumedetect", "-f", "null", "-"],
+      { timeout: 60_000, maxBuffer: 4_000_000 },
+    );
+    const maxMatch = stderr.match(/max_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/u);
+    const meanMatch = stderr.match(/mean_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/u);
+    if (maxMatch) volMaxDb = Number(maxMatch[1]);
+    if (meanMatch) volMeanDb = Number(meanMatch[1]);
+  } catch {
+    // Fallback to PCM measurement below
+  }
+
+  try {
+    const { stdout: pcm } = await exec(
+      autoEditFfmpeg(),
+      ["-nostdin", "-hide_banner", "-loglevel", "error", ...safeInputArgs, "-i", filePath, "-vn", "-ac", "1", "-ar", "8000", "-f", "s16le", "pipe:1"],
+      { timeout: 60_000, maxBuffer: 48_000_000, encoding: "buffer" },
+    );
+    const pcmStats = measurePcmVoiceLevelsDb(pcm, 8000);
+    return {
+      maxVolumeDb: volMaxDb ?? pcmStats.maxVolumeDb,
+      speechPeakDb: pcmStats.speechPeakDb,
+      meanVolumeDb: volMeanDb ?? pcmStats.meanVolumeDb,
+    };
+  } catch {
+    return {
+      maxVolumeDb: volMaxDb ?? -1.5,
+      speechPeakDb: volMaxDb ?? -1.8,
+      meanVolumeDb: volMeanDb ?? -14.0,
+    };
+  }
+}
+
 async function buildBaseCutVideo(
   job: AutoEditJob,
   timeline: ComputedAutoEditTimeline,
   mediaDir: string,
   workDir: string,
-): Promise<string> {
+): Promise<{ baseVideoPath: string; audioStats: { maxVolumeDb: number; speechPeakDb: number; meanVolumeDb: number } }> {
   const clipById = new Map(job.videos.map((v) => [v.id, v]));
   const segFiles: string[] = [];
 
@@ -181,21 +223,54 @@ async function buildBaseCutVideo(
     { mode: 0o600 },
   );
 
-  const baseOut = path.join(workDir, "base_master.mp4");
+  // Pass 1: Vocal high-pass + dynamic speech leveling + EBU R128 broadcast density (-12.5 LUFS, LRA 6)
+  const targetPeakDb = Math.min(-0.4, Math.max(-2.8, job.options.voiceTargetPeakDb ?? -1.2));
+  const pass1Out = path.join(workDir, "base_pass1.mp4");
+  const pass1AudioFilter = [
+    "highpass=f=80",
+    "acompressor=threshold=-22dB:ratio=3.5:attack=6:release=110:makeup=4.5dB",
+    "loudnorm=I=-12.5:TP=-1.0:LRA=6",
+  ].join(",");
+
   await exec(
     autoEditFfmpeg(),
     [
       "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
       "-f", "concat", "-safe", "0", "-i", concatList,
       "-c:v", "copy",
-      "-af", "loudnorm=I=-15:TP=-1.5:LRA=11",
+      "-af", pass1AudioFilter,
       "-c:a", "aac", "-b:a", "192k",
-      baseOut,
+      pass1Out,
     ],
     { timeout: 240_000, maxBuffer: 8_000_000 },
   );
 
-  return baseOut;
+  const pass1Stats = await measureMediaVoiceLevelsDb(pass1Out);
+  // Pass 2: Calibrate active voice peak strictly into [0 dB .. -3 dB] (default -1.2 dB, brickwall ceiling -0.4 dB)
+  const referenceDb = pass1Stats.speechPeakDb > -45 ? pass1Stats.speechPeakDb : pass1Stats.maxVolumeDb;
+  const gainDeltaDb = Number(Math.min(18, Math.max(-12, targetPeakDb - referenceDb)).toFixed(2));
+
+  const baseOut = path.join(workDir, "base_master.mp4");
+  if (Math.abs(gainDeltaDb) >= 0.35 || pass1Stats.maxVolumeDb > -0.3 || pass1Stats.speechPeakDb < -2.9) {
+    // alimiter limit in linear amplitude: 10^(-0.5 / 20) = 0.944 (~ -0.5 dBFS hard ceiling, never > 0 dB)
+    const pass2Filter = `volume=${gainDeltaDb}dB,alimiter=limit=0.944:attack=3:release=45:level=disabled`;
+    await exec(
+      autoEditFfmpeg(),
+      [
+        "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+        "-i", pass1Out,
+        "-c:v", "copy",
+        "-af", pass2Filter,
+        "-c:a", "aac", "-b:a", "192k",
+        baseOut,
+      ],
+      { timeout: 180_000, maxBuffer: 8_000_000 },
+    );
+    const finalStats = await measureMediaVoiceLevelsDb(baseOut);
+    return { baseVideoPath: baseOut, audioStats: finalStats };
+  }
+
+  return { baseVideoPath: pass1Out, audioStats: pass1Stats };
 }
 
 function buildHyperframesStageHtml(
@@ -760,7 +835,7 @@ export async function renderAutoEditMp4ByFolder(
 
   const workDir = await mkdtemp(path.join(tmpdir(), "storyai-ae-render-"));
   try {
-    const baseMaster = await buildBaseCutVideo(job, timeline, mediaDir, workDir);
+    const { baseVideoPath: baseMaster, audioStats } = await buildBaseCutVideo(job, timeline, mediaDir, workDir);
     const browserPath = await resolveBrowserExecutable();
     if (browserPath) {
       await compositeWithHyperframesChromium(browserPath, baseMaster, finalMp4Path, job, timeline, mediaDir);
@@ -781,6 +856,9 @@ export async function renderAutoEditMp4ByFolder(
         height: timeline.height,
         fps: timeline.fps,
         sizeBytes: details.size,
+        maxVolumeDb: audioStats.maxVolumeDb,
+        speechPeakDb: audioStats.speechPeakDb,
+        meanVolumeDb: audioStats.meanVolumeDb,
         updatedAt: new Date().toISOString(),
       },
       updatedAt: new Date().toISOString(),

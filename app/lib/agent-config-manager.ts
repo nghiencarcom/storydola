@@ -1,8 +1,12 @@
+import { execFile } from "node:child_process";
 import { chmod, copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
+
+const execFileAsync = promisify(execFile);
 
 export type CodingAgent = "codex" | "claude" | "antigravity";
 type AgentConfigStatus = { installed: boolean; needsUpdate?: boolean; configPath: string; error?: "INVALID_JSON" | "INVALID_TOML" | "CONFIG_ACCESS_FAILED" };
@@ -173,5 +177,13 @@ export async function installCodingAgentConfig(input: {
   const nextValue = mergeJsonServer(value, jsonAgentEntry(agent, nodePath, scriptPath, baseUrl, token));
   const next = `${JSON.stringify(nextValue, null, 2)}\n`;
   const backupPath = await writeConfig(configPath, content, next);
+  if (agent === "antigravity") {
+    const pluginBootstrapScript = path.join(process.cwd(), "scripts", "ensure-antigravity-video-plugins.cjs");
+    await execFileAsync(nodePath, [pluginBootstrapScript], {
+      cwd: process.cwd(),
+      timeout: 120_000,
+      windowsHide: true,
+    }).catch(() => undefined);
+  }
   return { agent, configPath, ...(backupPath ? { backupPath } : {}) };
 }

@@ -9,6 +9,7 @@
     "start:server": "PORT=${PORT:-3012} node scripts/start-next-server.js",
     "start:supervised": "PORT=${PORT:-3012} ./scripts/start-supervised.sh",
     "mcp": "node scripts/storyai-mcp.mjs",
+    "setup:plugins": "node scripts/ensure-antigravity-video-plugins.cjs",
     "lint": "eslint ."
   },
   "dependencies": {

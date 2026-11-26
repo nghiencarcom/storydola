@@ -104,6 +104,57 @@ function runFfmpegBuffer(args: string[], timeout = 45_000, maxBuffer = 32_000_00
  * Extracts fine-grained acoustic pauses & dead air from raw 16-bit mono PCM.
  * Leaves a 65ms breathing pad on speech edges so consonant/vowel tails stay natural.
  */
+export function measurePcmVoiceLevelsDb(pcm: Buffer, sampleRate: number): {
+  maxVolumeDb: number;
+  speechPeakDb: number;
+  meanVolumeDb: number;
+} {
+  const totalSamples = Math.floor(pcm.length / 2);
+  if (!totalSamples || sampleRate <= 0) {
+    return { maxVolumeDb: -90, speechPeakDb: -90, meanVolumeDb: -90 };
+  }
+
+  const windowSamples = Math.max(1, Math.round(sampleRate * 0.1)); // 100ms speech windows
+  let globalPeak = 0;
+  let totalSq = 0;
+  const windowPeaksDb: number[] = [];
+
+  for (let pos = 0; pos < totalSamples; pos += windowSamples) {
+    const end = Math.min(totalSamples, pos + windowSamples);
+    let winPeak = 0;
+    let winSq = 0;
+    for (let i = pos; i < end; i++) {
+      const sample = pcm.readInt16LE(i * 2) / 32768;
+      const abs = Math.abs(sample);
+      if (abs > winPeak) winPeak = abs;
+      if (abs > globalPeak) globalPeak = abs;
+      winSq += sample * sample;
+    }
+    totalSq += winSq;
+    const winRms = Math.sqrt(winSq / (end - pos));
+    const winRmsDb = winRms > 1e-5 ? 20 * Math.log10(winRms) : -90;
+    const winPeakDb = winPeak > 1e-5 ? 20 * Math.log10(winPeak) : -90;
+    if (winRmsDb > -42) {
+      windowPeaksDb.push(winPeakDb);
+    }
+  }
+
+  const maxVolumeDb = globalPeak > 1e-5 ? Number((20 * Math.log10(globalPeak)).toFixed(1)) : -90;
+  const globalRms = Math.sqrt(totalSq / totalSamples);
+  const meanVolumeDb = globalRms > 1e-5 ? Number((20 * Math.log10(globalRms)).toFixed(1)) : -90;
+
+  windowPeaksDb.sort((a, b) => a - b);
+  const p90 = windowPeaksDb.length
+    ? windowPeaksDb[Math.min(windowPeaksDb.length - 1, Math.floor(windowPeaksDb.length * 0.9))]
+    : maxVolumeDb;
+
+  return {
+    maxVolumeDb,
+    speechPeakDb: Number(p90.toFixed(1)),
+    meanVolumeDb,
+  };
+}
+
 export function extractPcmSilencePauses(
   pcm: Buffer,
   sampleRate: number,
@@ -777,6 +828,8 @@ export async function analyzeAutoEditMedia(
   const allWords: AutoEditWord[] = [];
   let transcriptKind: AutoEditTranscriptKind = "acoustic_only";
   let whisperBackend: string | undefined;
+  let inputMaxVolumeDb: number | undefined;
+  let inputMeanVolumeDb: number | undefined;
 
   for (const rawVideo of videosInput) {
     const filePath = path.join(jobMediaDir, "videos", `${rawVideo.id}${rawVideo.extension}`);
@@ -806,6 +859,13 @@ export async function analyzeAutoEditMedia(
           "-f", "s16le",
           "pipe:1",
         ], 45_000, 32_000_000);
+        const clipLevels = measurePcmVoiceLevelsDb(pcm, pcmRate);
+        if (inputMaxVolumeDb === undefined || clipLevels.maxVolumeDb > inputMaxVolumeDb) {
+          inputMaxVolumeDb = clipLevels.maxVolumeDb;
+        }
+        if (inputMeanVolumeDb === undefined || clipLevels.meanVolumeDb > inputMeanVolumeDb) {
+          inputMeanVolumeDb = clipLevels.meanVolumeDb;
+        }
         const clipPauses = extractPcmSilencePauses(pcm, pcmRate, rawVideo.id, meta.durationMs, options.silenceThresholdMs);
         allPauses.push(...clipPauses);
       } catch {
@@ -889,6 +949,8 @@ export async function analyzeAutoEditMedia(
       transcriptKind,
       whisperBackend,
       rawDurationMs,
+      inputMaxVolumeDb,
+      inputMeanVolumeDb,
       words: allWords,
       pauses: allPauses,
     },

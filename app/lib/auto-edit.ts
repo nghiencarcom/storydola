@@ -46,6 +46,7 @@ export const autoEditOptionsSchema = z.object({
   direction: z.string().trim().max(2_000).default(""),
   manualTranscript: z.string().trim().max(24_000).default(""),
   silenceThresholdMs: z.number().int().min(250).max(2_000).default(450),
+  voiceTargetPeakDb: z.number().min(-3).max(-0.3).default(-1.2),
   safeZoneGuard: z.boolean().default(true),
 });
 
@@ -147,6 +148,8 @@ export type AutoEditAnalysis = {
   transcriptKind: AutoEditTranscriptKind;
   whisperBackend?: string;
   rawDurationMs: number;
+  inputMaxVolumeDb?: number;
+  inputMeanVolumeDb?: number;
   words: AutoEditWord[];
   pauses: AutoEditPause[];
 };
@@ -159,6 +162,9 @@ export type AutoEditRenderInfo = {
   height?: number;
   fps?: number;
   sizeBytes?: number;
+  maxVolumeDb?: number;
+  speechPeakDb?: number;
+  meanVolumeDb?: number;
   updatedAt: string;
   error?: string;
 };

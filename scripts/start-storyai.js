@@ -4,6 +4,7 @@ const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
+const { ensureAntigravityVideoPlugins } = require("./ensure-antigravity-video-plugins.cjs");
 
 const projectRoot = path.resolve(__dirname, "..");
 const logsDir = path.join(projectRoot, "logs");
@@ -464,6 +465,7 @@ async function main() {
   checkExternalTools();
   ensureLocalConfig();
   updateFromMain();
+  ensureAntigravityVideoPlugins({ logger: log });
   const appVersion = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8")).version;
   const gitCommit = capture("git", ["rev-parse", "--short", "HEAD"]) || "source archive";
   log(`Runtime: StoryAI ${appVersion}; Node.js ${process.versions.node}; ${process.platform}/${process.arch}; Git ${gitCommit}.`);

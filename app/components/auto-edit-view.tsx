@@ -89,6 +89,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
   const [aspectRatio, setAspectRatio] = useState<AutoEditAspectRatio>("9:16");
   const [language, setLanguage] = useState<"vi" | "en">("vi");
   const [silenceThresholdMs, setSilenceThresholdMs] = useState(450);
+  const [voiceTargetPeakDb, setVoiceTargetPeakDb] = useState(-1.2);
   const [safeZoneGuard, setSafeZoneGuard] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ doneBytes: number; totalBytes: number; label: string }>();
@@ -201,6 +202,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
       direction: String(fd.get("direction") || ""),
       manualTranscript: String(fd.get("manualTranscript") || ""),
       silenceThresholdMs,
+      voiceTargetPeakDb,
       safeZoneGuard,
     };
 
@@ -701,6 +703,17 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
               />
             </label>
             <label className="form-field">
+              <span>Chuẩn hoá đỉnh giọng đọc ({voiceTargetPeakDb.toFixed(1)} dB · Chuẩn 0 đến -3 dB)</span>
+              <input
+                type="range"
+                min={-3.0}
+                max={-0.5}
+                step={0.1}
+                value={voiceTargetPeakDb}
+                onChange={(e) => setVoiceTargetPeakDb(Number(e.target.value))}
+              />
+            </label>
+            <label className="form-field">
               <span>Điểm nổi bật / Giá / Ưu đãi cần chèn lên thẻ HyperFrames</span>
               <textarea
                 name="productHighlights"
@@ -877,6 +890,16 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                 <div>
                   <span>Lớp phủ HyperFrames</span>
                   <strong>{computedTimeline.overlays.length} thẻ đồ hoạ</strong>
+                </div>
+                <div>
+                  <span>Độ lớn Giọng đọc (Voice dB)</span>
+                  <strong>
+                    {job.render?.maxVolumeDb !== undefined
+                      ? `Peak ${job.render.maxVolumeDb.toFixed(1)} dB · Thoại ${job.render.speechPeakDb?.toFixed(1) ?? job.render.maxVolumeDb.toFixed(1)} dB ✓`
+                      : job.analysis?.inputMaxVolumeDb !== undefined
+                        ? `Gốc ${job.analysis.inputMaxVolumeDb.toFixed(1)} dB → Sẽ nâng lên ${job.options.voiceTargetPeakDb?.toFixed(1) ?? "-1.2"} dB`
+                        : "Tự động khoá 0 đến -3 dB"}
+                  </strong>
                 </div>
               </div>
 

@@ -159,4 +159,18 @@ const autoEditMedia = loadTsModule("app/lib/auto-edit-media.ts");
   assert.equal(timelineCard.timelineStartMs, 1400);
 }
 
+// 4. Verify Voice dB measurement (0 to -3 dB zone check)
+{
+  const sampleRate = 8000;
+  const pcm = Buffer.alloc(sampleRate * 2 * 2); // 2 seconds
+  // Amplitude 0.87 => 20 * log10(0.87) ≈ -1.2 dB (inside 0 to -3 dB target zone)
+  const targetSample = Math.round(0.87 * 32767);
+  for (let i = 1000; i < 14000; i++) {
+    pcm.writeInt16LE(i % 2 === 0 ? targetSample : -targetSample, i * 2);
+  }
+  const levels = autoEditMedia.measurePcmVoiceLevelsDb(pcm, sampleRate);
+  assert.ok(levels.maxVolumeDb <= 0 && levels.maxVolumeDb >= -3, `Expected maxVolumeDb in [-3, 0], got ${levels.maxVolumeDb}`);
+  assert.ok(levels.speechPeakDb <= 0 && levels.speechPeakDb >= -3, `Expected speechPeakDb in [-3, 0], got ${levels.speechPeakDb}`);
+}
+
 console.log("auto-edit-engine tests passed!");
