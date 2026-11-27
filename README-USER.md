@@ -4,9 +4,9 @@ StoryAI chạy trực tiếp trên máy và mở giao diện trong trình duyệ
 
 ## Yêu cầu
 
-Cài Node.js 22 trở lên và Git. Cả FFmpeg và FFprobe đều cần nếu muốn render MP4.
+Chỉ cần cài Node.js 22 trở lên (Git là tùy chọn; FFmpeg và FFprobe chỉ cần nếu muốn render MP4).
 
-Node.js/npm phải được cài trước khi chạy `npm start`; npm không thể tự cài Node.js vì bản thân npm cần Node.js để hoạt động. Nếu Git hoặc FFmpeg/FFprobe chưa có trong `PATH`, `npm start` sẽ in hướng dẫn cài tương ứng và vẫn chạy StoryAI nếu có thể. Thiếu Git thì cập nhật tự động không hoạt động; thiếu một trong hai công cụ media thì không render MP4 được.
+Node.js/npm phải được cài trước khi chạy `npm start`; npm không thể tự cài Node.js vì bản thân npm cần Node.js để hoạt động. Khi chạy `npm start` (hoặc `Start StoryAI.bat` / `Start StoryAI.command`), nếu máy chưa có Git, StoryAI tự cài Git (qua WinGet trên Windows / Homebrew trên macOS) hoặc tự tải bản cập nhật và plugin trực tiếp từ GitHub qua HTTPS — kể cả khi người dùng tải mã nguồn bằng nút **Code → Download ZIP** trên GitHub mà không rành Git. Nếu thiếu FFmpeg/FFprobe, `npm start` sẽ in hướng dẫn cài tương ứng và vẫn chạy StoryAI.
 
 Trên Windows, có thể cài bằng WinGet trong PowerShell:
 
@@ -54,7 +54,7 @@ git --version
 
 Node.js phải là phiên bản 22 trở lên. Nếu dùng render MP4, cả `ffmpeg -version` và `ffprobe -version` đều phải chạy thành công.
 
-Mở Terminal hoặc PowerShell tại thư mục muốn đặt StoryAI và chạy:
+Người dùng phổ thông có thể tải ZIP từ nút **Code → Download ZIP** trên GitHub, giải nén rồi mở `Start StoryAI.bat` (Windows) / `Start StoryAI.command` (macOS) hoặc chạy `npm start` trong thư mục dự án. Hoặc mở Terminal/PowerShell và chạy:
 
 ```powershell
 git clone https://github.com/nghiencarcom/storydola.git StoryAI
@@ -62,7 +62,7 @@ cd StoryAI
 npm start
 ```
 
-Lần chạy đầu tự cài thư viện npm, build ứng dụng, tạo `.env` cùng khóa mã hóa riêng cho máy, rồi mở trình duyệt. Người dùng đăng nhập bằng tài khoản MaiVideo.
+Lần chạy đầu tự kiểm tra/cài Git (hoặc dùng HTTPS trực tiếp), nối thư mục với GitHub nếu tải từ ZIP, tự cài thư viện npm, build ứng dụng, tạo `.env` cùng khóa mã hóa riêng cho máy, rồi mở trình duyệt. Người dùng đăng nhập bằng tài khoản MaiVideo.
 
 ## Remake video từ link
 

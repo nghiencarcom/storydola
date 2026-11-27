@@ -5,12 +5,20 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const { ensureAntigravityVideoPlugins } = require("./ensure-antigravity-video-plugins.cjs");
+const {
+  resolveGitExecutable,
+  fetchRemoteBranchSha,
+  downloadAndExtractGitHubArchive,
+  syncExtractedArchiveToProject,
+} = require("./github-tarball.cjs");
 
 const projectRoot = path.resolve(__dirname, "..");
 const logsDir = path.join(projectRoot, "logs");
 const logFile = path.join(logsDir, "storyai-supervisor.log");
 const buildMarker = path.join(projectRoot, ".next", ".storyai-build-fingerprint");
 const dependencyMarker = path.join(logsDir, "package-lock.sha256");
+const archiveShaFile = path.join(logsDir, "github-archive-commit.sha");
+const archiveManifestFile = path.join(logsDir, "github-archive-files.json");
 const isWindows = process.platform === "win32";
 
 process.chdir(projectRoot);
@@ -24,24 +32,30 @@ function log(message) {
 
 function run(command, args, label) {
   log(label);
-  const result = spawnSync(command, args, {
+  const useCmdWrapper = isWindows && /\.(?:cmd|bat)$/i.test(command);
+  const execCommand = useCmdWrapper ? (process.env.ComSpec || "cmd.exe") : command;
+  const execArgs = useCmdWrapper ? ["/d", "/s", "/c", command, ...args] : args;
+  const result = spawnSync(execCommand, execArgs, {
     cwd: projectRoot,
     env: process.env,
     stdio: "inherit",
-    shell: isWindows,
+    shell: false,
     windowsHide: true,
   });
   if (result.error) throw new Error(`${label}: ${result.error.message}`);
   if (result.status !== 0) throw new Error(`${label}: command exited with code ${result.status}`);
 }
 
-function capture(command, args) {
+function capture(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: projectRoot,
+    env: options.env || process.env,
     encoding: "utf8",
+    shell: false,
     windowsHide: true,
+    timeout: options.timeout,
   });
-  return result.status === 0 ? result.stdout.trim() : "";
+  return result.status === 0 ? (result.stdout || "").trim() : "";
 }
 
 function ensureLocalConfig() {
@@ -78,50 +92,223 @@ function autoUpdateEnabled() {
   return !["false", "0", "off", "no"].includes((value || "").trim().toLowerCase());
 }
 
-function updateFromMain() {
+function readArchiveManifest() {
+  try {
+    if (!fs.existsSync(archiveManifestFile)) return [];
+    const parsed = JSON.parse(fs.readFileSync(archiveManifestFile, "utf8"));
+    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function autoInstallGitEnabled() {
+  let value = process.env.STORYAI_AUTO_INSTALL_GIT;
+  if (value === undefined) {
+    const content = fs.readFileSync(path.join(projectRoot, ".env"), "utf8");
+    const match = content.match(/^\s*STORYAI_AUTO_INSTALL_GIT\s*=\s*(.*?)\s*$/m);
+    value = match?.[1].replace(/\s+#.*$/, "").replace(/^["']|["']$/g, "");
+  }
+  return !["false", "0", "off", "no"].includes((value || "").trim().toLowerCase());
+}
+
+function ensureGitInstalled() {
+  let gitBin = resolveGitExecutable();
+  if (gitBin) return gitBin;
+  if (!autoInstallGitEnabled()) {
+    log("Git is not installed (STORYAI_AUTO_INSTALL_GIT=false). Using direct GitHub HTTPS sync.");
+    return "";
+  }
+
+  if (isWindows) {
+    const localAppData = process.env.LOCALAPPDATA?.trim() || path.join(os.homedir(), "AppData", "Local");
+    const windowsAppsWinget = path.join(localAppData, "Microsoft", "WindowsApps", "winget.exe");
+    const wingetBin = commandWorks("winget.exe", ["--version"])
+      ? "winget.exe"
+      : (fs.existsSync(windowsAppsWinget) && commandWorks(windowsAppsWinget, ["--version"]) ? windowsAppsWinget : "");
+    if (wingetBin) {
+      log("Git was not found. Automatically installing Git via WinGet (no user setup required)...");
+      const baseArgs = [
+        "install", "--id", "Git.Git", "--exact",
+        "--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity",
+      ];
+      spawnSync(wingetBin, [...baseArgs, "--scope", "user"], {
+        cwd: projectRoot,
+        env: process.env,
+        stdio: "inherit",
+        shell: false,
+        windowsHide: true,
+        timeout: 300_000,
+      });
+      gitBin = resolveGitExecutable();
+      if (!gitBin) {
+        spawnSync(wingetBin, baseArgs, {
+          cwd: projectRoot,
+          env: process.env,
+          stdio: "inherit",
+          shell: false,
+          windowsHide: true,
+          timeout: 300_000,
+        });
+        gitBin = resolveGitExecutable();
+      }
+    }
+  } else if (process.platform === "darwin") {
+    const brewCandidates = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew", "brew"];
+    const brewBin = brewCandidates.find((candidate) => (candidate === "brew" || fs.existsSync(candidate)) && commandWorks(candidate, ["--version"]));
+    if (brewBin) {
+      log("Git was not found. Automatically installing Git via Homebrew...");
+      spawnSync(brewBin, ["install", "git"], {
+        cwd: projectRoot,
+        env: process.env,
+        stdio: "inherit",
+        shell: false,
+        timeout: 300_000,
+      });
+      gitBin = resolveGitExecutable();
+    }
+  }
+
+  if (gitBin) {
+    log(`Git installed and ready (${gitBin}).`);
+    return gitBin;
+  }
+
+  log("Git is not installed; StoryAI will sync updates and Antigravity plugins directly from GitHub over HTTPS.");
+  return "";
+}
+
+function bootstrapGitCheckoutIfZip(gitBin, repoUrl, branch = "main") {
+  log(`This folder was downloaded without Git metadata. Connecting it to ${repoUrl} for automatic updates...`);
+  const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+  const runGitStep = (args, timeout = 120_000) => spawnSync(gitBin, args, {
+    cwd: projectRoot,
+    env: gitEnv,
+    encoding: "utf8",
+    shell: false,
+    windowsHide: true,
+    timeout,
+  });
+
+  const gitDir = path.join(projectRoot, ".git");
+  const initRes = runGitStep(["init"], 30_000);
+  if (initRes.status !== 0) {
+    fs.rmSync(gitDir, { recursive: true, force: true });
+    return { bootstrapped: false };
+  }
+
+  const hasOrigin = runGitStep(["remote", "get-url", "origin"], 15_000).status === 0;
+  const remoteRes = runGitStep(hasOrigin ? ["remote", "set-url", "origin", repoUrl] : ["remote", "add", "origin", repoUrl], 15_000);
+  if (remoteRes.status !== 0) {
+    fs.rmSync(gitDir, { recursive: true, force: true });
+    return { bootstrapped: false };
+  }
+
+  const fetchRes = runGitStep(["fetch", "--depth", "1", "origin", branch], 120_000);
+  if (fetchRes.status !== 0) {
+    fs.rmSync(gitDir, { recursive: true, force: true });
+    return { bootstrapped: false };
+  }
+
+  const checkoutRes = runGitStep(["checkout", "-f", "-B", branch, "--track", `origin/${branch}`], 60_000);
+  if (checkoutRes.status !== 0) {
+    fs.rmSync(gitDir, { recursive: true, force: true });
+    return { bootstrapped: false };
+  }
+
+  const headCommit = capture(gitBin, ["rev-parse", "--short", "HEAD"], { env: gitEnv });
+  log(`Connected folder to GitHub and updated source to ${headCommit || branch}.`);
+  return { bootstrapped: true, updated: true };
+}
+
+async function updateFromGitHubArchive(githubRepo, branch = "main") {
+  const remoteSha = await fetchRemoteBranchSha(githubRepo, branch);
+  if (!remoteSha) {
+    log("Could not reach GitHub to check for updates. Continuing with the current local version.");
+    return { updated: false };
+  }
+
+  const previousSha = fs.existsSync(archiveShaFile) ? fs.readFileSync(archiveShaFile, "utf8").trim() : "";
+  if (previousSha && previousSha === remoteSha) {
+    log("StoryAI is already up to date.");
+    return { updated: false };
+  }
+
+  log(`Downloading latest StoryAI update (${remoteSha.slice(0, 12)}) directly from GitHub...`);
+  const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "storyai-gh-update-"));
+  try {
+    await downloadAndExtractGitHubArchive(githubRepo, remoteSha, stagingDir);
+    const previousManifest = readArchiveManifest();
+    const { syncedFiles } = syncExtractedArchiveToProject(stagingDir, projectRoot, previousManifest);
+    fs.writeFileSync(archiveManifestFile, `${JSON.stringify(syncedFiles, null, 2)}\n`, "utf8");
+    fs.writeFileSync(archiveShaFile, `${remoteSha}\n`, "utf8");
+    log(`Updated source from GitHub to ${remoteSha.slice(0, 12)}.`);
+    return { updated: true };
+  } catch (cause) {
+    log(`Could not download GitHub update: ${cause instanceof Error ? cause.message : String(cause)}. Continuing with the current version.`);
+    return { updated: false };
+  } finally {
+    fs.rmSync(stagingDir, { recursive: true, force: true });
+  }
+}
+
+async function updateFromMain(gitBin) {
   if (!autoUpdateEnabled()) {
     log("Automatic updates are disabled on this machine (STORYAI_AUTO_UPDATE=false). Using local source files.");
     return { updated: false };
   }
-  const gitCommand = isWindows ? "git.exe" : "git";
-  if (!commandWorks(gitCommand, ["--version"])) return { updated: false };
 
-  const inRepo = capture("git", ["rev-parse", "--is-inside-work-tree"]);
-  if (inRepo !== "true") {
-    log("This folder is not a Git checkout. Automatic updates require cloning the repository with Git.");
-    return { updated: false };
+  const githubRepo = (process.env.STORYAI_GITHUB_REPO || "nghiencarcom/storydola").trim();
+  const repoUrl = `https://github.com/${githubRepo}.git`;
+  const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+
+  if (gitBin) {
+    const hasGitDir = fs.existsSync(path.join(projectRoot, ".git"));
+    if (!hasGitDir) {
+      const bootstrapped = bootstrapGitCheckoutIfZip(gitBin, repoUrl, "main");
+      if (bootstrapped.bootstrapped) return { updated: bootstrapped.updated };
+      return updateFromGitHubArchive(githubRepo, "main");
+    }
+
+    const inRepo = capture(gitBin, ["rev-parse", "--is-inside-work-tree"], { env: gitEnv });
+    if (inRepo !== "true") {
+      return updateFromGitHubArchive(githubRepo, "main");
+    }
+
+    const branch = capture(gitBin, ["branch", "--show-current"], { env: gitEnv });
+    if (branch !== "main") {
+      log(`Automatic updates are enabled on main; current branch is ${branch || "detached"}.`);
+      return { updated: false };
+    }
+
+    const changes = capture(gitBin, ["status", "--porcelain"], { env: gitEnv });
+    if (changes) {
+      log("Local source changes were found. Trying a safe fast-forward; Git will stop if an update would overwrite them.");
+    }
+
+    const previousCommit = capture(gitBin, ["rev-parse", "HEAD"], { env: gitEnv });
+    if (!previousCommit) return { updated: false };
+
+    const result = spawnSync(gitBin, ["pull", "--ff-only", "origin", "main"], {
+      cwd: projectRoot,
+      env: gitEnv,
+      stdio: "inherit",
+      shell: false,
+      windowsHide: true,
+    });
+    if (result.error || result.status !== 0) {
+      log(`Could not check for updates${result.error ? `: ${result.error.message}` : ". Continuing with the current version."} Local changes were preserved; resolve or stash conflicting changes and retry.`);
+      return { updated: false };
+    }
+
+    const currentCommit = capture(gitBin, ["rev-parse", "HEAD"], { env: gitEnv });
+    if (currentCommit !== previousCommit) log(`Updated source to ${currentCommit.slice(0, 12)}.`);
+    else log("StoryAI is already up to date.");
+    if (changes) log("Local source changes remain in the working tree.");
+    return { updated: currentCommit !== previousCommit };
   }
 
-  const branch = capture("git", ["branch", "--show-current"]);
-  if (branch !== "main") {
-    log(`Automatic updates are enabled on main; current branch is ${branch || "detached"}.`);
-    return { updated: false };
-  }
-
-  const changes = capture("git", ["status", "--porcelain"]);
-  if (changes) {
-    log("Local source changes were found. Trying a safe fast-forward; Git will stop if an update would overwrite them.");
-  }
-
-  const previousCommit = capture("git", ["rev-parse", "HEAD"]);
-  if (!previousCommit) return { updated: false };
-
-  const result = spawnSync("git", ["pull", "--ff-only", "origin", "main"], {
-    cwd: projectRoot,
-    env: process.env,
-    stdio: "inherit",
-    windowsHide: true,
-  });
-  if (result.error || result.status !== 0) {
-    log(`Could not check for updates${result.error ? `: ${result.error.message}` : ". Continuing with the current version."} Local changes were preserved; resolve or stash conflicting changes and retry.`);
-    return { updated: false };
-  }
-
-  const currentCommit = capture("git", ["rev-parse", "HEAD"]);
-  if (currentCommit !== previousCommit) log(`Updated source to ${currentCommit.slice(0, 12)}.`);
-  else log("StoryAI is already up to date.");
-  if (changes) log("Local source changes remain in the working tree.");
-  return { updated: currentCommit !== previousCommit };
+  return updateFromGitHubArchive(githubRepo, "main");
 }
 
 function sha256(value) {
@@ -188,7 +375,7 @@ function commandWorks(command, args = ["-version"]) {
   const result = spawnSync(command, args, {
     cwd: projectRoot,
     stdio: "ignore",
-    shell: isWindows,
+    shell: false,
     windowsHide: true,
   });
   return result.status === 0;
@@ -217,12 +404,6 @@ function installHint(tool) {
 }
 
 function checkExternalTools() {
-  const gitCommand = isWindows ? "git.exe" : "git";
-  if (!commandWorks(gitCommand, ["--version"])) {
-    log("Git was not found in PATH. StoryAI can start, but cloning and automatic GitHub updates require Git.");
-    log(`Install Git: ${installHint("git")}`);
-  }
-
   const ffmpegCommand = isWindows ? "ffmpeg.exe" : "ffmpeg";
   const ffprobeCommand = isWindows ? "ffprobe.exe" : "ffprobe";
   const missing = [];
@@ -462,12 +643,32 @@ async function main() {
     throw new Error(`Node.js 22 or newer is required. Current version: ${process.versions.node}. Install or update Node.js: ${installHint("node")}`);
   }
 
-  checkExternalTools();
   ensureLocalConfig();
-  updateFromMain();
-  ensureAntigravityVideoPlugins({ logger: log });
+  const gitBin = ensureGitInstalled();
+  checkExternalTools();
+
+  const launcherPath = path.join(projectRoot, "scripts", "start-storyai.js");
+  const beforeLauncherHash = sha256(fs.readFileSync(launcherPath));
+  await updateFromMain(gitBin);
+  const afterLauncherHash = sha256(fs.readFileSync(launcherPath));
+  if (beforeLauncherHash !== afterLauncherHash && process.env.STORYAI_LAUNCHER_REEXEC !== "1") {
+    log("Launcher script was updated; restarting with the new launcher...");
+    const reexec = spawnSync(process.execPath, [launcherPath, ...process.argv.slice(2)], {
+      cwd: projectRoot,
+      env: { ...process.env, STORYAI_LAUNCHER_REEXEC: "1", STORYAI_AUTO_UPDATE: "false" },
+      stdio: "inherit",
+      shell: false,
+      windowsHide: true,
+    });
+    process.exitCode = reexec.status ?? 0;
+    return;
+  }
+
+  await ensureAntigravityVideoPlugins({ logger: log });
   const appVersion = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8")).version;
-  const gitCommit = capture("git", ["rev-parse", "--short", "HEAD"]) || "source archive";
+  const archiveSha = fs.existsSync(archiveShaFile) ? fs.readFileSync(archiveShaFile, "utf8").trim() : "";
+  const gitCommit = (gitBin && capture(gitBin, ["rev-parse", "--short", "HEAD"]))
+    || (archiveSha ? `${archiveSha.slice(0, 7)} (github-sync)` : "source archive");
   log(`Runtime: StoryAI ${appVersion}; Node.js ${process.versions.node}; ${process.platform}/${process.arch}; Git ${gitCommit}.`);
   const port = portFromConfig();
   await stopPreviousStoryAI(port);

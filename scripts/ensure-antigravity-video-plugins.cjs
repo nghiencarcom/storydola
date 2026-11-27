@@ -4,12 +4,12 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
-
-const isWindows = process.platform === "win32";
-const gitExecutable = isWindows ? "git.exe" : "git";
+const { resolveGitExecutable, downloadAndExtractGitHubArchive } = require("./github-tarball.cjs");
 
 const HYPERFRAMES_REPO = "https://github.com/heygen-com/hyperframes.git";
+const HYPERFRAMES_GITHUB = "heygen-com/hyperframes";
 const REMOTION_SKILLS_REPO = "https://github.com/remotion-dev/skills.git";
+const REMOTION_SKILLS_GITHUB = "remotion-dev/skills";
 
 const HYPERFRAMES_MANIFEST = {
   name: "hyperframes",
@@ -165,33 +165,45 @@ function defaultPluginsDirectory() {
   return path.join(os.homedir(), ".gemini", "config", "plugins");
 }
 
-function runGit(args, cwd, timeout = 90_000) {
+function runGit(gitExecutable, args, cwd, timeout = 90_000) {
   const res = spawnSync(gitExecutable, args, {
     cwd,
     env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
     encoding: "utf8",
     timeout,
-    shell: isWindows,
+    shell: false,
     windowsHide: true,
   });
   return res.status === 0;
 }
 
-function hasGit() {
-  return runGit(["--version"], os.tmpdir(), 8_000);
-}
-
-function cloneSkillsSubtree(repoUrl, targetDir, sparsePaths) {
-  // Fast sparse checkout first (~200 KB download instead of full repo)
-  if (
-    sparsePaths.length > 0 &&
-    runGit(["clone", "--depth", "1", "--filter=blob:none", "--sparse", repoUrl, targetDir], os.tmpdir(), 90_000) &&
-    runGit(["sparse-checkout", "set", ...sparsePaths], targetDir, 45_000)
-  ) {
-    return true;
+async function fetchSkillsSubtree(ownerRepo, repoUrl, targetDir, sparsePaths, log) {
+  const gitExecutable = resolveGitExecutable();
+  if (gitExecutable) {
+    // Fast sparse checkout first (~200 KB download instead of full repo)
+    if (
+      sparsePaths.length > 0 &&
+      runGit(gitExecutable, ["clone", "--depth", "1", "--filter=blob:none", "--sparse", repoUrl, targetDir], os.tmpdir(), 90_000) &&
+      runGit(gitExecutable, ["sparse-checkout", "set", ...sparsePaths], targetDir, 45_000)
+    ) {
+      return true;
+    }
+    fs.rmSync(targetDir, { recursive: true, force: true });
+    if (runGit(gitExecutable, ["clone", "--depth", "1", repoUrl, targetDir], os.tmpdir(), 120_000)) {
+      return true;
+    }
+    fs.rmSync(targetDir, { recursive: true, force: true });
   }
-  fs.rmSync(targetDir, { recursive: true, force: true });
-  return runGit(["clone", "--depth", "1", repoUrl, targetDir], os.tmpdir(), 120_000);
+
+  try {
+    log(`[antigravity-plugins] Downloading ${ownerRepo} skills from GitHub over HTTPS...`);
+    const filterPrefixes = sparsePaths.map((entry) => `${entry.replace(/\/+$/, "")}/`);
+    await downloadAndExtractGitHubArchive(ownerRepo, "HEAD", targetDir, { filterPrefixes });
+    return true;
+  } catch {
+    fs.rmSync(targetDir, { recursive: true, force: true });
+    return false;
+  }
 }
 
 function copyChildDirectories(sourceParent, destParent, filterNames) {
@@ -238,21 +250,17 @@ function ensureWhisperPlugin(pluginsDir, force, log) {
   return { id: "whisper-auto-edit", action: "installed" };
 }
 
-function ensureHyperframesPlugin(pluginsDir, force, log) {
+async function ensureHyperframesPlugin(pluginsDir, force, log) {
   const targetDir = path.join(pluginsDir, "hyperframes");
   if (!force && isPluginHealthy(targetDir, "hyperframes")) {
     return { id: "hyperframes", action: "present" };
-  }
-  if (!hasGit()) {
-    log("[antigravity-plugins] Skipping HyperFrames GitHub sync because Git is not in PATH.");
-    return { id: "hyperframes", action: "skipped_no_git" };
   }
 
   const tmpClone = fs.mkdtempSync(path.join(os.tmpdir(), "storyai-hf-plugin-"));
   const stagingDir = `${targetDir}.staging-${process.pid}`;
   try {
     log("[antigravity-plugins] Downloading official HyperFrames skills from GitHub (heygen-com/hyperframes)...");
-    if (!cloneSkillsSubtree(HYPERFRAMES_REPO, tmpClone, ["skills", ".agents/skills"])) {
+    if (!(await fetchSkillsSubtree(HYPERFRAMES_GITHUB, HYPERFRAMES_REPO, tmpClone, ["skills", ".agents/skills"], log))) {
       log("[antigravity-plugins] Could not reach GitHub for HyperFrames; will retry next time.");
       return { id: "hyperframes", action: "skipped_offline" };
     }
@@ -279,21 +287,17 @@ function ensureHyperframesPlugin(pluginsDir, force, log) {
   }
 }
 
-function ensureRemotionPlugin(pluginsDir, force, log) {
+async function ensureRemotionPlugin(pluginsDir, force, log) {
   const targetDir = path.join(pluginsDir, "remotion");
   if (!force && isPluginHealthy(targetDir, "remotion-best-practices")) {
     return { id: "remotion", action: "present" };
-  }
-  if (!hasGit()) {
-    log("[antigravity-plugins] Skipping Remotion GitHub sync because Git is not in PATH.");
-    return { id: "remotion", action: "skipped_no_git" };
   }
 
   const tmpClone = fs.mkdtempSync(path.join(os.tmpdir(), "storyai-remotion-plugin-"));
   const stagingDir = `${targetDir}.staging-${process.pid}`;
   try {
     log("[antigravity-plugins] Downloading official Remotion skills from GitHub (remotion-dev/skills)...");
-    if (!cloneSkillsSubtree(REMOTION_SKILLS_REPO, tmpClone, ["skills"])) {
+    if (!(await fetchSkillsSubtree(REMOTION_SKILLS_GITHUB, REMOTION_SKILLS_REPO, tmpClone, ["skills"], log))) {
       log("[antigravity-plugins] Could not reach GitHub for Remotion skills; will retry next time.");
       return { id: "remotion", action: "skipped_offline" };
     }
@@ -329,7 +333,7 @@ function ensureThreeGsapPlugin(pluginsDir, force, log) {
   return { id: "threejs-gsap-fx", action: "installed" };
 }
 
-function ensureAntigravityVideoPlugins(options = {}) {
+async function ensureAntigravityVideoPlugins(options = {}) {
   const pluginsDir = options.pluginsDir || defaultPluginsDirectory();
   const force = Boolean(options.force);
   const log = typeof options.logger === "function" ? options.logger : (msg) => console.log(msg);
@@ -339,8 +343,8 @@ function ensureAntigravityVideoPlugins(options = {}) {
     const results = [
       ensureWhisperPlugin(pluginsDir, force, log),
       ensureThreeGsapPlugin(pluginsDir, force, log),
-      ensureHyperframesPlugin(pluginsDir, force, log),
-      ensureRemotionPlugin(pluginsDir, force, log),
+      await ensureHyperframesPlugin(pluginsDir, force, log),
+      await ensureRemotionPlugin(pluginsDir, force, log),
     ];
     return { ok: true, pluginsDir, results };
   } catch (error) {
@@ -353,6 +357,7 @@ module.exports = { ensureAntigravityVideoPlugins, defaultPluginsDirectory };
 
 if (require.main === module) {
   const force = process.argv.includes("--force");
-  const outcome = ensureAntigravityVideoPlugins({ force });
-  if (!outcome.ok) process.exitCode = 1;
+  ensureAntigravityVideoPlugins({ force }).then((outcome) => {
+    if (!outcome.ok) process.exitCode = 1;
+  });
 }
