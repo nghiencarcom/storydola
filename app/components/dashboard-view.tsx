@@ -4454,7 +4454,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
               </details>)}</div>
             </section>
           </div>
-        </div> : <div className="publishing-package-empty"><Icon name="file" size={17} /><span>Chưa có gợi ý cho phạm vi này. Tạo từ GPT khi xuất JSON hoặc bấm nút để sinh bằng Script LLM.</span></div>}
+        </div> : <div className="publishing-package-empty"><Icon name="file" size={17} /><span>Chưa có gợi ý cho phạm vi này. Tạo từ GPT khi xuất JSON hoặc bấm nút để sinh bằng Code Agent / Script LLM.</span></div>}
       </section>}
 
       <section className="production-tools" id="export">

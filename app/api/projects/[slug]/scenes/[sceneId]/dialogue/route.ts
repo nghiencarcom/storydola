@@ -153,7 +153,7 @@ export async function POST(_request: Request, context: { params: Promise<{ slug:
   } catch (cause) {
     const code = cause instanceof Error ? cause.message : "DIALOGUE_EXTRACT_FAILED";
     const messages: Record<string, string> = {
-      SCRIPT_LLM_NOT_CONFIGURED: "Chưa cấu hình Script LLM để AI tách thoại. Bạn vẫn có thể thêm câu thủ công hoặc nạp SRT.",
+      SCRIPT_LLM_NOT_CONFIGURED: "Chưa cấu hình Script LLM hoặc Code Agent CLI để AI tách thoại. Bạn vẫn có thể thêm câu thủ công hoặc nạp SRT.",
       DIALOGUE_SOURCE_EMPTY: "Cảnh chưa có lời thoại để phân tích.",
       DIALOGUE_EXTRACT_EMPTY: "AI không trả về các lượt thoại hợp lệ. Hãy thử lại hoặc nhập SRT thủ công.",
       DIALOGUE_EXTRACT_TOO_MANY: "AI trả về quá nhiều lượt thoại cho một cảnh. Hãy thử lại hoặc chia nội dung thành nhiều cảnh.",

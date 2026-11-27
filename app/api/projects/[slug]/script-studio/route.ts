@@ -167,7 +167,8 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
 
   if (action === "analyze") {
     try {
-      const output = await generateWithScriptProvider(buildAnalysisPrompt(project));
+      const userId = request.headers.get("x-storyai-user-id")?.trim() || undefined;
+      const output = await generateWithScriptProvider(buildAnalysisPrompt(project), { userId });
       const analysis = normalizeAnalysis(output.result, project.sourceText, output.model);
       if (!analysis) return NextResponse.json({ message: "AI trả kết quả không đúng định dạng; hãy thử phân tích lại." }, { status: 502 });
       const scriptStudio = await updateData((data) => {
@@ -188,7 +189,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
         : message === "SCRIPT_STUDIO_MODE_CHANGED"
           ? "Project đã chuyển khỏi chế độ thủ công; hãy tải lại trước khi tiếp tục."
           : message === "SCRIPT_LLM_NOT_CONFIGURED"
-          ? "Chưa cấu hình Script LLM server-side để phân tích kịch bản."
+          ? "Chưa cấu hình Script LLM hoặc kết nối Code Agent CLI trong Cài đặt để phân tích kịch bản."
           : message;
       return NextResponse.json({ code: message, message: userMessage }, { status });
     }

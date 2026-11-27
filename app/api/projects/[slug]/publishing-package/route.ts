@@ -1,6 +1,8 @@
+import { getCurrentUserId } from "../../../../lib/auth-server";
 import { generateWithCodingAgent } from "../../../../lib/coding-agent-cli";
+import { getCodingAgentPreference } from "../../../../lib/coding-agent-preferences";
 import { NextResponse } from "next/server";
-import { generateWithScriptProvider, getProviderConfig } from "../../../../lib/script-provider";
+import { generateWithScriptProvider, getProviderConfig, resolveConfiguredCodingAgent } from "../../../../lib/script-provider";
 import { readProjectScenes } from "../../../../lib/scene-store";
 import { makeActivity, now, readChunkOutput, readData, updateData } from "../../../../lib/server-store";
 import type { ProjectChunk, StoryProject, VideoPublishingSet } from "../../../../lib/project-types";
@@ -118,15 +120,35 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   if (agent !== undefined && agent !== "codex" && agent !== "claude" && agent !== "antigravity") {
     return NextResponse.json({ message: "Hãy chọn coding agent hợp lệ." }, { status: 400 });
   }
-  if (!agent && !getProviderConfig().keyConfigured) return NextResponse.json({ message: "Chưa cấu hình Script LLM server-side để tạo gợi ý." }, { status: 503 });
+  const userId = request.headers.get("x-storyai-user-id")?.trim() || await getCurrentUserId().catch(() => "");
+  const savedPreference = userId ? await getCodingAgentPreference(userId).catch(() => undefined) : undefined;
+  const fallbackAgent = !agent && !getProviderConfig().keyConfigured
+    ? await resolveConfiguredCodingAgent(userId)
+    : undefined;
+  if (!agent && !getProviderConfig().keyConfigured && !fallbackAgent) {
+    return NextResponse.json({
+      message: "Chưa cấu hình Script LLM hoặc kết nối Code Agent CLI (Codex / Claude Code / Antigravity) trong Cài đặt để tạo gợi ý.",
+    }, { status: 503 });
+  }
 
   try {
     const sceneRecords = await readProjectScenes(project) as Record<string, unknown>[];
     const briefs = await Promise.all(chunks.map((chunk) => chunkBrief(project, chunk, sceneRecords)));
     const prompt = publishingPrompt(project, target, briefs);
+    const matchingPref = agent && savedPreference?.agent === agent ? savedPreference : undefined;
     const generated = agent
-      ? await generateWithCodingAgent(agent, prompt, { promptOnlyJson: true })
-      : await generateWithScriptProvider(prompt);
+      ? await generateWithCodingAgent(agent, prompt, {
+        promptOnlyJson: true,
+        ...(matchingPref ? { model: matchingPref.model, quality: matchingPref.quality, speed: matchingPref.speed } : {}),
+      })
+      : fallbackAgent
+        ? await generateWithCodingAgent(fallbackAgent.agent, prompt, {
+          promptOnlyJson: true,
+          model: fallbackAgent.model,
+          quality: fallbackAgent.quality,
+          speed: fallbackAgent.speed,
+        })
+        : await generateWithScriptProvider(prompt, { allowCodingAgentFallback: false });
     const packageSet = normalizeSet(generated.result);
     if (!packageSet) return NextResponse.json({ message: "AI trả về gói title/thumbnail chưa đủ cấu trúc. Hãy thử lại." }, { status: 502 });
     const savedSet: VideoPublishingSet = { ...packageSet, updatedAt: now(), source: "ai" };

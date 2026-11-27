@@ -352,7 +352,7 @@ export async function POST(request: Request) {
   if (runningJob) return NextResponse.json({ ok: false, code: "DRAMA_SOURCE_BUSY", message: "Đang chờ coding agent viết kịch bản cho tài khoản này. Hãy đợi kết quả hiện tại." }, { status: 409 });
   const promptInput = { projectTitle, brief, durationMinutes, chunkSize, episodeCount, languageLabel, contentGenre, secondaryGenres, storySetting, settingNotes, visualStyle, imageStyle, aspectRatio };
   const generateScript: ScriptGenerator = writerAgent === "api"
-    ? generateWithScriptProvider
+    ? (prompt) => generateWithScriptProvider(prompt, { allowCodingAgentFallback: false })
     : (prompt) => generateWithCodingAgent(writerAgent, prompt);
   const job = createDramaSourceJob(userId);
   void generateDramaSourceResult(promptInput, (stage) => updateDramaSourceJob(job.id, userId, { stage: `${writerAgent === "api" ? "AI API" : writerAgent === "codex" ? "Codex" : writerAgent === "claude" ? "Claude Code" : "Antigravity"} · ${stage}` }), generateScript)

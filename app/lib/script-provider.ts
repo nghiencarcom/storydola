@@ -1,3 +1,8 @@
+import { getCodingAgentConfigStatuses } from "./agent-config-manager";
+import { getCurrentUserId } from "./auth-server";
+import { generateWithCodingAgent, getCodingAgentCliStatuses } from "./coding-agent-cli";
+import { getCodingAgentPreference, type CodingAgentPreference } from "./coding-agent-preferences";
+
 type ProviderConfig = {
   apiKey: string;
   baseUrl: string;
@@ -115,9 +120,51 @@ function parseJsonContent(content: unknown) {
   }
 }
 
-export async function generateWithScriptProvider(prompt: string) {
+export async function resolveConfiguredCodingAgent(userIdOverride?: string | null): Promise<CodingAgentPreference | undefined> {
+  const userId = userIdOverride?.trim() || await getCurrentUserId().catch(() => "");
+  const [preference, statuses] = await Promise.all([
+    userId ? getCodingAgentPreference(userId).catch(() => undefined) : Promise.resolve(undefined),
+    getCodingAgentCliStatuses({ includeModels: false }).catch(() => []),
+  ]);
+  const available = statuses.filter((item) => item.available);
+  if (!available.length) return undefined;
+  if (preference && available.some((item) => item.id === preference.agent)) {
+    return preference;
+  }
+  const configStatuses = await getCodingAgentConfigStatuses().catch(() => undefined);
+  if (configStatuses) {
+    const connected = available.find((item) => configStatuses[item.id]?.installed && !configStatuses[item.id]?.error);
+    if (connected) {
+      return { agent: connected.id, model: "", quality: "auto", speed: "standard" };
+    }
+  }
+  const envAgent = (process.env.STORYAI_SCRIPT_AGENT || process.env.STORYAI_SALES_UGC_AGENT || "").trim();
+  const fromEnv = available.find((item) => item.id === envAgent);
+  if (fromEnv) {
+    return { agent: fromEnv.id, model: "", quality: "auto", speed: "standard" };
+  }
+  return { agent: available[0].id, model: "", quality: "auto", speed: "standard" };
+}
+
+export async function generateWithScriptProvider(
+  prompt: string,
+  options?: { allowCodingAgentFallback?: boolean; promptOnlyJson?: boolean; userId?: string | null },
+) {
   const config = getProviderConfig();
   if (!config.keyConfigured) {
+    if (options?.allowCodingAgentFallback !== false) {
+      const codingAgent = await resolveConfiguredCodingAgent(options?.userId);
+      if (codingAgent) {
+        const generated = await generateWithCodingAgent(codingAgent.agent, prompt, {
+          promptOnlyJson: options?.promptOnlyJson ?? true,
+          model: codingAgent.model,
+          quality: codingAgent.quality,
+          speed: codingAgent.speed,
+        });
+        const raw = typeof generated.result === "string" ? generated.result : JSON.stringify(generated.result);
+        return { model: generated.model, result: generated.result, raw };
+      }
+    }
     const error = new Error("SCRIPT_LLM_NOT_CONFIGURED");
     error.name = "SCRIPT_LLM_NOT_CONFIGURED";
     throw error;

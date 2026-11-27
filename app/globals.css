@@ -3393,3 +3393,48 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .auto-edit-preset-grid { grid-template-columns: 1fr; }
   .auto-edit-header-actions > *, .auto-edit-form .remake-actions > button { width: 100%; }
 }
+
+
+/* Motion Video Studio (Dedicated menu separate from Auto Edit Video) */
+.motion-video-mode-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.motion-video-mode-tab { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border: 1.5px solid #e2e8f0; border-radius: 11px; background: #f8fafc; color: #334155; text-align: left; cursor: pointer; transition: all .15s; }
+.motion-video-mode-tab:hover { border-color: #94a3b8; background: #fff; }
+.motion-video-mode-tab.is-active { border-color: #6366f1; background: #f5f3ff; color: #312e81; box-shadow: 0 0 0 2px rgba(99, 102, 241, .12); }
+.motion-video-mode-tab strong { display: block; font-size: 13px; color: #0f172a; }
+.motion-video-mode-tab small { display: block; margin-top: 2px; font-size: 11.5px; color: #64748b; line-height: 1.35; }
+
+.motion-video-source-panel { display: grid; gap: 12px; padding: 15px; border-radius: 12px; border: 1px solid #e2e8f0; background: #fcfdff; }
+.motion-video-hint { display: block; margin-top: 5px; color: #64748b; font-size: 12px; line-height: 1.45; }
+.motion-video-sub-inputs { display: grid; grid-template-columns: 1.25fr 1fr; gap: 12px; align-items: start; }
+.motion-video-upload-inline { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; min-height: 38px; }
+.motion-video-img-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 999px; background: #eef2ff; border: 1px solid #c7d2fe; color: #3730a3; font-size: 12px; font-weight: 600; }
+.motion-video-img-chip button { border: 0; background: transparent; color: #4338ca; font-weight: 800; cursor: pointer; padding: 0 2px; }
+
+.motion-video-config-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: end; }
+.motion-video-duration-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.motion-video-submit-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; padding-top: 4px; }
+.motion-video-toggles-inline { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+
+.motion-video-outline-card { display: grid; gap: 14px; }
+.motion-video-outline-meta { display: grid; grid-template-columns: 1fr 1.3fr; gap: 12px; }
+.motion-video-outline-list { display: grid; gap: 10px; max-height: 540px; overflow-y: auto; padding-right: 4px; }
+.motion-video-outline-item { display: grid; gap: 8px; padding: 12px 14px; border: 1px solid #e2e8f0; border-radius: 10px; background: #f8fafc; }
+.motion-video-outline-item-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.motion-video-outline-fields { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-start; }
+
+.motion-video-chapter-pills { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
+.motion-video-scene-card { cursor: pointer; transition: border-color .15s, background .15s; }
+.motion-video-scene-card:hover { border-color: #a5b4fc; }
+.motion-video-scene-card.is-selected { border-color: #6366f1; background: #f5f3ff; box-shadow: 0 0 0 2px rgba(99, 102, 241, .12); }
+.motion-video-kind-pill { padding: 2px 8px; border-radius: 999px; background: #f1f5f9; color: #334155; font-size: 10.5px; font-weight: 700; }
+.motion-video-scene-headline { font-size: 13px; color: #0f172a; line-height: 1.35; }
+.motion-video-mini-field { display: grid; gap: 4px; }
+.motion-video-mini-field > span { font-size: 11.5px; font-weight: 700; color: #475569; }
+.motion-video-mini-field input, .motion-video-mini-field select { height: 32px; padding: 0 8px; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; font: inherit; font-size: 12.5px; width: 100%; }
+.motion-video-inspector-textarea { width: 100%; padding: 7px 9px; border: 1px solid #cbd5e1; border-radius: 6px; font: inherit; font-size: 12px; resize: vertical; background: #fff; }
+
+@media (max-width: 980px) {
+  .motion-video-mode-tabs, .motion-video-sub-inputs, .motion-video-config-grid, .motion-video-outline-meta { grid-template-columns: 1fr; }
+}
+.motion-video-workspace .auto-edit-cat-pill, .motion-video-preset-title, .motion-video-kind-pill { display: inline-flex; align-items: center; gap: 6px; }
+.motion-video-workspace .auto-edit-cat-pill svg, .motion-video-preset-title svg, .motion-video-kind-pill svg { flex: 0 0 auto; }

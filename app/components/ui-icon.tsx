@@ -4,7 +4,7 @@ export type IconName =
   | "grid" | "folder" | "layers" | "bolt" | "settings" | "help" | "play"
   | "check" | "clock" | "scene" | "stack" | "alert" | "more" | "arrow"
   | "external" | "download" | "link" | "spark" | "search" | "chevron"
-  | "plus" | "sliders" | "save" | "file" | "users" | "refresh" | "copy" | "logout" | "trash" | "upload" | "image" | "menu" | "close" | "scissors";
+  | "plus" | "sliders" | "save" | "file" | "users" | "refresh" | "copy" | "logout" | "trash" | "upload" | "image" | "menu" | "close" | "scissors" | "motion" | "volume";
 
 const icons: Record<IconName, ReactNode> = {
   grid: <><rect x="3.5" y="3.5" width="7" height="7" rx="1.5" /><rect x="13.5" y="3.5" width="7" height="7" rx="1.5" /><rect x="3.5" y="13.5" width="7" height="7" rx="1.5" /><rect x="13.5" y="13.5" width="7" height="7" rx="1.5" /></>,
@@ -41,6 +41,8 @@ const icons: Record<IconName, ReactNode> = {
   menu: <><path d="M4 7h16M4 12h16M4 17h16" /></>,
   close: <><path d="m6 6 12 12M18 6 6 18" /></>,
   scissors: <><circle cx="6" cy="6" r="2.7" /><circle cx="6" cy="18" r="2.7" /><path d="M20 4 8.3 15.7M14.5 14.5 20 20M8.3 8.3 12 12" /></>,
+  volume: <><path d="M4 9v6h4l5 4V5L8 9z" /><path d="M16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11" /></>,
+  motion: <><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z" /><path d="m12 12 8-4.5M12 12v9M12 12 4 7.5" /><circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none" /></>,
 };
 
 export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
