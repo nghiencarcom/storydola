@@ -17,6 +17,7 @@ import { contentGenresLabel, storySettingLabel } from "../lib/content-genres";
 import { characterReferencePrompt, locationReferencePrompt, PROFILE_REFERENCE_ASPECT_RATIO } from "../lib/ai-drama-reference-prompts";
 import { sceneReferenceCharacterIds, sceneReferenceLocationId, type SceneReferenceKind } from "../lib/scene-reference-assignments";
 import { sanitizeDramaVisualPrompt } from "../lib/visual-prompt-safety";
+import { resolveLastSubmittedSceneVideo, submittedVideoModelDisplayName, type LastSubmittedSceneVideo } from "../lib/scene-submitted-video";
 import { MAX_SCENE_MEDIA_UPLOAD_BYTES } from "../lib/scene-media-upload-config";
 import { shouldChunkSceneMediaFile, uploadSceneMediaInChunks } from "../lib/scene-media-upload-client";
 import { createEpisodeScriptTemplate } from "../lib/project-script-templates";
@@ -39,7 +40,9 @@ type SceneMediaPreview = {
   error?: string;
 };
 
-type SceneMediaJobPreview = Pick<SceneMediaJob, "id" | "sceneId" | "chunkId" | "sceneIndex" | "kind" | "status" | "attempt" | "createdAt" | "updatedAt" | "startedAt" | "finishedAt" | "error" | "provider" | "stage" | "submittedPrompt">;
+type SceneMediaJobPreview = Pick<SceneMediaJob, "id" | "sceneId" | "chunkId" | "sceneIndex" | "kind" | "status" | "attempt" | "createdAt" | "updatedAt" | "startedAt" | "finishedAt" | "error" | "provider" | "stage" | "submittedPrompt"> & {
+  mediaGeneration?: Pick<Partial<MediaGenerationSettings>, "videoProvider" | "videoModel" | "videoQuality">;
+};
 
 type SceneReviewStatus = "unreviewed" | "approved" | "needs_changes";
 type SceneReviewFilter = "all" | SceneReviewStatus;
@@ -58,6 +61,7 @@ type ScenePreview = Record<string, unknown> & {
   videoReferenceImage?: SceneMediaPreview;
   media?: SceneMediaPreview;
   mediaJob?: SceneMediaJobPreview;
+  lastSubmittedVideo?: LastSubmittedSceneVideo;
   flowFrameEndSceneId?: string;
   reviewStatus?: SceneReviewStatus;
   reviewNote?: string;
@@ -83,6 +87,7 @@ type SceneVideoPromptPreviewState = {
 const sceneMediaPollFields = [
   "media",
   "mediaJob",
+  "lastSubmittedVideo",
   "videoReferenceImage",
   "video_reference_image",
   "previewUrl",
@@ -3934,12 +3939,37 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                 : "";
               const scenePromptDraft = scenePromptDrafts[scene.id] || { imagePrompt: sceneImagePrompt, videoPrompt: sceneVideoPrompt };
               const scenePromptsChanged = scenePromptDraft.imagePrompt !== sceneImagePrompt || scenePromptDraft.videoPrompt !== sceneVideoPrompt;
-              const hasUploadedVideo = scene.media?.kind === "video" && scene.media.provider === "upload";
-              const submittedVideoPrompt = hasUploadedVideo ? "" : String(
-                (scene.mediaJob?.kind === "video" ? scene.mediaJob.submittedPrompt : "")
-                  || (scene.media?.kind === "video" ? scene.media.query : "")
-                  || "",
-              ).trim();
+              const candidateVideoJobs: Array<Record<string, unknown>> = [
+                ...(scene.mediaJob ? [scene.mediaJob as Record<string, unknown>] : []),
+                ...(scene.lastSubmittedVideo
+                  ? [{
+                      id: scene.lastSubmittedVideo.jobId,
+                      kind: "video",
+                      provider: scene.lastSubmittedVideo.provider,
+                      submittedPrompt: scene.lastSubmittedVideo.prompt,
+                      createdAt: scene.lastSubmittedVideo.submittedAt,
+                      updatedAt: scene.lastSubmittedVideo.submittedAt,
+                      mediaGeneration: {
+                        videoProvider: scene.lastSubmittedVideo.provider,
+                        videoModel: scene.lastSubmittedVideo.model,
+                        videoQuality: scene.lastSubmittedVideo.quality,
+                      },
+                    }]
+                  : []),
+              ];
+              const resolvedSubmittedVideo = resolveLastSubmittedSceneVideo({
+                media: scene.media as Record<string, unknown> | undefined,
+                jobs: candidateVideoJobs,
+                fallbackMediaGeneration: (scene.mediaGeneration || scene.media_generation) as Record<string, unknown> | undefined,
+              });
+              const submittedVideoPrompt = resolvedSubmittedVideo?.prompt || "";
+              const submittedVideoModelLabel = resolvedSubmittedVideo
+                ? submittedVideoModelDisplayName({
+                    model: resolvedSubmittedVideo.model,
+                    provider: resolvedSubmittedVideo.provider,
+                    catalogModels: mediaCatalog?.videoModels,
+                  })
+                : "";
               const normalizedSceneVideoPrompt = normalizePromptForComparison(sanitizeDramaVisualPrompt(sceneVideoPrompt));
               const apiPromptHasCurrentScenePrompt = Boolean(normalizedSceneVideoPrompt && normalizePromptForComparison(submittedVideoPrompt).includes(normalizedSceneVideoPrompt));
               const videoPromptPreview = sceneVideoPromptPreviews[scene.id];
@@ -4032,8 +4062,11 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                       </div>
                       {sceneVideoReferenceCopyNotice?.sceneId === scene.id && <small className="scene-media-job-status" role="status">{sceneVideoReferenceCopyNotice.text}</small>}
                     </div>
-                    {submittedVideoPrompt && <details className="ai-drama-api-video-prompt">
-                      <summary>Prompt của lần gửi gần nhất · {submittedVideoPrompt.length.toLocaleString("vi-VN")} ký tự</summary>
+                    {submittedVideoPrompt && <details className="ai-drama-api-video-prompt ai-drama-submitted-video-prompt">
+                      <summary className="ai-drama-submitted-video-prompt-summary">
+                        <span className="ai-drama-submitted-video-prompt-title">Prompt của lần gửi gần nhất · {submittedVideoPrompt.length.toLocaleString("vi-VN")} ký tự</span>
+                        {submittedVideoModelLabel && <span className="ai-drama-submitted-video-model" title={`Model tạo video lần gửi gần nhất: ${submittedVideoModelLabel}`}>{submittedVideoModelLabel}</span>}
+                      </summary>
                       {!apiPromptHasCurrentScenePrompt && <small className="scene-stale-reference-note" role="status">Prompt lần trước khác prompt cảnh đang hiển thị; hãy mở phần xem trước để kiểm tra payload hiện tại.</small>}
                       <pre>{submittedVideoPrompt}</pre>
                     </details>}

@@ -47,6 +47,14 @@ function publicJob(job: SceneMediaJob) {
     error: job.error,
     provider: job.provider,
     stage: job.stage,
+    submittedPrompt: job.submittedPrompt,
+    ...(job.mediaGeneration ? {
+      mediaGeneration: {
+        videoProvider: job.mediaGeneration.videoProvider,
+        videoModel: job.mediaGeneration.videoModel,
+        videoQuality: job.mediaGeneration.videoQuality,
+      },
+    } : {}),
   };
 }
 

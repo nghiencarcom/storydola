@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { readData, readDataForUser } from "../../../../lib/server-store";
 import { isRecoverableSeedancePendingJob, isSceneMediaJobSupersededBySavedVideo, reconcileSceneMediaJobsWithSavedVideos, startSceneMediaQueue } from "../../../../lib/scene-media-queue";
 import { readProjectScenes, sceneMediaLocalPath, sceneMediaPreviewUrl, sceneReferenceImageLocalPath } from "../../../../lib/scene-store";
+import { resolveLastSubmittedSceneVideo } from "../../../../lib/scene-submitted-video";
 import type { SceneAiReview } from "../../../../lib/project-types";
 
 export const runtime = "nodejs";
@@ -69,7 +70,19 @@ export async function GET(_request: Request, context: { params: Promise<{ slug: 
         provider: storedMediaJob.provider,
         stage: storedMediaJob.stage,
         submittedPrompt: storedMediaJob.submittedPrompt,
+        ...(storedMediaJob.mediaGeneration ? {
+          mediaGeneration: {
+            videoProvider: storedMediaJob.mediaGeneration.videoProvider,
+            videoModel: storedMediaJob.mediaGeneration.videoModel,
+            videoQuality: storedMediaJob.mediaGeneration.videoQuality,
+          },
+        } : {}),
       } : undefined;
+      const lastSubmittedVideo = resolveLastSubmittedSceneVideo({
+        media: scene.media as Record<string, unknown> | undefined,
+        jobs: sceneMediaJobs as unknown as Array<Record<string, unknown>>,
+        fallbackMediaGeneration: (scene.mediaGeneration || scene.media_generation) as Record<string, unknown> | undefined,
+      });
       const mediaPath = sceneMediaLocalPath(scene);
       const referenceImagePath = sceneReferenceImageLocalPath(scene);
       const sceneForClient = { ...scene };
@@ -78,6 +91,7 @@ export async function GET(_request: Request, context: { params: Promise<{ slug: 
       return {
         ...sceneForClient,
         ...(mediaJob ? { mediaJob } : {}),
+        ...(lastSubmittedVideo ? { lastSubmittedVideo } : {}),
         characterIds,
         locationId,
         reviewStatus: ["approved", "needs_changes"].includes(reviewStatus) ? reviewStatus : "unreviewed",

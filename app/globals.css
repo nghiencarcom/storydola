@@ -2170,6 +2170,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .ai-drama-api-video-prompt-head:has(.ai-drama-api-video-prompt-details[open]) > .ai-drama-api-video-copy-actions { grid-column: 2; grid-row: 1; align-self: start; z-index: 1; }
 .ai-drama-api-video-prompt-head:has(.ai-drama-api-video-prompt-details[open]) > .ai-drama-api-video-prompt-details > summary { max-width: calc(100% - 225px); min-height: 29px; }
 .ai-drama-api-video-prompt summary { color: #405bb5; cursor: pointer; font-size: 10px; font-weight: 700; line-height: 1.4; }
+.ai-drama-submitted-video-prompt > summary.ai-drama-submitted-video-prompt-summary { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 8px; list-style: none; }
+.ai-drama-submitted-video-prompt > summary.ai-drama-submitted-video-prompt-summary::-webkit-details-marker { display: none; }
+.ai-drama-submitted-video-prompt-title { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.ai-drama-submitted-video-prompt-title::before { content: "▸"; font-size: 9px; line-height: 1; }
+.ai-drama-submitted-video-prompt[open] > summary.ai-drama-submitted-video-prompt-summary .ai-drama-submitted-video-prompt-title::before { content: "▾"; }
+.ai-drama-submitted-video-model { display: inline-flex; flex: 0 0 auto; align-items: center; max-width: 100%; padding: 1px 7px; border: 1px solid #d8e2f5; border-radius: 999px; color: #3953ad; background: #eef3ff; font-size: 9px; font-weight: 700; line-height: 1.35; white-space: nowrap; }
 .ai-drama-api-video-copy-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 5px; }
 .ai-drama-api-video-copy { min-height: 29px; flex: 0 0 auto; padding: 4px 9px; font-size: 9px; white-space: nowrap; }
 .ai-drama-api-video-prompt pre { box-sizing: border-box; width: 100%; max-height: 280px; overflow: auto; margin: 5px 0 0; padding: 8px; border: 1px solid #dce4f2; border-radius: 6px; color: #3f4d66; background: #f8faff; font: inherit; font-size: 10px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
