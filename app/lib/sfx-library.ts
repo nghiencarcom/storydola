@@ -54,22 +54,46 @@ export function pickDefaultOverlaySfx(
   preset: AutoEditPresetId,
 ): string {
   if (overlay.kind === "hook_banner") {
-    if (preset === "minimal-aesthetic") return "whoosh-soft";
-    if (preset === "fast-tiktok") return "transition-rise";
-    if (preset === "tech-unbox") return "transition-sweep";
+    if (preset === "minimal-aesthetic" || preset === "vlog-travel" || preset === "podcast-talk" || preset === "real-estate") {
+      return "whoosh-soft";
+    }
+    if (preset === "fast-tiktok" || preset === "gaming-highlight") return "transition-rise";
+    if (preset === "tech-unbox" || preset === "tutorial-saas" || preset === "news-recap" || preset === "edu-course") {
+      return "transition-sweep";
+    }
     return "reveal-woosh";
+  }
+
+  if (overlay.kind === "spotlight_box") {
+    return preset === "tech-unbox" || preset === "tutorial-saas" ? "mouse-clicks" : "reveal-click";
+  }
+
+  if (overlay.kind === "highlighter") {
+    return "swoosh";
+  }
+
+  if (overlay.kind === "freeze_frame") {
+    return "camera-shutter";
   }
 
   if (overlay.kind === "product_card") {
     const combined = `${overlay.priceTag || ""} ${overlay.title || ""}`.toLowerCase();
-    if (/(?:\d+\s*k\b|vnđ|đồng|\$|giá|ưu đãi|sale|deal|miễn phí)/iu.test(combined) && index === 0) {
-      return preset === "minimal-aesthetic" ? "reveal-chime" : "ding";
+    if (/(?:\d+\s*k\b|vnđ|đồng|\$|giá|ưu đãi|sale|deal|miễn phí|tỷ|triệu)/iu.test(combined) && index === 0) {
+      return preset === "minimal-aesthetic" || preset === "real-estate" ? "reveal-chime" : "ding";
     }
     const pools: Record<AutoEditPresetId, string[]> = {
       "ugc-review": ["reveal-sparkle", "whoosh-soft", "reveal-pop", "reveal-chime"],
       "fast-tiktok": ["swoosh", "reveal-pop", "transition-ascending", "reveal-sparkle"],
-      "minimal-aesthetic": ["reveal-bubble", "whoosh-soft", "transition-minimal", "reveal-ping"],
+      "tutorial-saas": ["mouse-clicks", "reveal-click", "reveal-ping", "transition-sweep"],
+      "podcast-talk": ["whoosh-soft", "transition-minimal", "reveal-bubble", "reveal-chime"],
+      "edu-course": ["swoosh", "reveal-ping", "reveal-click", "transition-minimal"],
+      "news-recap": ["transition-sweep", "swoosh", "notification", "reveal-click"],
+      "real-estate": ["reveal-chime", "whoosh-soft", "reveal-sparkle", "transition-minimal"],
+      "food-mukbang": ["reveal-pop", "reveal-sparkle", "pop", "reveal-chime"],
       "tech-unbox": ["reveal-click", "transition-sweep", "reveal-ping", "mouse-clicks"],
+      "vlog-travel": ["whoosh-soft", "transition-minimal", "reveal-bubble", "whoosh-soft"],
+      "gaming-highlight": ["transition-ascending", "reveal-pop", "omg-wow", "tada"],
+      "minimal-aesthetic": ["reveal-bubble", "whoosh-soft", "transition-minimal", "reveal-ping"],
     };
     const pool = pools[preset] || pools["ugc-review"];
     return pool[index % pool.length];

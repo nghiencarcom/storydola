@@ -39,7 +39,12 @@ export function sanitizeDramaVisualPrompt(value: string) {
   };
   const protectedValue = value
     .replace(/\b(?:no|without|avoid|do not show)\s+(?:(?:graphic|physical|sexual)\s+)?(?:violence|blood|gore|nudity|weapons?)(?:\s*,\s*(?:blood|gore|nudity|weapons?))*\b/gi, protect)
-    .replace(/\b(?:hit|hits|hitting|shoot|shooting)\s+(?:(?:the|a)\s+)?(?:button|key|switch|photo|photograph|scene|film)\b/gi, protect);
+    .replace(/\b(?:hit|hits|hitting|shoot|shooting)\s+(?:(?:the|a|an|its|his|her|their|against|into|onto)\s+)?(?:(?:wet|mossy|cracked|ancient|rocky|stone|wooden|metal|iron|sandy|muddy|heavy|low|high)\s+)*(?:button|key|switch|photo|photograph|scene|film|brakes?|throttle|gas|ground|floor|deck|water|waves?|surf|rocks?|stones?|boulders?|pebbles?|cliffs?|ledges?|walls?|pillars?|columns?|arches?|ruins?|trees?|trunks?|branches?|turf|mud|sand|dust|debris|gravel|shields?|staffs?|blades?|armors?|plates?|rails?|railings?|tables?|crates?|doors?|gates?|bars|barriers?|surfaces?|targets?|marks?|banks?|shores?|flagstones?)\b/gi, protect)
+    .replace(/\b(?:violent|violently|brutal)\s+(?:gusts?|gales?|storms?|winds?|waves?|currents?|splashes?|sprays?|shockwaves?|tremors?|jolts?|recoil|downpour|turbulence)\b/gi, protect)
+    .replace(/\bshooting\s+(?:straight\s+|high\s+|rapidly\s+|sharply\s+)?(?:up|upward|upwards|down|downward|out|outward|across|past|through|into\s+the\s+(?:air|sky|water|mist))\b/gi, protect)
+    .replace(/\b(?:(?:wide|medium|close|tight|extreme|establishing|tracking|handheld|static|panning|low-angle|high-angle|side-angle|eye-level|over-the-shoulder|pov|aerial|crane|dolly|two|single|reaction|insert|reverse|profile|rear|front)\s+(?:[\w-]+\s+){0,2})?shots?\s+at\s+(?!him\b|her\b|them\b|me\b|us\b|you\b|each\s+other\b)/gi, protect)
+    .replace(/\b(?:fog|smoke|dust|ash|mist|vine|weed|ice|snow|sand|mud|rain|steam|cloud)-choked\b/gi, protect)
+    .replace(/\b(?:fight|fighting|fights|fought)\s+(?:the\s+)?(?:handlebars?|steering\s+wheel|current|wind|gale|storm|waves?|controls?|reins|gravity|balance|turbulence)\b/gi, protect);
   return protectedValue
     .replace(phrasePattern(violenceActionTerms), (_match, prefix: string, term: string) => `${prefix}${promptLanguageReplacement(term, "đối đầu căng thẳng nhưng không tiếp xúc", "tense non-contact confrontation")}`)
     .replace(phrasePattern(nudityTerms), (_match, prefix: string, term: string) => `${prefix}${promptLanguageReplacement(term, "trang phục kín đáo, phù hợp bối cảnh", "fully clothed in modest, age-appropriate clothing")}`)
@@ -61,4 +66,87 @@ export function sanitizeDramaScenePrompts(scenes: unknown[]) {
     }
     return next;
   });
+}
+
+/** Return the exact words/phrases in `value` that `sanitizeDramaVisualPrompt` would rewrite. */
+export function findUnsafeDramaPromptTerms(value: string): string[] {
+  if (!value.trim()) return [];
+  const protectedValue = value
+    .replace(/\b(?:no|without|avoid|do not show)\s+(?:(?:graphic|physical|sexual)\s+)?(?:violence|blood|gore|nudity|weapons?)(?:\s*,\s*(?:blood|gore|nudity|weapons?))*\b/gi, " ")
+    .replace(/\b(?:hit|hits|hitting|shoot|shooting)\s+(?:(?:the|a|an|its|his|her|their)\s+)?(?:(?:wet|mossy|cracked|ancient|rocky|stone|wooden|metal|iron|sandy|muddy|heavy|low|high)\s+)*(?:button|key|switch|photo|photograph|scene|film|brakes?|throttle|gas|ground|floor|deck|water|stone|stones|rock|rocks|boulder|wall|pillar|column|cliff|ledge|railing|timber|wood|tree|trunk|branch|shield|staff|blade|armor|sand|mud|dirt|dust|debris|crate|table|bars|gate|barrier|surface|target|mark|bank|shore|flagstones?)\b/gi, " ")
+    .replace(/\b(?:violent|violently|brutal)\s+(?:gusts?|gales?|storms?|winds?|waves?|currents?|splashes?|sprays?|shockwaves?|tremors?|jolts?|recoil|downpour|turbulence)\b/gi, " ")
+    .replace(/\b(?:(?:wide|medium|close|tight|extreme|establishing|tracking|handheld|static|panning|low-angle|high-angle|side-angle|eye-level|over-the-shoulder|pov|aerial|crane|dolly|two|single|reaction|insert|reverse|profile|rear|front)\s+(?:[\w-]+\s+){0,2})?shots?\s+at\s+(?!him\b|her\b|them\b|me\b|us\b|you\b|each\s+other\b)/gi, " ")
+    .replace(/\b(?:fog|smoke|dust|ash|mist|vine|weed|ice|snow|sand|mud|rain|steam|cloud)-choked\b/gi, " ")
+    .replace(/\b(?:fight|fighting|fights|fought)\s+(?:the\s+)?(?:handlebars?|steering\s+wheel|current|wind|gale|storm|waves?|controls?|reins|gravity|balance|turbulence)\b/gi, " ");
+  const allTerms = [...violenceActionTerms, ...nudityTerms, ...graphicDetailTerms, ...weaponTerms];
+  const pattern = phrasePattern(allTerms);
+  const found: string[] = [];
+  for (const match of protectedValue.matchAll(pattern)) {
+    const term = (match[2] || "").trim();
+    if (term && !found.some((item) => item.toLowerCase() === term.toLowerCase())) found.push(term);
+  }
+  return found;
+}
+
+/** Convert raw combat/impact words into clean kinetic phrasing without mangling sentence grammar. */
+export function rewriteKineticActionPromptSafely(value: string): string {
+  if (!value.trim() || !findUnsafeDramaPromptTerms(value).length) return value;
+  const replacements: Array<[RegExp, string]> = [
+    [/\bcounterattacking\b/gi, "countering swiftly"],
+    [/\bcounterattacked\b/gi, "countered swiftly"],
+    [/\bcounterattacks\b/gi, "counters with a swift lunge"],
+    [/\bcounterattack\b/gi, "swift counter-move"],
+    [/\bviolently\b/gi, "forcefully"],
+    [/\b(?:violent|brutal)\b/gi, "fierce"],
+    [/\bbrutality\b/gi, "raw intensity"],
+    [/\b(?:physical|graphic|sexual)\s+violence\b/gi, "intense confrontation"],
+    [/\bviolence\b/gi, "intense clash"],
+    [/\bpunching\b/gi, "driving a heavy forelimb strike"],
+    [/\bpunched\b/gi, "drove a heavy strike"],
+    [/\bpunches\b/gi, "drives a heavy strike"],
+    [/\bpunch\b/gi, "heavy strike"],
+    [/\bkicking\b/gi, "sweeping a powerful leg thrust"],
+    [/\bkicked\b/gi, "swept a powerful leg thrust"],
+    [/\bkicks\b/gi, "sweeps a powerful leg thrust"],
+    [/\bkick\b/gi, "sweeping thrust"],
+    [/\bslapping\b/gi, "swatting aside"],
+    [/\bslapped\b/gi, "swatted aside"],
+    [/\bslaps\b/gi, "swats aside"],
+    [/\bslap\b/gi, "sharp swat"],
+    [/\bhitting\b/gi, "slamming into"],
+    [/\bhits\b/gi, "slams into"],
+    [/\bhit\b/gi, "impact"],
+    [/\battacking\b/gi, "charging forward toward"],
+    [/\battacked\b/gi, "charged toward"],
+    [/\battacks\b/gi, "lunges forward toward"],
+    [/\battack\b/gi, "lunge"],
+    [/\bassaulting\b/gi, "pressing forward against"],
+    [/\bassaulted\b/gi, "pressed against"],
+    [/\bassaults\b/gi, "presses against"],
+    [/\bassault\b/gi, "rush"],
+    [/\bfighting\b/gi, "clashing with"],
+    [/\bfought\b/gi, "clashed with"],
+    [/\bfights\b/gi, "clashes with"],
+    [/\bfight\b/gi, "clash"],
+    [/\b(?:strangling|choking)\b/gi, "grappling tightly"],
+    [/\b(?:strangled|choked)\b/gi, "grappled tightly"],
+    [/\b(?:strangles|chokes)\b/gi, "grapples tightly"],
+    [/\b(?:strangle|choke)\b/gi, "grapple"],
+    [/\b(?:stabbing|stabs|stabbed|stab)\b/gi, "thrusts forward"],
+    [/\b(?:shooting at|shoots at|shot at|shooting)\b/gi, "aiming toward"],
+    [/\b(?:killing|kills|killed|kill|murdering|murders|murdered|murder|dying|death)\b/gi, "overwhelming"],
+    [/\b(?:hurting|hurts|hurt|harmed|harm|injuring|injured|injure|wounded|wounds|wound)\b/gi, "staggered"],
+    [/\b(?:bleeding|bloody|gory|gore|blood)\b/gi, "dust and impact spray"],
+    [/\b(?:corpse|dead body)\b/gi, "fallen figure"],
+    [/\b(?:bare-chested|bare chest|topless|naked|nude|nudity)\b/gi, "ruggedly attired"],
+    [/\bswords?\b/gi, "forged steel blade"],
+    [/\bknives\b|\bknife\b/gi, "forged utility blade"],
+    [/\bguns?\b/gi, "holstered sidearm"],
+    [/\bweapons?\b/gi, "combat gear"],
+  ];
+  let next = value;
+  for (const [pattern, replacement] of replacements) {
+    next = next.replace(pattern, replacement);
+  }
+  return findUnsafeDramaPromptTerms(next).length ? sanitizeDramaVisualPrompt(next) : next;
 }

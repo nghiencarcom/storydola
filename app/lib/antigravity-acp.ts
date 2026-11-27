@@ -24,7 +24,7 @@ export function runAntigravityImages(input: {
       cwd: input.cwd, env: input.env, shell: input.requiresShell, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
     });
     const lines = createInterface({ input: child.stdout });
-    const pending = new Map<number, (result: NonNullable<AcpMessage["result"]>) => void>();
+    const pending = new Map<number, { next: (result: NonNullable<AcpMessage["result"]>) => void; ignoreError?: boolean }>();
     let id = 0;
     let sessionId = "";
     let response = "";
@@ -49,8 +49,8 @@ export function runAntigravityImages(input: {
       if (!finished) child.stdin.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
     }
 
-    function request(method: string, params: Record<string, unknown>, next: (result: NonNullable<AcpMessage["result"]>) => void) {
-      pending.set(++id, next);
+    function request(method: string, params: Record<string, unknown>, next: (result: NonNullable<AcpMessage["result"]>) => void, ignoreError = false) {
+      pending.set(++id, { next, ignoreError });
       send({ id, method, params });
     }
 
@@ -71,7 +71,7 @@ export function runAntigravityImages(input: {
 
     function configureQuality() {
       if (input.quality === "auto") return prompt();
-      request("session/set_config_option", { sessionId, configId: "thought_level", value: input.quality }, prompt);
+      request("session/set_config_option", { sessionId, configId: "thought_level", value: input.quality }, prompt, true);
     }
 
     function configureModel() {
@@ -100,14 +100,18 @@ export function runAntigravityImages(input: {
         return;
       }
       if (typeof message.id !== "number") return;
-      const next = pending.get(message.id);
-      if (!next) return;
+      const entry = pending.get(message.id);
+      if (!entry) return;
       pending.delete(message.id);
       if (message.error) {
+        if (entry.ignoreError) {
+          entry.next({});
+          return;
+        }
         done(new Error(`AGENT_RUN_FAILED: ${message.error.message || "Antigravity ACP error"}`));
         return;
       }
-      next(message.result || {});
+      entry.next(message.result || {});
     });
     child.stderr.resume();
     child.stdin.on("error", (cause) => done(cause));

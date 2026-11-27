@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { open, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { open, mkdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { CodingAgentPreference } from "./coding-agent-preferences";
 import { dataPath } from "./data-directory";
@@ -8,6 +8,8 @@ import type { RemakeLocalSource, RemakeOptions } from "./video-remake";
 
 const root = dataPath("video-remake");
 const allowedExtensions = new Set([".mp4", ".m4v", ".mov", ".webm", ".mkv"]);
+const staleUploadLockMs = 2 * 60_000;
+const uploadBootId = randomUUID();
 export const remakeUploadChunkBytes = 8 * 1024 * 1024;
 
 type UploadManifest = RemakeOptions & {
@@ -84,16 +86,66 @@ export async function getRemakeUpload(owner: string, id: string) {
   return { uploadId: id, filename: manifest.filename, uploaded: manifest.uploaded, size: manifest.size, complete: manifest.complete };
 }
 
+async function acquireUploadLock(lockPath: string) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const handle = await open(lockPath, "wx", 0o600);
+      try {
+        await handle.writeFile(JSON.stringify({ pid: process.pid, bootId: uploadBootId, startedAt: new Date().toISOString() }));
+      } catch (error) {
+        await handle.close().catch(() => undefined);
+        await unlink(lockPath).catch(() => undefined);
+        throw error;
+      }
+      return {
+        kind: "ok" as const,
+        release: async () => {
+          await handle.close().catch(() => undefined);
+          await unlink(lockPath).catch(() => undefined);
+        },
+      };
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return { kind: "missing" as const };
+      if (code !== "EEXIST") throw error;
+      const [contents, details] = await Promise.all([
+        readFile(lockPath, "utf8").catch(() => ""),
+        stat(lockPath).catch(() => undefined),
+      ]);
+      let ownerPid = 0;
+      let lockBootId = "";
+      try {
+        const parsed = JSON.parse(contents) as { pid?: unknown; bootId?: unknown };
+        ownerPid = Number(parsed.pid);
+        lockBootId = typeof parsed.bootId === "string" ? parsed.bootId : "";
+      } catch { /* Lock file may still be mid-write. */ }
+      const hasParsedPid = Number.isInteger(ownerPid) && ownerPid > 0;
+      let ownerAlive = false;
+      if (hasParsedPid) {
+        try {
+          process.kill(ownerPid, 0);
+          ownerAlive = ownerPid !== process.pid || lockBootId === uploadBootId;
+        } catch {
+          ownerAlive = false;
+        }
+      }
+      const expiredByAge = Boolean(details && Date.now() - details.mtimeMs > staleUploadLockMs);
+      if ((!hasParsedPid || ownerAlive) && !expiredByAge) {
+        return { kind: "busy" as const };
+      }
+      await unlink(lockPath).catch(() => undefined);
+    }
+  }
+  return { kind: "busy" as const };
+}
+
 export async function writeRemakeUploadChunk(owner: string, id: string, offset: number, bytes: Buffer) {
   if (!isUploadId(id)) return { kind: "missing" as const };
   if (!Number.isSafeInteger(offset) || offset < 0 || !bytes.length || bytes.length > remakeUploadChunkBytes) return { kind: "invalid" as const };
   const directory = uploadDirectory(owner, id);
   const lockPath = path.join(directory, ".upload.lock");
-  let lock;
-  try { lock = await open(lockPath, "wx", 0o600); }
-  catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT" ? { kind: "missing" as const } : { kind: "busy" as const };
-  }
+  const acquired = await acquireUploadLock(lockPath);
+  if (acquired.kind !== "ok") return acquired;
   try {
     const manifest = await readManifest(owner, id);
     if (!manifest) return { kind: "missing" as const };
@@ -118,24 +170,38 @@ export async function writeRemakeUploadChunk(owner: string, id: string, offset: 
     await saveManifest(owner, manifest);
     return { kind: "ok" as const, uploaded: manifest.uploaded };
   } finally {
-    await lock.close().catch(() => undefined);
-    await rm(lockPath, { force: true }).catch(() => undefined);
+    await acquired.release();
   }
 }
 
-export async function finishRemakeUpload(owner: string, id: string) {
+export async function finishRemakeUpload(
+  owner: string,
+  id: string,
+  overrides?: { options?: RemakeOptions; agent?: CodingAgentPreference },
+) {
   if (!isUploadId(id)) return { kind: "missing" as const };
   const directory = uploadDirectory(owner, id);
   const lockPath = path.join(directory, ".upload.lock");
-  let lock;
-  try { lock = await open(lockPath, "wx", 0o600); }
-  catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT" ? { kind: "missing" as const } : { kind: "busy" as const };
-  }
+  const acquired = await acquireUploadLock(lockPath);
+  if (acquired.kind !== "ok") return acquired;
   try {
     const manifest = await readManifest(owner, id);
     if (!manifest) return { kind: "missing" as const };
     if (manifest.jobId) return { kind: "queued" as const, id: manifest.jobId };
+    if (overrides?.options) {
+      manifest.language = overrides.options.language;
+      manifest.direction = overrides.options.direction;
+      manifest.transcript = overrides.options.transcript;
+      manifest.remakeMode = overrides.options.remakeMode;
+      manifest.dialoguePolicy = overrides.options.dialoguePolicy;
+      manifest.visualStyle = overrides.options.visualStyle;
+      manifest.imageStyle = overrides.options.imageStyle;
+      manifest.contentGenre = overrides.options.contentGenre;
+      manifest.storySetting = overrides.options.storySetting;
+    }
+    if (overrides?.agent) {
+      manifest.agent = overrides.agent;
+    }
     const partPath = path.join(directory, "source.part");
     const finalPath = path.join(directory, `source${manifest.extension}`);
     if (!manifest.complete) {
@@ -145,8 +211,8 @@ export async function finishRemakeUpload(owner: string, id: string) {
       }
       await rename(partPath, finalPath);
       manifest.complete = true;
-      await saveManifest(owner, manifest);
     }
+    await saveManifest(owner, manifest);
     const localSource: RemakeLocalSource = { uploadId: id, filename: manifest.filename, extension: manifest.extension };
     const jobId = await addLocalRemakeJob(owner, {
       language: manifest.language, direction: manifest.direction, transcript: manifest.transcript,
@@ -162,7 +228,6 @@ export async function finishRemakeUpload(owner: string, id: string) {
     await saveManifest(owner, manifest);
     return { kind: "queued" as const, id: jobId };
   } finally {
-    await lock.close().catch(() => undefined);
-    await rm(lockPath, { force: true }).catch(() => undefined);
+    await acquired.release();
   }
 }

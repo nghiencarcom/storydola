@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import { CONTENT_GENRES, STORY_SETTING_OPTIONS } from "../lib/content-genres";
 import { planRemakeEpisodes, type RemakeInput, type RemakeJob, type RemakeJobSummary, type RemakeStage, type RemakeTranscript } from "../lib/video-remake";
 import { IMAGE_STYLE_PRESETS, VISUAL_STYLE_PRESETS } from "../lib/visual-styles";
@@ -57,11 +57,34 @@ async function uploadRequest<T>(options?: RequestInit, uploadId?: string, offset
 }
 
 const uploadChunkSize = 8 * 1024 * 1024;
+const isActiveStage = (status?: RemakeStage) => status === "queued" || status === "reading" || status === "analyzing";
+
+type PickedLocalRemakeVideo = {
+  token: string;
+  filename: string;
+  displayPath: string;
+  extension: string;
+  size: number;
+};
+
+const noopSubscribe = () => () => {};
+function getClientLoopbackSnapshot() {
+  const host = window.location.hostname.trim().toLowerCase().replace(/^\[|\]$/gu, "");
+  return host === "localhost" || host === "127.0.0.1" || host === "::1";
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024 * 1024)).toLocaleString("vi-VN", { maximumFractionDigits: 2 })} GB`;
+  }
+  return `${(bytes / (1024 * 1024)).toLocaleString("vi-VN", { maximumFractionDigits: 1 })} MiB`;
+}
 
 export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }) {
   const router = useRouter();
   const { refresh } = useProjects();
   const detailRef = useRef<HTMLElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [jobs, setJobs] = useState<RemakeJobSummary[]>([]);
   const [job, setJob] = useState<RemakeJob>();
   const [selected, setSelected] = useState(initialJobId);
@@ -75,14 +98,83 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
   const [saving, setSaving] = useState(false);
   const [sourceMode, setSourceMode] = useState<"url" | "local">("url");
   const [localFile, setLocalFile] = useState<File>();
+  const [pickedLocalVideo, setPickedLocalVideo] = useState<PickedLocalRemakeVideo | null>(null);
+  const [localPathInput, setLocalPathInput] = useState("");
+  const [pickingLocal, setPickingLocal] = useState(false);
+  const isLocalHost = useSyncExternalStore(noopSubscribe, getClientLoopbackSnapshot, () => false);
   const [uploadProgress, setUploadProgress] = useState<{ uploaded: number; size: number }>();
   const uploadId = useRef("");
-  const [acting, setActing] = useState(false);
+  const [acting, setActing] = useState<{ jobId: string; action: "retry" | "create-project" | "delete" } | null>(null);
+  const actingJobId = acting?.jobId || "";
+  const actingAction = acting?.action || "";
   const [error, setError] = useState("");
   const [loadError, setLoadError] = useState("");
   const [detailError, setDetailError] = useState("");
   const selectedSummary = jobs.find(({ id }) => id === selected);
   const selectedUpdate = selectedSummary?.updatedAt;
+  const selectedOutsideListActive = Boolean(
+    selected && !selectedSummary && job?.id === selected && isActiveStage(job.status),
+  );
+
+  async function pickNativeLocalVideo() {
+    if (pickingLocal || saving) return;
+    setPickingLocal(true);
+    setError("");
+    try {
+      const response = await fetch("/api/video-remake/local-files", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "pick-video" }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.message || "Không mở được hộp thoại chọn tệp trên máy.");
+      if (!payload?.cancelled && payload?.file) {
+        setPickedLocalVideo(payload.file as PickedLocalRemakeVideo);
+        setLocalFile(undefined);
+        if (fileInputRef.current) fileInputRef.current.value = "";
+        uploadId.current = "";
+        setUploadProgress(undefined);
+      }
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setPickingLocal(false);
+    }
+  }
+
+  async function resolveTypedLocalPath(rawOverride?: string) {
+    const candidate = (rawOverride ?? localPathInput).trim();
+    if (!candidate) {
+      setError("Hãy dán đường dẫn tệp video trên máy (ví dụ /Users/.../video.mp4).");
+      return undefined;
+    }
+    setPickingLocal(true);
+    setError("");
+    try {
+      const response = await fetch("/api/video-remake/local-files", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "resolve-path", path: candidate }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.file) {
+        throw new Error(payload?.message || "Không tìm thấy hoặc không đọc được tệp video trên máy.");
+      }
+      const resolved = payload.file as PickedLocalRemakeVideo;
+      setPickedLocalVideo(resolved);
+      setLocalPathInput("");
+      setLocalFile(undefined);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      uploadId.current = "";
+      setUploadProgress(undefined);
+      return resolved;
+    } catch (cause) {
+      setError((cause as Error).message);
+      return undefined;
+    } finally {
+      setPickingLocal(false);
+    }
+  }
 
   useEffect(() => {
     setSelected(initialJobId);
@@ -97,40 +189,90 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
   }, [selected]);
 
   useEffect(() => {
+    const input = fileInputRef.current;
+    if (!input) return;
+    if (!localFile) {
+      if (input.value) input.value = "";
+      return;
+    }
+    if (input.files?.[0] !== localFile && typeof DataTransfer !== "undefined") {
+      try {
+        const transfer = new DataTransfer();
+        transfer.items.add(localFile);
+        input.files = transfer.files;
+      } catch { /* Browser prevented programmatic FileList assignment; hidden input stays mounted. */ }
+    }
+  }, [sourceMode, localFile]);
+
+  useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
-    async function refresh() {
+    async function refreshQueue() {
+      let shouldPoll = false;
       try {
-        const { jobs } = await remakeRequest<{ jobs: RemakeJobSummary[] }>({ signal: controller.signal });
+        const { jobs: nextJobs } = await remakeRequest<{ jobs: RemakeJobSummary[] }>({ signal: controller.signal });
         if (controller.signal.aborted) return;
-        setJobs(jobs);
+        setJobs(nextJobs);
         setLoadError("");
+        shouldPoll = nextJobs.some(({ status }) => isActiveStage(status)) || selectedOutsideListActive;
       } catch (cause) {
-        if (!controller.signal.aborted) setLoadError((cause as Error).message);
-      } finally {
-        if (!controller.signal.aborted) timer = setTimeout(refresh, 3000);
+        if (!controller.signal.aborted) {
+          setLoadError((cause as Error).message);
+          shouldPoll = true;
+        }
+      }
+      if (!controller.signal.aborted && shouldPoll) {
+        timer = setTimeout(() => void refreshQueue(), 3000);
       }
     }
-    void refresh();
+    void refreshQueue();
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [revision]);
+  }, [revision, selectedOutsideListActive]);
 
   useEffect(() => {
-    if (!selected || !selectedUpdate) return;
+    if (!selected) return;
     const controller = new AbortController();
-    void remakeRequest<{ job: RemakeJob }>({ signal: controller.signal }, selected)
-      .then(({ job }) => {
+    let timer: ReturnType<typeof setTimeout>;
+    async function fetchSelectedJob() {
+      try {
+        const { job: loaded } = await remakeRequest<{ job: RemakeJob }>({ signal: controller.signal }, selected);
         if (controller.signal.aborted) return;
-        setJob(job);
+        setJob(loaded);
         setDetailError("");
-      })
-      .catch((cause) => { if (!controller.signal.aborted) setDetailError((cause as Error).message); });
-    return () => controller.abort();
-  }, [selected, selectedUpdate, revision]);
+        if (!selectedSummary && isActiveStage(loaded.status)) {
+          timer = setTimeout(() => void fetchSelectedJob(), 3000);
+        }
+      } catch (cause) {
+        if (!controller.signal.aborted) {
+          setJob(undefined);
+          setDetailError((cause as Error).message);
+        }
+      }
+    }
+    void fetchSelectedJob();
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [selected, selectedUpdate, Boolean(selectedSummary), revision]);
+
+  const selectedJob = job?.id === selected ? job : undefined;
+  const detailSummary: RemakeJobSummary | undefined = selectedSummary || (selectedJob ? {
+    id: selectedJob.id,
+    url: selectedJob.input.url,
+    sourceName: selectedJob.localSource?.filename,
+    status: selectedJob.status,
+    createdAt: selectedJob.createdAt,
+    updatedAt: selectedJob.updatedAt,
+    error: selectedJob.error,
+    progress: selectedJob.progress,
+    projectSlug: selectedJob.projectSlug,
+    title: selectedJob.result?.draft.title,
+    sceneCount: selectedJob.result?.windows.length,
+  } : undefined);
 
   useEffect(() => {
-    if (initialJobId && selectedSummary) detailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [initialJobId, selectedSummary?.id]);
+    if (initialJobId && (detailSummary || detailError)) {
+      detailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [initialJobId, detailSummary?.id, Boolean(detailError)]);
 
   async function copyJobLink(id: string) {
     const url = new URL(`/video-remake/${encodeURIComponent(id)}`, window.location.origin);
@@ -164,7 +306,12 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
       transcript: String(fields.get("transcript") || ""),
     };
     const url = String(fields.get("url") || "");
-    if (sourceMode === "local" && !localFile) {
+    let directVideo = pickedLocalVideo;
+    if (sourceMode === "local" && !directVideo && !localFile && isLocalHost && localPathInput.trim()) {
+      directVideo = (await resolveTypedLocalPath(localPathInput)) || null;
+      if (!directVideo) return;
+    }
+    if (sourceMode === "local" && !directVideo && !localFile) {
       setError("Chọn một tệp video trên máy trước khi thêm vào hàng đợi.");
       return;
     }
@@ -177,6 +324,17 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
         ({ id } = await remakeRequest<{ id: string }>({
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
         }));
+      } else if (directVideo) {
+        const response = await fetch("/api/video-remake/local-files", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "create-job", token: directVideo.token, ...options }),
+        });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload?.id) {
+          throw new Error(payload?.message || "Không thể gắn trực tiếp tệp trên máy vào hàng đợi Remake.");
+        }
+        id = payload.id;
       } else {
         const file = localFile!;
         let sessionId = uploadId.current;
@@ -199,11 +357,16 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
           setUploadProgress({ uploaded: result.uploaded, size: file.size });
         }
         ({ id } = await uploadRequest<{ id: string }>({
-          method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ uploadId: sessionId }),
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ uploadId: sessionId, ...options }),
         }));
       }
       form.reset();
+      if (fileInputRef.current) fileInputRef.current.value = "";
       setLocalFile(undefined);
+      setPickedLocalVideo(null);
+      setLocalPathInput("");
       uploadId.current = "";
       setUploadProgress(undefined);
       setDetailError("");
@@ -217,10 +380,23 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
     }
   }
 
-  async function act(id: string, action: "retry" | "create-project") {
-    setActing(true);
+  async function act(id: string, action: "retry" | "create-project" | "delete") {
+    if (actingJobId === id) return;
+    setActing({ jobId: id, action });
     setDetailError("");
     try {
+      if (action === "delete") {
+        await remakeRequest<{ ok: boolean }>({ method: "DELETE" }, id);
+        setJobs((current) => current.filter((entry) => entry.id !== id));
+        if (selected === id) {
+          setSelected("");
+          setJob(undefined);
+          setDetailError("");
+          router.push("/video-remake");
+        }
+        setRevision((value) => value + 1);
+        return;
+      }
       const { slug } = await remakeRequest<{ slug?: string }>({
         method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, action }),
       });
@@ -232,13 +408,13 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
     } catch (cause) {
       setDetailError((cause as Error).message);
     } finally {
-      setActing(false);
+      setActing((current) => (current?.jobId === id ? null : current));
     }
   }
 
-  const selectedJob = job?.id === selected ? job : undefined;
   const result = selectedJob?.result;
   const agent = selectedJob?.agent;
+  const isActingSelected = Boolean(detailSummary && actingJobId === detailSummary.id);
   const normalizedQueueQuery = queueQuery.trim().toLowerCase();
   const filteredJobs = jobs.filter((entry) => {
     if (queueStatus && entry.status !== queueStatus) return false;
@@ -281,25 +457,90 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
         <button type="button" role="tab" aria-selected={sourceMode === "local"} onClick={() => setSourceMode("local")}>Chọn video trên máy</button>
       </div>
       <div className="form-grid">
-        {sourceMode === "url" ? <label className="form-field full">
+        <label className="form-field full" style={sourceMode === "url" ? undefined : { display: "none" }}>
           <span>Link video</span>
-          <input name="url" type="url" required maxLength={2500} placeholder="https://…" aria-describedby="remake-source-help" />
+          <input
+            name="url"
+            type="url"
+            required={sourceMode === "url"}
+            disabled={sourceMode !== "url"}
+            maxLength={2500}
+            placeholder="https://…"
+            aria-describedby="remake-source-help"
+          />
           <small id="remake-source-help">YouTube, Facebook, TikTok, Douyin, Instagram công khai hoặc link trực tiếp đến MP4, MOV, WebM.</small>
-        </label> : <label className="form-field full">
-          <span>Tệp video</span>
-          <input name="video" type="file" accept=".mp4,.m4v,.mov,.webm,.mkv,video/mp4,video/quicktime,video/webm,video/x-matroska" onChange={(event) => {
-            const file = event.currentTarget.files?.[0];
-            setLocalFile(file);
-            uploadId.current = "";
-            setUploadProgress(undefined);
-          }} aria-describedby="remake-local-help" />
-          <small id="remake-local-help">MP4, MOV, WebM hoặc MKV. Tải lên theo từng phần, không áp dụng giới hạn dung lượng riêng.</small>
-          {localFile && <small>{localFile.name} · {(localFile.size / (1024 * 1024)).toLocaleString("vi-VN", { maximumFractionDigits: 1 })} MiB</small>}
+        </label>
+        <div className="form-field full" style={sourceMode === "local" ? undefined : { display: "none" }}>
+          <span>Tệp video trên máy</span>
+          {isLocalHost && <div style={{ display: "flex", flexDirection: "column", gap: "0.55rem", marginBottom: "0.5rem" }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center" }}>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={pickingLocal || saving}
+                onClick={() => void pickNativeLocalVideo()}
+              >
+                {pickingLocal ? "Đang mở chọn tệp…" : "Chọn tệp trực tiếp từ máy (0s · Không tải lên · Không giới hạn GB)"}
+              </button>
+            </div>
+            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+              <input
+                type="text"
+                value={localPathInput}
+                disabled={sourceMode !== "local" || saving}
+                onChange={(event) => setLocalPathInput(event.currentTarget.value)}
+                placeholder="Hoặc dán đường dẫn tệp trên máy (vd: /Users/.../video.mp4)"
+                aria-label="Đường dẫn tệp video trên máy"
+                style={{ flex: 1 }}
+              />
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={pickingLocal || saving || !localPathInput.trim()}
+                onClick={() => void resolveTypedLocalPath()}
+              >
+                Gắn tệp
+              </button>
+            </div>
+            {pickedLocalVideo && <div role="status" style={{ display: "flex", flexWrap: "wrap", gap: "0.6rem", alignItems: "center" }}>
+              <small>
+                <strong>Đã gắn trực tiếp:</strong> {pickedLocalVideo.filename} · {formatFileSize(pickedLocalVideo.size)} ({pickedLocalVideo.displayPath})
+              </small>
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => setPickedLocalVideo(null)}
+              >
+                Bỏ chọn
+              </button>
+            </div>}
+          </div>}
+          <input
+            ref={fileInputRef}
+            name="video"
+            type="file"
+            disabled={sourceMode !== "local"}
+            accept=".mp4,.m4v,.mov,.webm,.mkv,video/mp4,video/quicktime,video/webm,video/x-matroska"
+            onChange={(event) => {
+              const file = event.currentTarget.files?.[0];
+              setLocalFile(file);
+              if (file) setPickedLocalVideo(null);
+              uploadId.current = "";
+              setUploadProgress(undefined);
+            }}
+            aria-describedby="remake-local-help"
+          />
+          <small id="remake-local-help">
+            {isLocalHost
+              ? "MP4, MOV, WebM hoặc MKV. Bấm chọn tệp trực tiếp hoặc dán đường dẫn để đọc thẳng trên ổ cứng (không tải lại, không giới hạn dung lượng); hoặc chọn qua hộp tệp trình duyệt bên dưới."
+              : "MP4, MOV, WebM hoặc MKV. Đọc theo từng phần, không giới hạn dung lượng tệp."}
+          </small>
+          {localFile && <small>{localFile.name} · {formatFileSize(localFile.size)}</small>}
           {uploadProgress && <div className="remake-upload-progress" role="status">
             <progress max={uploadProgress.size || 1} value={uploadProgress.uploaded} aria-label="Tiến độ tải video lên" />
-            <small>Đang tải lên: {Math.floor(uploadProgress.uploaded / Math.max(1, uploadProgress.size) * 100)}% · {uploadProgress.uploaded.toLocaleString("vi-VN")}/{uploadProgress.size.toLocaleString("vi-VN")} byte</small>
+            <small>Đang đọc tệp: {Math.floor(uploadProgress.uploaded / Math.max(1, uploadProgress.size) * 100)}% · {uploadProgress.uploaded.toLocaleString("vi-VN")}/{uploadProgress.size.toLocaleString("vi-VN")} byte</small>
           </div>}
-        </label>}
+        </div>
         <label className="form-field">
           <span>Ngôn ngữ kịch bản</span>
           <select name="language"><option value="vi">Tiếng Việt</option><option value="en">English</option></select>
@@ -409,25 +650,45 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
       {!!jobs.length && !filteredJobs.length && <p className="remake-empty-filter">Không tìm thấy job phù hợp. Hãy đổi từ khóa hoặc trạng thái.</p>}
     </section>
 
-    {selectedSummary && <section ref={detailRef} id="remake-job-detail" className="panel-card remake-panel remake-detail">
+    {selected && !detailSummary && <section ref={detailRef} id="remake-job-detail" className="panel-card remake-panel remake-detail">
+      <div className="card-heading"><h2>Chi tiết job</h2></div>
+      {detailError
+        ? <p className="remake-error" role="alert">{detailError}</p>
+        : <p className="remake-meta" role="status">Đang tải thông tin job…</p>}
+    </section>}
+
+    {detailSummary && <section ref={detailRef} id="remake-job-detail" className="panel-card remake-panel remake-detail">
       <div className="card-heading">
-        <h2>{result?.draft.title || "Chi tiết job"}</h2>
+        <h2>{result?.draft.title || detailSummary.title || "Chi tiết job"}</h2>
         <div className="remake-detail-links">
-          {selectedSummary.url ? <a className="text-button" href={selectedSummary.url} target="_blank" rel="noreferrer">Mở video nguồn</a>
-            : <span className="text-button">Video trên máy · {selectedSummary.sourceName}</span>}
-          <button type="button" className="text-button" onClick={() => void copyJobLink(selectedSummary.id)}>
-            {copiedJobId === selectedSummary.id ? "Đã sao chép link" : "Sao chép link job"}
+          {detailSummary.url ? <a className="text-button" href={detailSummary.url} target="_blank" rel="noreferrer">Mở video nguồn</a>
+            : <span className="text-button">Video trên máy · {detailSummary.sourceName}</span>}
+          <button type="button" className="text-button" onClick={() => void copyJobLink(detailSummary.id)}>
+            {copiedJobId === detailSummary.id ? "Đã sao chép link" : "Sao chép link job"}
           </button>
-          {result && (selectedSummary.projectSlug
-            ? <Link className="primary-button remake-quick-approve" href={`/projects/${encodeURIComponent(selectedSummary.projectSlug)}`}>Mở dự án Phim AI</Link>
-            : <button type="button" className="primary-button remake-quick-approve" disabled={acting} onClick={() => void act(selectedSummary.id, "create-project")}>{acting ? "Đang tạo dự án…" : `Duyệt & tạo Phim AI · ${remakeEpisodes.length} tập`}</button>)}
+          <button
+            type="button"
+            className="text-button"
+            disabled={isActingSelected}
+            onClick={() => void act(detailSummary.id, "delete")}
+          >
+            {isActingSelected && actingAction === "delete"
+              ? (isActiveStage(detailSummary.status) ? "Đang hủy…" : "Đang xóa…")
+              : (isActiveStage(detailSummary.status) ? "Hủy job" : "Xóa job")}
+          </button>
+          {result && (detailSummary.projectSlug
+            ? <Link className="primary-button remake-quick-approve" href={`/projects/${encodeURIComponent(detailSummary.projectSlug)}`}>Mở dự án Phim AI</Link>
+            : <button type="button" className="primary-button remake-quick-approve" disabled={isActingSelected} onClick={() => void act(detailSummary.id, "create-project")}>{isActingSelected && actingAction === "create-project" ? "Đang tạo dự án…" : `Duyệt & tạo Phim AI · ${remakeEpisodes.length} tập`}</button>)}
         </div>
       </div>
       {detailError && <p className="remake-error" role="alert">{detailError}</p>}
-      <p className="remake-meta" role="status">{statusLabels[selectedSummary.status]}{agent && ` · ${agentLabels[agent.agent]}${agent.model ? ` · ${agent.model}` : ""}`}{selectedSummary.progress && ` · ${selectedSummary.progress.completed}/${selectedSummary.progress.total} mốc nguồn`}{result && ` · ${result.aspectRatio} · ${transcriptLabels[result.transcript]}`}</p>
-      {selectedSummary.status === "failed" && <>
-        <p className="remake-error">{selectedSummary.error}</p>
-        <button type="button" className="secondary-button" disabled={acting} onClick={() => void act(selectedSummary.id, "retry")}>Thử lại</button>
+      <p className="remake-meta" role="status">{statusLabels[detailSummary.status]}{agent && ` · ${agentLabels[agent.agent]}${agent.model ? ` · ${agent.model}` : ""}`}{detailSummary.progress && ` · ${detailSummary.progress.completed}/${detailSummary.progress.total} mốc nguồn`}{result && ` · ${result.aspectRatio} · ${transcriptLabels[result.transcript]}`}</p>
+      {detailSummary.status === "failed" && <>
+        <p className="remake-error">{detailSummary.error}</p>
+        <div className="remake-actions">
+          <button type="button" className="secondary-button" disabled={isActingSelected} onClick={() => void act(detailSummary.id, "retry")}>{isActingSelected && actingAction === "retry" ? "Đang thử lại…" : "Thử lại"}</button>
+          <button type="button" className="text-button" disabled={isActingSelected} onClick={() => void act(detailSummary.id, "delete")}>{isActingSelected && actingAction === "delete" ? "Đang xóa…" : "Xóa job"}</button>
+        </div>
       </>}
       {result && <>
         <h3>Phân tích video nguồn</h3>
@@ -500,9 +761,10 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
           <button type="button" className="secondary-button" disabled={visibleScenePage >= scenePageCount - 1} onClick={() => setScenePage((page) => Math.min(scenePageCount - 1, page + 1))}>Cảnh tiếp</button>
         </div>}
         <div className="remake-actions">
-          {selectedSummary.projectSlug
-            ? <Link className="primary-button" href={`/projects/${encodeURIComponent(selectedSummary.projectSlug)}`}>Mở dự án Phim AI</Link>
-            : <button type="button" className="primary-button" disabled={acting} onClick={() => void act(selectedSummary.id, "create-project")}>{acting ? "Đang tạo dự án…" : `Duyệt và tạo dự án Phim AI · ${remakeEpisodes.length} tập`}</button>}
+          {detailSummary.projectSlug
+            ? <Link className="primary-button" href={`/projects/${encodeURIComponent(detailSummary.projectSlug)}`}>Mở dự án Phim AI</Link>
+            : <button type="button" className="primary-button" disabled={isActingSelected} onClick={() => void act(detailSummary.id, "create-project")}>{isActingSelected && actingAction === "create-project" ? "Đang tạo dự án…" : `Duyệt và tạo dự án Phim AI · ${remakeEpisodes.length} tập`}</button>}
+          <button type="button" className="secondary-button" disabled={isActingSelected} onClick={() => void act(detailSummary.id, "delete")}>{isActingSelected && actingAction === "delete" ? "Đang xóa…" : "Xóa job"}</button>
         </div>
       </>}
     </section>}

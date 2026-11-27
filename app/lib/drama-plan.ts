@@ -49,7 +49,18 @@ export function normalizeDramaPlan(value: unknown, expectedEpisodes: number): Dr
   };
 }
 
-export function dramaPlanSourceText(plan: DramaProjectPlan, input: { projectTitle: string; brief: string; durationMinutes: number; chunkSize: number; language?: string; totalScenes?: number }) {
+export function dramaPlanSourceText(
+  plan: DramaProjectPlan,
+  input: {
+    projectTitle: string;
+    brief: string;
+    durationMinutes: number;
+    chunkSize: number;
+    language?: string;
+    totalScenes?: number;
+    episodeRanges?: Array<{ sceneStart: number; sceneEnd: number }>;
+  },
+) {
   const totalScenes = input.totalScenes ?? Math.ceil((input.durationMinutes * 60) / 15);
   return [
     `PROJECT: ${input.projectTitle}`,
@@ -65,8 +76,9 @@ export function dramaPlanSourceText(plan: DramaProjectPlan, input: { projectTitl
     ...plan.locations.map((item) => `- ${item.name}: ${item.description}\n  Location image prompt: ${item.imagePrompt}`),
     "CHAPTER PLAN (each chapter maps to one project chunk; keep its scene range and causal continuity):",
     ...plan.episodes.map((item, index) => {
-      const sceneStart = index * input.chunkSize + 1;
-      const sceneEnd = Math.min(totalScenes, sceneStart + input.chunkSize - 1);
+      const range = input.episodeRanges?.[index];
+      const sceneStart = range ? range.sceneStart : index * input.chunkSize + 1;
+      const sceneEnd = range ? range.sceneEnd : Math.min(totalScenes, sceneStart + input.chunkSize - 1);
       return `A${String(index + 1).padStart(2, "0")} · ${item.title} · S${String(sceneStart).padStart(3, "0")}–S${String(sceneEnd).padStart(3, "0")}\n  ${item.summary}\n  Opening hook: ${item.openingHook}\n  Turn: ${item.turningPoint}\n  End hook: ${item.endHook}`;
     }),
     `CONTINUITY RULES: ${plan.continuityRules}`,

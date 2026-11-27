@@ -15,8 +15,16 @@
   "dependencies": {
     "@fal-ai/client": "^1.11.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "@react-three/fiber": "^9.8.2",
     "@remotion/captions": "^4.0.547",
+    "@remotion/motion-blur": "^4.0.547",
+    "@remotion/paths": "^4.0.547",
     "@remotion/player": "^4.0.547",
+    "@remotion/shapes": "^4.0.547",
+    "@remotion/three": "^4.0.547",
+    "@remotion/transitions": "^4.0.547",
+    "@types/three": "^0.187.0",
+    "gsap": "^3.15.1",
     "next": "16.4.6",
     "playwright-core": "1.65.1",
     "react": "19.2.4",
@@ -24,6 +32,7 @@
     "remotion": "^4.0.547",
     "sharp": "^0.35.5",
     "smol-toml": "^1.9.1",
+    "three": "^0.187.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {

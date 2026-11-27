@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { constants } from "node:fs";
-import { access, readdir, readFile } from "node:fs/promises";
+import { accessSync, constants } from "node:fs";
+import { access, mkdir, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -18,8 +18,50 @@ import {
 import { classifyRemakeSource } from "./video-remake-source";
 
 const exec = promisify(execFile);
-export const autoEditFfmpeg = () => process.env.STORYAI_FFMPEG_PATH || process.env.VIBE_FFMPEG_PATH || "ffmpeg";
-export const autoEditFfprobe = () => process.env.STORYAI_FFPROBE_PATH || path.join(path.dirname(autoEditFfmpeg()), "ffprobe");
+
+function resolveLocalBinary(binaryName: string, configured?: string): string {
+  const trimmed = configured?.trim();
+  if (trimmed) return trimmed;
+  const searchDirs = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    path.join(homedir(), ".local", "bin"),
+    ...(process.env.PATH || "").split(path.delimiter).filter(Boolean),
+  ];
+  for (const dir of searchDirs) {
+    const candidate = path.join(dir, binaryName);
+    try {
+      accessSync(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // Check next search directory
+    }
+  }
+  return binaryName;
+}
+
+export const autoEditFfmpeg = () =>
+  resolveLocalBinary("ffmpeg", process.env.STORYAI_FFMPEG_PATH || process.env.VIBE_FFMPEG_PATH);
+
+export const autoEditFfprobe = () => {
+  const configured = process.env.STORYAI_FFPROBE_PATH?.trim();
+  if (configured) return configured;
+  const customFfmpeg = (process.env.STORYAI_FFMPEG_PATH || process.env.VIBE_FFMPEG_PATH)?.trim();
+  if (customFfmpeg) {
+    const sibling = path.join(path.dirname(customFfmpeg), "ffprobe");
+    try {
+      accessSync(sibling, constants.X_OK);
+      return sibling;
+    } catch {
+      // Fall through to standard macOS/PATH search
+    }
+  }
+  return resolveLocalBinary("ffprobe");
+};
+
+export const autoEditYtDlp = () =>
+  resolveLocalBinary("yt-dlp", process.env.STORYAI_YT_DLP_PATH || process.env.VIBE_TOOL_YT_DLP_PATH);
+
 const safeInputArgs = ["-protocol_whitelist", "file", "-format_whitelist", "mov,matroska,webm"];
 
 export type ContactSheetEvidence = {
@@ -38,6 +80,31 @@ async function findExecutable(candidates: string[]): Promise<string | undefined>
     }
   }
   return undefined;
+}
+
+async function findReadableFile(candidates: string[]): Promise<string | undefined> {
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      await access(candidate, constants.R_OK);
+      const details = await stat(candidate);
+      if (details.isFile()) return candidate;
+    } catch {
+      // Check next candidate
+    }
+  }
+  return undefined;
+}
+
+export function extractStreamRotationDegrees(stream?: {
+  side_data_list?: Array<{ rotation?: number | string }>;
+  tags?: { rotate?: string | number };
+}): number {
+  if (!stream) return 0;
+  const sideRotation = stream.side_data_list?.find((d) => d.rotation !== undefined)?.rotation;
+  const raw = sideRotation !== undefined ? sideRotation : stream.tags?.rotate;
+  const deg = Number(raw ?? 0);
+  return Number.isFinite(deg) ? deg : 0;
 }
 
 export async function probeAutoEditVideo(filePath: string) {
@@ -63,7 +130,8 @@ export async function probeAutoEditVideo(filePath: string) {
       height?: number;
       duration?: string;
       disposition?: { attached_pic?: number };
-      side_data_list?: Array<{ rotation?: number }>;
+      side_data_list?: Array<{ rotation?: number | string }>;
+      tags?: { rotate?: string };
     }>;
   };
 
@@ -75,12 +143,13 @@ export async function probeAutoEditVideo(filePath: string) {
     throw new Error(`Video "${path.basename(filePath)}" không có khung hình hoặc thời lượng hợp lệ.`);
   }
 
-  const rotated = Math.abs(Number(stream.side_data_list?.[0]?.rotation || 0)) % 180 === 90;
+  const rotated = Math.abs(extractStreamRotationDegrees(stream)) % 180 === 90;
   const width = rotated ? stream.height! : stream.width!;
   const height = rotated ? stream.width! : stream.height!;
   const ratio = width / height;
   const aspectRatio: AutoEditAspectRatio = ratio < 0.85 ? "9:16" : ratio > 1.18 ? "16:9" : "1:1";
   const hasAudio = Boolean(parsed.streams?.some((s) => s.codec_type === "audio"));
+  const hasSubtitle = Boolean(parsed.streams?.some((s) => s.codec_type === "subtitle"));
 
   return {
     durationMs: Math.max(200, Math.round(durationSec * 1000)),
@@ -88,6 +157,7 @@ export async function probeAutoEditVideo(filePath: string) {
     height,
     aspectRatio,
     hasAudio,
+    hasSubtitle,
     videoIndex,
   };
 }
@@ -286,12 +356,18 @@ export function parseSrtToWords(srtText: string, clipId: string): AutoEditWord[]
  */
 export function parseWhisperJsonWords(payload: unknown, clipId: string): { kind: "whisper_words" | "whisper_segments"; words: AutoEditWord[] } {
   if (!payload || typeof payload !== "object") return { kind: "whisper_segments", words: [] };
-  const record = payload as Record<string, unknown>;
-  const segments = Array.isArray(record.segments)
-    ? record.segments
-    : Array.isArray(record.transcription)
-      ? record.transcription
-      : [];
+  const segments: unknown[] = Array.isArray(payload)
+    ? payload.flatMap((entry) => {
+      if (!entry || typeof entry !== "object") return [];
+      const rec = entry as Record<string, unknown>;
+      return Array.isArray(rec.segments) ? rec.segments : [];
+    })
+    : (() => {
+      const record = payload as Record<string, unknown>;
+      if (Array.isArray(record.segments)) return record.segments;
+      if (Array.isArray(record.transcription)) return record.transcription;
+      return [];
+    })();
 
   const extractedWords: AutoEditWord[] = [];
   let hasExplicitWordTimestamps = false;
@@ -313,7 +389,10 @@ export function parseWhisperJsonWords(payload: unknown, clipId: string): { kind:
 
     if (validWordObjects.length > 0) {
       for (const item of validWordObjects) {
-        const rawText = String(item.word ?? item.text ?? "").replace(/\[_[^\]]+\]/gu, "").trim();
+        const rawText = String(item.word ?? item.text ?? "")
+          .replace(/\[_[^\]]+\]/gu, "")
+          .replace(/<\|[^|]+\|>/gu, "")
+          .trim();
         if (!rawText) continue;
         const startSec = typeof item.start === "number"
           ? item.start
@@ -386,12 +465,68 @@ export function parseWhisperJsonWords(payload: unknown, clipId: string): { kind:
   };
 }
 
+export async function resolveWhisperKitModelDir(
+  envModelDir?: string,
+  hfModelsRoot?: string,
+): Promise<string | undefined> {
+  const configured = envModelDir?.trim();
+  if (configured) {
+    try {
+      await access(configured, constants.R_OK);
+      const st = await stat(configured);
+      if (st.isDirectory()) return configured;
+    } catch {
+      // Fall back to HuggingFace WhisperKit cache discovery
+    }
+  }
+
+  const root = hfModelsRoot ?? path.join(homedir(), "Documents", "huggingface", "models", "argmaxinc", "whisperkit-coreml");
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch {
+    return undefined;
+  }
+
+  const validDirs: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    const fullDir = path.join(root, entry.name);
+    try {
+      const inner = await readdir(fullDir);
+      if (inner.some((f) => f === "config.json" || f.endsWith(".mlmodelc"))) {
+        validDirs.push(entry.name);
+      }
+    } catch {
+      // Ignore unreadable model dir
+    }
+  }
+
+  if (!validDirs.length) return undefined;
+
+  const tierPatterns = [
+    /^openai_whisper-large/iu,
+    /^openai_whisper-medium/iu,
+    /^openai_whisper-small/iu,
+    /^openai_whisper-base/iu,
+  ];
+  for (const pattern of tierPatterns) {
+    const matches = validDirs.filter((name) => pattern.test(name)).sort().reverse();
+    if (matches[0]) return path.join(root, matches[0]);
+  }
+  validDirs.sort();
+  return path.join(root, validDirs[0]);
+}
+
 async function transcribeWavWithWhisper(
   wavPath: string,
   clipId: string,
   language: "vi" | "en",
   workDir: string,
+  durationMs = 60_000,
 ): Promise<{ kind: AutoEditTranscriptKind; backend?: string; words: AutoEditWord[] }> {
+  const whisperTimeoutMs = Math.max(180_000, Math.round(durationMs * 2));
+
   // 1. Check custom STORYAI_WHISPER_TRANSCRIBE_PATH wrapper first
   const configuredWhisper = process.env.STORYAI_WHISPER_TRANSCRIBE_PATH?.trim();
   if (configuredWhisper) {
@@ -402,7 +537,7 @@ async function transcribeWavWithWhisper(
       await exec(
         configuredWhisper,
         [wavPath, "--output-srt", outSrt, ...(modelDir ? ["--model-dir", modelDir] : [])],
-        { cwd: workDir, timeout: 120_000 },
+        { cwd: workDir, timeout: whisperTimeoutMs },
       );
       const jsonRaw = await readFile(outJson, "utf8").catch(() => "");
       if (jsonRaw) {
@@ -427,21 +562,40 @@ async function transcribeWavWithWhisper(
     path.join(home, ".local", "bin", "whisper-cli"),
     "/opt/homebrew/bin/whisper-cli",
     "/usr/local/bin/whisper-cli",
-    ...pathDirs.map((d) => path.join(d, "whisper-cli")),
+    path.join(home, ".local", "bin", "whisper-cpp"),
+    "/opt/homebrew/bin/whisper-cpp",
+    "/usr/local/bin/whisper-cpp",
+    ...pathDirs.flatMap((d) => [path.join(d, "whisper-cli"), path.join(d, "whisper-cpp")]),
   ]);
   if (whisperCpp) {
     const outPrefix = path.join(workDir, `${clipId}_cpp`);
-    const modelDir = process.env.STORYAI_WHISPER_MODEL_DIR?.trim();
-    const modelCandidates = modelDir
-      ? [path.join(modelDir, "ggml-base.bin"), path.join(modelDir, "ggml-small.bin"), path.join(modelDir, "ggml-large-v3-turbo.bin")]
-      : [];
-    const modelFile = await findExecutable(modelCandidates).catch(() => undefined);
+    const envModelDir = process.env.STORYAI_WHISPER_MODEL_DIR?.trim();
+    const modelWeightNames = [
+      "ggml-large-v3-turbo.bin",
+      "ggml-large-v3.bin",
+      "ggml-medium.bin",
+      "ggml-small.bin",
+      "ggml-base.bin",
+    ];
+    const modelSearchDirs = [
+      ...(envModelDir ? [envModelDir] : []),
+      path.join(home, ".cache", "whisper"),
+      path.join(home, ".local", "share", "whisper-cpp"),
+      "/opt/homebrew/share/whisper-cpp",
+      "/opt/homebrew/share/whisper-cpp/models",
+      "/usr/local/share/whisper-cpp",
+    ];
+    const modelCandidates = [
+      ...(envModelDir && envModelDir.endsWith(".bin") ? [envModelDir] : []),
+      ...modelSearchDirs.flatMap((dir) => modelWeightNames.map((w) => path.join(dir, w))),
+    ];
+    const modelFile = await findReadableFile(modelCandidates).catch(() => undefined);
     if (modelFile) {
       try {
         await exec(
           whisperCpp,
           ["-m", modelFile, "-f", wavPath, "-l", language, "-ojf", "-of", outPrefix],
-          { cwd: workDir, timeout: 120_000 },
+          { cwd: workDir, timeout: whisperTimeoutMs },
         );
         const raw = await readFile(`${outPrefix}.json`, "utf8");
         const parsed = parseWhisperJsonWords(JSON.parse(raw), clipId);
@@ -461,8 +615,11 @@ async function transcribeWavWithWhisper(
   ]);
   if (whisperKit) {
     try {
-      const modelArgs = process.env.STORYAI_WHISPER_MODEL_DIR?.trim()
-        ? ["--model-path", process.env.STORYAI_WHISPER_MODEL_DIR.trim()]
+      const wkReportDir = path.join(workDir, `wk_${clipId}`);
+      await mkdir(wkReportDir, { recursive: true });
+      const discoveredModelDir = await resolveWhisperKitModelDir(process.env.STORYAI_WHISPER_MODEL_DIR);
+      const modelArgs = discoveredModelDir
+        ? ["--model-path", discoveredModelDir]
         : ["--model", "base"];
       const { stdout } = await exec(
         whisperKit,
@@ -471,18 +628,25 @@ async function transcribeWavWithWhisper(
           "--audio-path", wavPath,
           "--language", language,
           "--word-timestamps",
+          "--verbose",
           "--report",
-          "--report-path", workDir,
+          "--report-path", wkReportDir,
           ...modelArgs,
         ],
-        { cwd: workDir, timeout: 120_000, maxBuffer: 8_000_000 },
+        { cwd: workDir, timeout: whisperTimeoutMs, maxBuffer: 8_000_000 },
       );
-      const entries = await readdir(workDir);
-      const reportFile = entries.find((name) => name.endsWith(".json") && name.includes(clipId));
-      if (reportFile) {
-        const raw = await readFile(path.join(workDir, reportFile), "utf8");
-        const parsed = parseWhisperJsonWords(JSON.parse(raw), clipId);
-        if (parsed.words.length) return { kind: parsed.kind, backend: "whisperkit-cli", words: parsed.words };
+      const entries = await readdir(wkReportDir).catch(() => [] as string[]);
+      const jsonReports = entries
+        .filter((name) => name.toLowerCase().endsWith(".json"))
+        .sort((a, b) => (Number(b.includes(clipId)) - Number(a.includes(clipId))) || a.localeCompare(b));
+      for (const reportFile of jsonReports) {
+        try {
+          const raw = await readFile(path.join(wkReportDir, reportFile), "utf8");
+          const parsed = parseWhisperJsonWords(JSON.parse(raw), clipId);
+          if (parsed.words.length) return { kind: parsed.kind, backend: "whisperkit-cli", words: parsed.words };
+        } catch {
+          // Try next report JSON file
+        }
       }
       if (stdout.trim()) {
         // Parse bracketed timestamp lines like [00:00.12 -> 00:02.40] text
@@ -531,7 +695,7 @@ async function transcribeWavWithWhisper(
       await exec(
         pyWhisper,
         [wavPath, "--language", language, "--output_format", "json", "--word_timestamps", "True", "--output_dir", workDir],
-        { cwd: workDir, timeout: 120_000 },
+        { cwd: workDir, timeout: whisperTimeoutMs },
       );
       const base = path.basename(wavPath, path.extname(wavPath));
       const raw = await readFile(path.join(workDir, `${base}.json`), "utf8");
@@ -762,7 +926,7 @@ export async function downloadUrlForAutoEdit(
     throw new Error("Hiện hỗ trợ link công khai từ YouTube, TikTok, Facebook, Instagram hoặc Douyin.");
   }
 
-  const ytDlp = process.env.STORYAI_YT_DLP_PATH?.trim() || process.env.VIBE_TOOL_YT_DLP_PATH?.trim() || "yt-dlp";
+  const ytDlp = autoEditYtDlp();
   const ffmpegDir = path.dirname(autoEditFfmpeg());
   const ffmpegLocArgs = ffmpegDir && ffmpegDir !== "." ? ["--ffmpeg-location", ffmpegDir] : [];
   const subLang = language === "en" ? "en,en.*" : "vi,vi.*";
@@ -800,7 +964,7 @@ export async function downloadUrlForAutoEdit(
   }
 
   const files = await readdir(videosDir);
-  const videoFile = files.find((f) => /^clip_01\.(?:mp4|webm|mkv|mov)$/iu.test(f));
+  const videoFile = files.find((f) => /^clip_01\.(?:mp4|m4v|webm|mkv|mov)$/iu.test(f));
   if (!videoFile) {
     throw new Error("Không tìm thấy tệp video sau khi tải từ link.");
   }
@@ -816,7 +980,6 @@ export async function downloadUrlForAutoEdit(
     }
   }
 
-  const { stat } = await import("node:fs/promises");
   const details = await stat(path.join(videosDir, videoFile));
   const ext = path.extname(videoFile).toLowerCase();
 
@@ -864,6 +1027,7 @@ export async function analyzeAutoEditMedia(
     };
     probedVideos.push(enriched);
 
+    let clipTranscribed = false;
     if (meta.hasAudio) {
       // 1. Acoustic PCM analysis for silence & dead-air detection
       try {
@@ -892,7 +1056,6 @@ export async function analyzeAutoEditMedia(
       }
 
       // 2. Check pre-downloaded json3 subtitles (e.g. YouTube URL import) before running Whisper
-      let clipTranscribed = false;
       if (!options.manualTranscript.trim()) {
         try {
           const vDirEntries = await readdir(path.join(jobMediaDir, "videos"));
@@ -925,17 +1088,49 @@ export async function analyzeAutoEditMedia(
             "-ar", "16000",
             wavPath,
           ], 45_000);
-          const result = await transcribeWavWithWhisper(wavPath, rawVideo.id, options.language, workDir);
+          const result = await transcribeWavWithWhisper(wavPath, rawVideo.id, options.language, workDir, meta.durationMs);
           if (result.words.length > 0) {
             allWords.push(...result.words);
             if (result.kind === "whisper_words" || transcriptKind === "acoustic_only") {
               transcriptKind = result.kind;
             }
             whisperBackend = result.backend || whisperBackend;
+            clipTranscribed = true;
           }
         } catch {
-          // Continue with acoustic VAD if Whisper fails
+          // Continue with embedded subtitle check or acoustic VAD if Whisper fails
         }
+      }
+    }
+
+    // 4. Extract embedded subtitle track 0:s:0 (SRT) if present before falling back to acoustic_only
+    if (!options.manualTranscript.trim() && !clipTranscribed && meta.hasSubtitle) {
+      const embeddedSrtPath = path.join(workDir, `${rawVideo.id}.embedded.srt`);
+      try {
+        await runFfmpegBuffer([
+          "-y",
+          ...safeInputArgs,
+          "-i", filePath,
+          "-vn",
+          "-an",
+          "-map", "0:s:0",
+          "-c:s", "srt",
+          embeddedSrtPath,
+        ], 30_000);
+        const srtRaw = await readFile(embeddedSrtPath, "utf8").catch(() => "");
+        if (srtRaw.trim()) {
+          const srtWords = parseSrtToWords(srtRaw, rawVideo.id);
+          if (srtWords.length > 0) {
+            allWords.push(...srtWords);
+            if (transcriptKind === "acoustic_only") {
+              transcriptKind = "whisper_segments";
+            }
+            whisperBackend = whisperBackend || "embedded-srt";
+            clipTranscribed = true;
+          }
+        }
+      } catch {
+        // Proceed with acoustic_only if embedded subtitle track cannot be converted to SRT
       }
     }
   }

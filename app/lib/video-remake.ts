@@ -43,7 +43,7 @@ export const remakePlanSchema = z.object({
   imageStyle: z.string().trim().max(80).optional(),
   contentGenre: z.string().trim().max(80).optional(),
   storySetting: z.string().trim().max(80).optional(),
-  characters: z.array(remakeEntitySchema).min(1).max(12),
+  characters: z.array(remakeEntitySchema).min(1).max(20),
   locations: z.array(remakeEntitySchema).min(1).max(30),
 });
 
@@ -69,8 +69,8 @@ export const remakeSceneSchema = z.object({
   shotSize: z.string().trim().max(160).optional(),
   cameraMovement: z.string().trim().max(400).optional(),
   eyelineAction: z.string().trim().max(300).optional(),
-  sfx: z.string().trim().max(300).optional(),
-  vfx: z.string().trim().max(200).optional(),
+  sfx: z.string().trim().max(500).optional(),
+  vfx: z.string().trim().max(400).optional(),
   continuityIn: required(700),
   continuityOut: required(700),
   imagePrompt: required(2400),
@@ -85,8 +85,8 @@ export const remakeSceneGenerationSchema = remakeSceneSchema.extend({
   shotSize: required(160),
   cameraMovement: required(400),
   eyelineAction: required(300),
-  sfx: required(300),
-  vfx: required(200),
+  sfx: required(500),
+  vfx: required(400),
 });
 
 export const remakeDraftSchema = remakePlanSchema.extend({

@@ -22,12 +22,38 @@ import { pickDefaultOverlaySfx, SFX_CATALOG } from "./sfx-library";
 
 const maxActiveJobsPerUser = 5;
 const staleJobLockMs = 30 * 60_000;
-const guidePath = path.join(process.cwd(), "prompts", "auto-edit-code-agent-guide.md");
+const guideCandidates = [
+  path.join(process.cwd(), "prompts", "auto-edit-code-agent-guide.md"),
+  path.resolve(process.cwd(), "..", "..", "prompts", "auto-edit-code-agent-guide.md"),
+];
 
 const runtime = globalThis as typeof globalThis & {
-  storyAiAutoEdit?: { dirty: boolean; worker?: Promise<void>; writes: Promise<unknown> };
+  storyAiAutoEdit?: {
+    bootId: string;
+    dirty: boolean;
+    worker?: Promise<void>;
+    writes: Promise<unknown>;
+    pendingRenders: Set<string>;
+  };
 };
-const queue = (runtime.storyAiAutoEdit ??= { dirty: false, writes: Promise.resolve() });
+const queue = (runtime.storyAiAutoEdit ??= {
+  bootId: randomUUID(),
+  dirty: false,
+  writes: Promise.resolve(),
+  pendingRenders: new Set<string>(),
+});
+queue.bootId ||= randomUUID();
+queue.pendingRenders ||= new Set<string>();
+
+function isPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (cause) {
+    return (cause as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
 
 function isActiveJob(job: AutoEditJob) {
   return job.status === "queued" || job.status === "analyzing_media" || job.status === "directing" || job.status === "rendering";
@@ -109,15 +135,7 @@ async function claimJobLock(folder: string, id: string) {
       } catch {
         // Concurrent writer
       }
-      let alive = false;
-      if (Number.isInteger(ownerPid) && ownerPid > 0) {
-        try {
-          process.kill(ownerPid, 0);
-          alive = true;
-        } catch (cause) {
-          alive = (cause as NodeJS.ErrnoException).code === "EPERM";
-        }
-      }
+      const alive = isPidAlive(ownerPid);
       if (alive || !details || Date.now() - details.mtimeMs < staleJobLockMs) return undefined;
       await rm(lockPath, { force: true }).catch(() => undefined);
     }
@@ -125,12 +143,82 @@ async function claimJobLock(folder: string, id: string) {
   return undefined;
 }
 
-export function getAutoEditJob(owner: string, id: string) {
-  return readJobByFolder(autoEditOwnerFolder(owner), id);
+export function markAutoEditRenderPending(jobId: string) {
+  queue.pendingRenders.add(jobId);
+}
+
+export function clearAutoEditRenderPending(jobId: string) {
+  queue.pendingRenders.delete(jobId);
+}
+
+export async function hasLiveAutoEditRenderLock(folder: string, id: string): Promise<boolean> {
+  if (queue.pendingRenders.has(id)) return true;
+  const lockPath = path.join(ownerJobsFileDir(folder), `.${id}.render.lock`);
+  try {
+    const raw = await readFile(lockPath, "utf8");
+    const parsed = JSON.parse(raw) as { pid?: unknown; bootId?: unknown };
+    const pid = Number(parsed.pid);
+    return parsed.bootId === queue.bootId && isPidAlive(pid);
+  } catch {
+    return false;
+  }
+}
+
+export async function claimAutoEditRenderLock(folder: string, id: string) {
+  const lockPath = path.join(ownerJobsFileDir(folder), `.${id}.render.lock`);
+  await mkdir(ownerJobsFileDir(folder), { recursive: true, mode: 0o700 });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const handle = await open(lockPath, "wx", 0o600);
+      try {
+        await handle.writeFile(
+          JSON.stringify({ pid: process.pid, bootId: queue.bootId, claimedAt: new Date().toISOString() }),
+        );
+      } catch (error) {
+        await handle.close().catch(() => undefined);
+        await rm(lockPath, { force: true }).catch(() => undefined);
+        throw error;
+      }
+      queue.pendingRenders.delete(id);
+      return async () => {
+        await handle.close().catch(() => undefined);
+        await rm(lockPath, { force: true }).catch(() => undefined);
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const raw = await readFile(lockPath, "utf8").catch(() => "");
+      let pid = 0;
+      let bootId = "";
+      try {
+        const parsed = JSON.parse(raw) as { pid?: unknown; bootId?: unknown };
+        pid = Number(parsed.pid);
+        bootId = typeof parsed.bootId === "string" ? parsed.bootId : "";
+      } catch {
+        // Malformed lock
+      }
+      if (bootId === queue.bootId && isPidAlive(pid)) {
+        return undefined;
+      }
+      await rm(lockPath, { force: true }).catch(() => undefined);
+    }
+  }
+  return undefined;
+}
+
+export async function getAutoEditJob(owner: string, id: string) {
+  const folder = autoEditOwnerFolder(owner);
+  const job = await readJobByFolder(folder, id);
+  if (job && isActiveJob(job)) {
+    void runAutoEditQueue().catch(() => undefined);
+  }
+  return job;
 }
 
 export async function listAutoEditJobs(owner: string): Promise<AutoEditJobSummary[]> {
   const jobs = await listJobsByFolder(autoEditOwnerFolder(owner));
+  if (jobs.some(isActiveJob)) {
+    void runAutoEditQueue().catch(() => undefined);
+  }
   return jobs
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     .slice(0, 50)
@@ -158,12 +246,19 @@ export async function listAutoEditJobs(owner: string): Promise<AutoEditJobSummar
     });
 }
 
+export async function canEnqueueAutoEditJob(owner: string): Promise<boolean> {
+  const folder = autoEditOwnerFolder(owner);
+  const allJobs = await listJobsByFolder(folder);
+  return allJobs.filter(isActiveJob).length < maxActiveJobsPerUser;
+}
+
 export function createQueuedAutoEditJob(
   owner: string,
   jobId: string,
   options: AutoEditOptions,
   videos: AutoEditSourceVideo[],
   images: AutoEditProductImage[],
+  agentPreferenceInput?: CodingAgentPreference,
 ) {
   return serializeWrite(async () => {
     const folder = autoEditOwnerFolder(owner);
@@ -171,12 +266,14 @@ export function createQueuedAutoEditJob(
     if (existing) return existing.id;
     const allJobs = await listJobsByFolder(folder);
     if (allJobs.filter(isActiveJob).length >= maxActiveJobsPerUser) return undefined;
+    const agentPreference = agentPreferenceInput ?? await getCodingAgentPreference(owner).catch(() => undefined);
     const now = new Date().toISOString();
     const job: AutoEditJob = {
       id: jobId,
       options,
       status: "queued",
       progress: "Đang chờ tới lượt xử lý trong hàng đợi...",
+      agentPreference,
       videos,
       images,
       createdAt: now,
@@ -187,34 +284,52 @@ export function createQueuedAutoEditJob(
   });
 }
 
+export function updateAutoEditJob(
+  ownerFolder: string,
+  jobId: string,
+  updater: (latest: AutoEditJob) => AutoEditJob | undefined,
+): Promise<AutoEditJob | undefined> {
+  return serializeWrite(async () => {
+    const latest = await readJobByFolder(ownerFolder, jobId);
+    if (!latest) return undefined;
+    const next = updater(latest);
+    if (!next) return latest;
+    const saved: AutoEditJob = { ...next, updatedAt: new Date().toISOString() };
+    await saveJobByFolder(ownerFolder, saved);
+    return saved;
+  });
+}
+
 export function updateAutoEditJobEdl(
   owner: string,
   id: string,
   edl: AutoEditEdl,
   optionsPatch?: Partial<AutoEditOptions>,
 ) {
-  return serializeWrite(async () => {
-    const folder = autoEditOwnerFolder(owner);
-    const job = await readJobByFolder(folder, id);
-    if (!job) return undefined;
+  return updateAutoEditJob(autoEditOwnerFolder(owner), id, (job) => {
     const nextOptions: AutoEditOptions = optionsPatch
       ? { ...job.options, ...optionsPatch }
       : job.options;
-    const updated: AutoEditJob = {
+    const now = new Date().toISOString();
+    return {
       ...job,
       options: nextOptions,
       edl,
       status: job.status === "rendered" ? "ready" : job.status,
-      render: job.render ? { ...job.render, status: job.render.status === "ready" ? "idle" : job.render.status, updatedAt: new Date().toISOString() } : undefined,
-      updatedAt: new Date().toISOString(),
+      render: job.render ? { ...job.render, status: job.render.status === "ready" ? "idle" : job.render.status, updatedAt: now } : undefined,
+      updatedAt: now,
     };
-    await saveJobByFolder(folder, updated);
-    return updated;
   });
 }
 
 export function saveAutoEditJobState(ownerFolder: string, job: AutoEditJob) {
-  return serializeWrite(() => saveJobByFolder(ownerFolder, { ...job, updatedAt: new Date().toISOString() }));
+  return serializeWrite(async () => {
+    const latest = await readJobByFolder(ownerFolder, job.id);
+    const merged: AutoEditJob = latest
+      ? { ...latest, ...job, updatedAt: new Date().toISOString() }
+      : { ...job, updatedAt: new Date().toISOString() };
+    await saveJobByFolder(ownerFolder, merged);
+  });
 }
 
 export function retryAutoEditJob(owner: string, id: string) {
@@ -223,8 +338,10 @@ export function retryAutoEditJob(owner: string, id: string) {
     const job = await readJobByFolder(folder, id);
     if (!job) return "missing" as const;
     if (isActiveJob(job)) return "busy" as const;
+    const latestPref = await getCodingAgentPreference(owner).catch(() => job.agentPreference);
     await saveJobByFolder(folder, {
       ...job,
+      agentPreference: latestPref ?? job.agentPreference,
       status: "queued",
       progress: "Đã đưa lại vào hàng đợi phân tích & dựng tự động...",
       error: undefined,
@@ -238,10 +355,28 @@ function buildHeuristicFallbackEdl(
   job: AutoEditJob,
   candidateSegments: ReturnType<typeof buildCandidateSegments>,
 ): AutoEditEdl {
+  const presetInfo = AUTO_EDIT_PRESETS.find((p) => p.id === job.options.preset) || AUTO_EDIT_PRESETS[0];
   const kept = candidateSegments.filter((s) => s.keep);
+  const subjectLabel = job.options.productName || job.options.title || presetInfo.badge;
   const hookTitle = job.options.productName
-    ? `${job.options.productName.toUpperCase()} CÓ ĐÁNG TIỀN?`
-    : (job.options.title || "BẢN DỰNG TỰ ĐỘNG NỔI BẬT").toUpperCase().slice(0, 60);
+    ? job.options.preset === "tutorial-saas" || job.options.preset === "edu-course"
+      ? `HƯỚNG DẪN ${job.options.productName.toUpperCase()} TỪ A→Z`
+      : job.options.preset === "news-recap"
+        ? `TIÊU ĐIỂM: ${job.options.productName.toUpperCase()}`
+        : `${job.options.productName.toUpperCase()} CÓ GÌ ĐẶC BIỆT?`
+    : (job.options.title || presetInfo.label.replace(/^[^\p{L}\p{N}]+/gu, "")).toUpperCase().slice(0, 60);
+
+  const hookEmoji =
+    job.options.preset === "tutorial-saas" ? "💻"
+      : job.options.preset === "podcast-talk" ? "🎙️"
+        : job.options.preset === "edu-course" ? "🎓"
+          : job.options.preset === "real-estate" ? "🏢"
+            : job.options.preset === "food-mukbang" ? "🍜"
+              : job.options.preset === "vlog-travel" ? "✈️"
+                : job.options.preset === "gaming-highlight" ? "🎮"
+                  : job.options.preset === "news-recap" ? "📰"
+                    : job.options.preset === "minimal-aesthetic" ? "✨"
+                      : "🔥";
 
   const overlays: AutoEditEdl["overlays"] = [
     {
@@ -251,26 +386,39 @@ function buildHeuristicFallbackEdl(
       offsetMs: 0,
       durationMs: 2_800,
       layout: "center-pop",
-      badge: job.options.productName || "AUTO EDIT",
+      badge: presetInfo.badge.toUpperCase().slice(0, 32),
       title: hookTitle,
       subtitle: job.options.productHighlights.split(/\r?\n|[,;•]/u)[0]?.trim().slice(0, 80) || undefined,
-      emoji: "🔥",
-      accentColor: job.options.preset === "minimal-aesthetic" ? "cyan" : "amber",
+      emoji: hookEmoji,
+      accentColor:
+        job.options.preset === "minimal-aesthetic" || job.options.preset === "tutorial-saas" || job.options.preset === "edu-course"
+          ? "cyan"
+          : job.options.preset === "real-estate"
+            ? "emerald"
+            : "amber",
       sfxId: job.options.autoSfx !== false ? pickDefaultOverlaySfx({ kind: "hook_banner" }, 0, job.options.preset) : undefined,
     },
   ];
 
   job.images.forEach((img, index) => {
     const targetSeg = kept[Math.min(kept.length - 1, Math.max(0, Math.floor(((index + 1) * kept.length) / (job.images.length + 1))))];
+    const layout =
+      presetInfo.preferredCardLayout === "stage-3d"
+        ? "stage-3d"
+        : presetInfo.preferredCardLayout === "split-top"
+          ? "split-top"
+          : index % 2 === 0
+            ? "floating-right"
+            : "floating-left";
     overlays.push({
       id: `ov_prod_${index + 1}`,
       kind: "product_card",
       anchorSegmentId: targetSeg?.id,
       offsetMs: index === 0 ? 1_200 : 400,
-      durationMs: 3_400,
+      durationMs: 3_600,
       imageId: img.id,
-      layout: index % 2 === 0 ? "floating-right" : "floating-left",
-      badge: job.options.productName || "SẢN PHẨM",
+      layout,
+      badge: subjectLabel.slice(0, 36) || "ĐIỂM NHẤN",
       title: img.label || job.options.productName || `Điểm nhấn #${index + 1}`,
       subtitle: job.options.productHighlights.split(/\r?\n|[•;]/u)[index]?.trim().slice(0, 90) || "Chi tiết thực tế",
       emoji: index % 2 === 0 ? "✨" : "⚡",
@@ -281,35 +429,81 @@ function buildHeuristicFallbackEdl(
     });
   });
 
-  // Pick top frequent meaningful words to highlight
+  // Add topic-specific Pro FX annotations when suitable segments exist
+  if ((job.options.preset === "tutorial-saas" || job.options.preset === "edu-course") && kept.length >= 3) {
+    const midSeg = kept[Math.floor(kept.length * 0.45)];
+    overlays.push({
+      id: "ov_auto_spot",
+      kind: "spotlight_box",
+      anchorSegmentId: midSeg?.id,
+      offsetMs: 400,
+      durationMs: 2_600,
+      layout: "center-pop",
+      title: "Thao tác quan trọng",
+      emoji: "👆",
+      accentColor: "amber",
+      targetX: 0.5,
+      targetY: 0.54,
+      targetW: 0.28,
+      targetH: 0.14,
+      sfxId: job.options.autoSfx !== false ? "mouse-clicks" : undefined,
+    });
+  } else if ((job.options.preset === "gaming-highlight" || job.options.preset === "tech-unbox") && kept.length >= 2) {
+    const climaxSeg = kept[kept.length - 1];
+    overlays.push({
+      id: "ov_auto_freeze",
+      kind: "freeze_frame",
+      anchorSegmentId: climaxSeg?.id,
+      offsetMs: 200,
+      durationMs: 1_500,
+      layout: "center-pop",
+      badge: "HIGHLIGHT FOCUS",
+      title: subjectLabel.slice(0, 48),
+      accentColor: "cyan",
+      sfxId: job.options.autoSfx !== false ? "camera-shutter" : undefined,
+    });
+  }
+
+  // Pick top frequent meaningful words to highlight (capped at 48 chars per word)
   const freq = new Map<string, number>();
   for (const w of job.analysis?.words || []) {
-    const clean = w.text.replace(/[.,!?;:"'()[\]{}]+/gu, "").trim();
+    const clean = w.text.replace(/[.,!?;:"'()[\]{}]+/gu, "").trim().slice(0, 48);
     if (clean.length >= 4 && !w.filler) freq.set(clean, (freq.get(clean) || 0) + 1);
   }
   const keywordHighlights = [...freq.entries()]
     .slice(0, 12)
     .map(([word], idx) => ({
-      word,
+      word: word.slice(0, 48),
       color: (["amber", "emerald", "cyan", "rose"] as const)[idx % 4],
-      emoji: idx % 3 === 0 ? "✨" : undefined,
+      emoji: job.options.preset === "vlog-travel" || job.options.preset === "minimal-aesthetic" ? undefined : idx % 3 === 0 ? "✨" : undefined,
     }));
 
   return {
     schema: "auto-edit-edl.v1",
-    title: job.options.title || job.options.productName || "Bản dựng Auto Edit",
-    summary: `Đã tự động lọc ${candidateSegments.filter((s) => !s.keep).length} khoảng lặng/từ thừa, luân phiên Dynamic Zoom giấu vết cắt và chèn ${job.images.length} ảnh minh hoạ.`,
+    title: job.options.title || job.options.productName || `Bản dựng ${presetInfo.label}`,
+    summary: `Template "${presetInfo.label}": Đã lọc ${candidateSegments.filter((s) => !s.keep).length} khoảng lặng/từ thừa, luân phiên Dynamic Zoom và dàn dựng ${overlays.length} lớp đồ hoạ.`,
     hookHeadline: hookTitle,
-    hookEmoji: "🔥",
-    captionStyle: job.options.preset === "minimal-aesthetic" ? "clean-pill" : "karaoke-pop",
+    hookEmoji,
+    captionStyle: presetInfo.defaultCaptionStyle,
     segments: candidateSegments,
     overlays,
     keywordHighlights,
     directorNotes: [
-      "Tự động cắt khoảng chết đầu/cuối clip và các khoảng nghỉ vượt ngưỡng cài đặt.",
-      "Tự động gán Punch-in Zoom xen kẽ trên các đoạn cắt liên tiếp.",
+      `Áp dụng quy chuẩn Template "${presetInfo.label}" (${presetInfo.badge}).`,
+      presetInfo.directorRules,
     ],
   };
+}
+
+async function readDirectorGuide(): Promise<string> {
+  for (const candidate of guideCandidates) {
+    try {
+      return await readFile(candidate, "utf8");
+    } catch {
+      // Try next path candidate
+    }
+  }
+  return "";
 }
 
 async function buildDirectorPrompt(
@@ -319,7 +513,7 @@ async function buildDirectorPrompt(
   attachedImageNote: string[],
   tweakInstruction?: string,
 ) {
-  const guide = await readFile(guidePath, "utf8").catch(() => "");
+  const guide = await readDirectorGuide();
   const presetInfo = AUTO_EDIT_PRESETS.find((p) => p.id === job.options.preset) || AUTO_EDIT_PRESETS[0];
 
   const compactWords = (job.analysis?.words || []).slice(0, 900).map((w) => ({
@@ -335,7 +529,16 @@ async function buildDirectorPrompt(
     language: job.options.language,
     aspectRatio: job.options.aspectRatio,
     safeZoneGuard: job.options.safeZoneGuard,
-    preset: { id: presetInfo.id, label: presetInfo.label, summary: presetInfo.summary },
+    preset: {
+      id: presetInfo.id,
+      category: presetInfo.category,
+      badge: presetInfo.badge,
+      label: presetInfo.label,
+      summary: presetInfo.summary,
+      defaultCaptionStyle: presetInfo.defaultCaptionStyle,
+      preferredCardLayout: presetInfo.preferredCardLayout,
+      directorRules: presetInfo.directorRules,
+    },
     userBrief: {
       title: job.options.title,
       productName: job.options.productName,
@@ -379,15 +582,18 @@ async function buildDirectorPrompt(
   ].join("\n");
 }
 
-async function resolveOwnerAgent(ownerFolder: string): Promise<CodingAgentPreference | undefined> {
-  // Check stored preference or default to available CLI agent
+async function resolveOwnerAgent(job: AutoEditJob): Promise<CodingAgentPreference | undefined> {
+  // Respect user's stored Agent/Model/Quality/Speed preference when CLI is available
   const { getCodingAgentCliStatuses } = await import("./coding-agent-cli");
   const statuses = await getCodingAgentCliStatuses({ includeModels: false });
   const available = statuses.filter((s) => s.available);
   if (!available.length) return undefined;
 
-  // Owner preferences are keyed by raw owner ID when called from API, or fallback to first available CLI
-  void ownerFolder;
+  const stored = job.agentPreference;
+  if (stored && available.some((s) => s.id === stored.agent)) {
+    return stored;
+  }
+
   const envPinned = process.env.STORYAI_SALES_UGC_AGENT?.trim();
   const preferred = available.find((s) => s.id === envPinned) || available[0];
   return {
@@ -486,7 +692,7 @@ async function processSingleQueuedJob(folder: string, jobId: string) {
       progress: "Code Agent CLI đang phân tích lỗi nói vấp, chọn góc Punch-in & thiết kế thẻ sản phẩm HyperFrames...",
     });
 
-    const agentPref = await resolveOwnerAgent(folder);
+    const agentPref = await resolveOwnerAgent(job);
     let finalEdl: AutoEditEdl;
     let agentLabel = "Smart Acoustic + Heuristic Director";
 
@@ -582,8 +788,32 @@ export function runAutoEditQueue() {
           if (job.status === "analyzing_media" || job.status === "directing") {
             const release = await claimJobLock(folder, job.id);
             if (release) {
-              await saveAutoEditJobState(folder, { ...job, status: "queued" });
+              await updateAutoEditJob(folder, job.id, (latest) => (
+                latest.status === "analyzing_media" || latest.status === "directing"
+                  ? { ...latest, status: "queued" }
+                  : undefined
+              ));
               await release();
+            }
+          } else if (job.status === "rendering") {
+            const liveRender = await hasLiveAutoEditRenderLock(folder, job.id);
+            if (!liveRender) {
+              const now = new Date().toISOString();
+              await updateAutoEditJob(folder, job.id, (latest) => {
+                if (latest.status !== "rendering") return undefined;
+                return {
+                  ...latest,
+                  status: "ready",
+                  progress: undefined,
+                  render: {
+                    ...latest.render,
+                    status: "failed",
+                    error: "Tiến trình xuất MP4 bị gián đoạn khi máy chủ khởi động lại. Bạn có thể bấm Xuất MP4 lại.",
+                    updatedAt: now,
+                  },
+                  updatedAt: now,
+                };
+              });
             }
           }
         }

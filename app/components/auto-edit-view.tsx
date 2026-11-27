@@ -3,6 +3,7 @@
 import { Player, type PlayerRef } from "@remotion/player";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
+  AUTO_EDIT_PRESET_CATEGORIES,
   AUTO_EDIT_PRESETS,
   computeAutoEditTimeline,
   type AutoEditAspectRatio,
@@ -12,6 +13,7 @@ import {
   type AutoEditJob,
   type AutoEditJobSummary,
   type AutoEditOverlay,
+  type AutoEditPresetCategory,
   type AutoEditPresetId,
   type AutoEditStage,
   type AutoEditVerticalFit,
@@ -20,10 +22,17 @@ import { AutoEditRemotionComposition } from "./auto-edit-remotion-composition";
 import { SFX_CATALOG, SFX_CATEGORY_LABELS, type SfxCategory } from "../lib/sfx-library";
 import { Icon } from "./ui-icon";
 
-const uploadChunkSize = 8 * 1024 * 1024;
+const uploadChunkSize = 32 * 1024 * 1024;
+
+function formatBytesHuman(bytes: number) {
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 const statusLabels: Record<AutoEditStage, string> = {
-  uploading: "Đang tải lên",
+  uploading: "Đang nạp tệp",
   queued: "Đang chờ",
   analyzing_media: "Whisper + VAD đang gỡ băng",
   directing: "Code Agent đang dựng",
@@ -71,6 +80,8 @@ async function apiAutoEdit<T>(init?: RequestInit, id?: string): Promise<T> {
 }
 
 type PendingImageItem = { file: File; label: string };
+type LocalPickedVideo = { token: string; filename: string; displayPath: string; size: number };
+type LocalPickedImage = { token: string; filename: string; displayPath: string; size: number; label: string };
 
 export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
   const playerRef = useRef<PlayerRef>(null);
@@ -82,11 +93,17 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
   const [draftEdl, setDraftEdl] = useState<AutoEditEdl>();
   const [dirtyEdl, setDirtyEdl] = useState(false);
 
-  // Upload & form state
+  // Local Zero-Copy vs URL & Browser fallback state
+  const [isLocalRuntime, setIsLocalRuntime] = useState(true);
   const [sourceMode, setSourceMode] = useState<"local" | "url">("local");
   const [sourceUrl, setSourceUrl] = useState("");
+  const [localVideos, setLocalVideos] = useState<LocalPickedVideo[]>([]);
+  const [localImages, setLocalImages] = useState<LocalPickedImage[]>([]);
+  const [manualLocalPath, setManualLocalPath] = useState("");
+  const [pickingLocal, setPickingLocal] = useState<"video" | "image" | null>(null);
   const [videoFiles, setVideoFiles] = useState<File[]>([]);
   const [imageItems, setImageItems] = useState<PendingImageItem[]>([]);
+  const [presetCategory, setPresetCategory] = useState<"all" | AutoEditPresetCategory>("all");
   const [preset, setPreset] = useState<AutoEditPresetId>("ugc-review");
   const [aspectRatio, setAspectRatio] = useState<AutoEditAspectRatio>("9:16");
   const [verticalFit, setVerticalFit] = useState<AutoEditVerticalFit>("auto");
@@ -95,6 +112,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
   const [voiceTargetPeakDb, setVoiceTargetPeakDb] = useState(-1.2);
   const [autoSfx, setAutoSfx] = useState(true);
   const [sfxVolumeDb, setSfxVolumeDb] = useState(-8.5);
+  const [motionBlur, setMotionBlur] = useState(true);
   const [safeZoneGuard, setSafeZoneGuard] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ doneBytes: number; totalBytes: number; label: string }>();
@@ -102,6 +120,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
   // Studio controls (including live Output Aspect Ratio & Vertical Fit override)
   const [studioAspectRatio, setStudioAspectRatio] = useState<AutoEditAspectRatio>("9:16");
   const [studioVerticalFit, setStudioVerticalFit] = useState<AutoEditVerticalFit>("auto");
+  const [studioMotionBlur, setStudioMotionBlur] = useState(true);
   const [showSafeZoneGuide, setShowSafeZoneGuide] = useState(false);
   const [savingEdl, setSavingEdl] = useState(false);
   const [copilotPrompt, setCopilotPrompt] = useState("");
@@ -117,6 +136,13 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
   useEffect(() => {
     if (initialJobId) setSelectedId(initialJobId);
   }, [initialJobId]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const h = window.location.hostname.toLowerCase();
+      setIsLocalRuntime(h === "localhost" || h === "127.0.0.1" || h === "::1" || h === "[::1]");
+    }
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -152,6 +178,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
         if (fetched.id !== job?.id || !dirtyEdl) {
           setStudioAspectRatio(fetched.options.aspectRatio);
           setStudioVerticalFit(fetched.options.verticalFit || "auto");
+          setStudioMotionBlur(fetched.options.motionBlur ?? true);
         }
         setDraftEdl((prev) => {
           if (!fetched.edl) return undefined;
@@ -195,7 +222,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
 
   function addVideos(files: FileList | null) {
     if (!files?.length) return;
-    setVideoFiles((prev) => [...prev, ...Array.from(files)].slice(0, 20));
+    setVideoFiles((prev) => [...prev, ...Array.from(files)].slice(0, Math.max(0, 20 - localVideos.length)));
   }
 
   function addImages(files: FileList | null) {
@@ -204,13 +231,99 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
       file,
       label: file.name.replace(/\.[^.]+$/u, "").replace(/[_-]+/gu, " ").trim().slice(0, 60),
     }));
-    setImageItems((prev) => [...prev, ...next].slice(0, 20));
+    setImageItems((prev) => [...prev, ...next].slice(0, Math.max(0, 20 - localImages.length)));
+  }
+
+  function applyTemplatePreset(item: (typeof AUTO_EDIT_PRESETS)[number]) {
+    setPreset(item.id);
+    setAspectRatio(item.recommendedAspect);
+    setVerticalFit(item.recommendedVerticalFit);
+    setSilenceThresholdMs(item.recommendedSilenceMs);
+  }
+
+  async function handlePickNativeLocalFiles(kind: "video" | "image") {
+    setPickingLocal(kind);
+    setError("");
+    try {
+      const res = await fetch("/api/auto-edit/local-files", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: kind === "video" ? "pick-videos" : "pick-images" }),
+      });
+      const payload = await res.json().catch(() => null);
+      if (!res.ok || !payload) {
+        throw new Error(payload?.message || "Không mở được hộp thoại chọn tệp trên máy.");
+      }
+      if (payload.cancelled || !Array.isArray(payload.files) || !payload.files.length) return;
+
+      if (kind === "video") {
+        setLocalVideos((prev) => {
+          const merged = [...prev];
+          for (const f of payload.files as LocalPickedVideo[]) {
+            if (!merged.some((m) => m.displayPath === f.displayPath) && merged.length < 20) {
+              merged.push(f);
+            }
+          }
+          return merged;
+        });
+      } else {
+        setLocalImages((prev) => {
+          const merged = [...prev];
+          for (const f of payload.files as Array<Omit<LocalPickedImage, "label">>) {
+            if (!merged.some((m) => m.displayPath === f.displayPath) && merged.length < 20) {
+              merged.push({
+                ...f,
+                label: f.filename.replace(/\.[^.]+$/u, "").replace(/[_-]+/gu, " ").trim().slice(0, 60),
+              });
+            }
+          }
+          return merged;
+        });
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setPickingLocal(null);
+    }
+  }
+
+  async function handleAddManualLocalPath() {
+    const raw = manualLocalPath.trim();
+    if (!raw) return;
+    setPickingLocal("video");
+    setError("");
+    try {
+      const paths = raw.split(/\r?\n/u).map((s) => s.trim()).filter(Boolean);
+      const res = await fetch("/api/auto-edit/local-files", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "resolve-paths", kind: "video", paths }),
+      });
+      const payload = await res.json().catch(() => null);
+      if (!res.ok || !payload?.files) {
+        throw new Error(payload?.message || "Không đọc được đường dẫn tệp video trên máy.");
+      }
+      setLocalVideos((prev) => {
+        const merged = [...prev];
+        for (const f of payload.files as LocalPickedVideo[]) {
+          if (!merged.some((m) => m.displayPath === f.displayPath) && merged.length < 20) {
+            merged.push(f);
+          }
+        }
+        return merged;
+      });
+      setManualLocalPath("");
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setPickingLocal(null);
+    }
   }
 
   async function handleStartAutoEdit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (sourceMode === "local" && !videoFiles.length) {
-      setError("Hãy tải lên ít nhất 1 video cần dựng.");
+    if (sourceMode === "local" && !localVideos.length && !videoFiles.length) {
+      setError("Hãy chọn ít nhất 1 video trên máy để dựng.");
       return;
     }
     if (sourceMode === "url" && !sourceUrl.trim()) {
@@ -235,6 +348,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
       voiceTargetPeakDb,
       autoSfx,
       sfxVolumeDb,
+      motionBlur,
       safeZoneGuard,
     };
 
@@ -243,16 +357,100 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
 
     if (sourceMode === "url") {
       try {
-        setUploadProgress({ doneBytes: 35, totalBytes: 100, label: "Đang tải video & phụ đề từ link..." });
-        const { id } = await apiAutoEdit<{ id: string }>({
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ options }),
+        const totalAttachedImages = localImages.length + imageItems.length;
+        setUploadProgress({
+          doneBytes: 35,
+          totalBytes: 100,
+          label: totalAttachedImages > 0
+            ? `Đang tải video từ link & gắn ${totalAttachedImages} ảnh minh hoạ...`
+            : "Đang tải video & phụ đề từ link...",
         });
+        let createdId: string;
+        if (imageItems.length > 0) {
+          const urlForm = new FormData();
+          urlForm.set("options", JSON.stringify(options));
+          urlForm.set("localImages", JSON.stringify(localImages.map((it) => ({ token: it.token, label: it.label }))));
+          urlForm.set("imageLabels", JSON.stringify(imageItems.map((it) => it.label)));
+          for (const item of imageItems) {
+            urlForm.append("images", item.file);
+          }
+          const created = await apiAutoEdit<{ id: string }>({
+            method: "POST",
+            body: urlForm,
+          });
+          createdId = created.id;
+        } else {
+          const created = await apiAutoEdit<{ id: string }>({
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              options,
+              localImages: localImages.map((it) => ({ token: it.token, label: it.label })),
+            }),
+          });
+          createdId = created.id;
+        }
         setSourceUrl("");
+        setLocalImages([]);
+        setImageItems([]);
         form.reset();
         setDirtyEdl(false);
-        setSelectedId(id);
+        setSelectedId(createdId);
+        setRevision((r) => r + 1);
+        setTimeout(() => studioRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 180);
+      } catch (err) {
+        setError((err as Error).message);
+      } finally {
+        setUploading(false);
+        setUploadProgress(undefined);
+      }
+      return;
+    }
+
+    // Fast path: Pure Local Zero-Copy videos (no HTTP video upload, instant symlink, unlimited GB!)
+    if (localVideos.length > 0 && videoFiles.length === 0) {
+      try {
+        setUploadProgress({
+          doneBytes: 85,
+          totalBytes: 100,
+          label: `Đang gắn trực tiếp ${localVideos.length} video trên máy (Zero-Copy · 0 giây copy)...`,
+        });
+        let createdId: string;
+        if (imageItems.length > 0) {
+          const localForm = new FormData();
+          localForm.set("options", JSON.stringify(options));
+          localForm.set("videoTokens", JSON.stringify(localVideos.map((v) => v.token)));
+          localForm.set("localImages", JSON.stringify(localImages.map((it) => ({ token: it.token, label: it.label }))));
+          localForm.set("imageLabels", JSON.stringify(imageItems.map((it) => it.label)));
+          for (const item of imageItems) {
+            localForm.append("images", item.file);
+          }
+          const res = await fetch("/api/auto-edit/local-files", { method: "POST", body: localForm });
+          const data = await res.json().catch(() => null);
+          if (!res.ok || !data?.id) throw new Error(data?.message || "Không thể gắn tệp local vào hàng đợi.");
+          createdId = data.id;
+        } else {
+          const res = await fetch("/api/auto-edit/local-files", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "create-job",
+              options,
+              videoTokens: localVideos.map((v) => v.token),
+              localImages: localImages.map((it) => ({ token: it.token, label: it.label })),
+            }),
+          });
+          const data = await res.json().catch(() => null);
+          if (!res.ok || !data?.id) throw new Error(data?.message || "Không thể khởi tạo bản dựng từ tệp local.");
+          createdId = data.id;
+        }
+
+        setLocalVideos([]);
+        setLocalImages([]);
+        setImageItems([]);
+        form.reset();
+        setDirtyEdl(false);
+        setSelectedId(createdId);
         setRevision((r) => r + 1);
         setTimeout(() => studioRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 180);
       } catch (err) {
@@ -405,26 +603,76 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
     playerRef.current.seekTo(frame);
   }
 
-  function addProductOverlayCard() {
+  function addProductOverlayCard(presetKind: AutoEditOverlay["kind"] = "product_card", layoutOverride?: AutoEditCardLayout) {
     if (!draftEdl || !job) return;
     const firstKept = draftEdl.segments.find((s) => s.keep);
     const defaultImg = job.images[0]?.id;
-    const newOv: AutoEditOverlay = {
-      id: `ov_manual_${Date.now().toString(36)}`,
-      kind: defaultImg ? "product_card" : "callout_pill",
-      anchorSegmentId: firstKept?.id,
-      offsetMs: 500,
-      durationMs: 3200,
-      imageId: defaultImg,
-      layout: "floating-right",
-      badge: job.options.productName || "ĐIỂM NHẤN",
-      title: job.images[0]?.label || job.options.productName || "Chi tiết nổi bật",
-      subtitle: "Chỉnh sửa tiêu đề & thời điểm hiển thị",
-      emoji: "✨",
-      accentColor: "emerald",
-      hyperframesHtml: "<div class=\"hf-bar\"><div class=\"hf-fill\"></div></div>",
-      hyperframesCss: ".hf-bar{height:5px;border-radius:99px;background:rgba(255,255,255,.2);overflow:hidden;margin-top:6px}.hf-fill{height:100%;width:calc(var(--hf-progress,1)*100%);background:linear-gradient(90deg,#34d399,#fbbf24)}",
-    };
+    const resolvedKind = presetKind === "product_card" && !defaultImg && !layoutOverride ? "callout_pill" : presetKind;
+    const newOv: AutoEditOverlay =
+      resolvedKind === "spotlight_box"
+        ? {
+          id: `ov_spot_${Date.now().toString(36)}`,
+          kind: "spotlight_box",
+          anchorSegmentId: firstKept?.id,
+          offsetMs: 600,
+          durationMs: 2800,
+          layout: "center-pop",
+          title: "Bấm chọn tại đây",
+          emoji: "👆",
+          accentColor: "amber",
+          sfxId: "mouse-clicks",
+          targetX: 0.5,
+          targetY: 0.52,
+          targetW: 0.28,
+          targetH: 0.14,
+        }
+        : resolvedKind === "highlighter"
+          ? {
+            id: `ov_hl_${Date.now().toString(36)}`,
+            kind: "highlighter",
+            anchorSegmentId: firstKept?.id,
+            offsetMs: 600,
+            durationMs: 2600,
+            layout: "center-pop",
+            title: "Điểm quan trọng",
+            emoji: "✨",
+            accentColor: "cyan",
+            sfxId: "swoosh",
+            targetX: 0.5,
+            targetY: 0.5,
+            targetW: 0.34,
+            targetH: 0.065,
+          }
+          : resolvedKind === "freeze_frame"
+            ? {
+              id: `ov_frz_${Date.now().toString(36)}`,
+              kind: "freeze_frame",
+              anchorSegmentId: firstKept?.id,
+              offsetMs: 400,
+              durationMs: 2200,
+              layout: "center-pop",
+              badge: "SNAPSHOT FOCUS",
+              title: job.options.productName || "Chi tiết quan trọng",
+              accentColor: "cyan",
+              sfxId: "camera-shutter",
+            }
+            : {
+              id: `ov_manual_${Date.now().toString(36)}`,
+              kind: resolvedKind,
+              anchorSegmentId: firstKept?.id,
+              offsetMs: 500,
+              durationMs: 3400,
+              imageId: defaultImg,
+              layout: layoutOverride || "floating-right",
+              badge: job.options.productName || "ĐIỂM NHẤN",
+              title: job.images[0]?.label || job.options.productName || "Chi tiết nổi bật",
+              subtitle: "",
+              emoji: "✨",
+              accentColor: "emerald",
+              sfxId: layoutOverride === "stage-3d" ? "reveal-sparkle" : undefined,
+              hyperframesHtml: "<div class=\"hf-bar\"><div class=\"hf-fill\"></div></div>",
+              hyperframesCss: ".hf-bar{height:5px;border-radius:99px;background:rgba(255,255,255,.2);overflow:hidden;margin-top:6px}.hf-fill{height:100%;width:calc(var(--hf-progress,1)*100%);background:linear-gradient(90deg,#34d399,#fbbf24)}",
+            };
     setDraftEdl({ ...draftEdl, overlays: [...draftEdl.overlays, newOv] });
     setDirtyEdl(true);
   }
@@ -459,12 +707,13 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
           id: job.id,
           action: "update-edl",
           edl: draftEdl,
-          optionsPatch: { aspectRatio: studioAspectRatio, verticalFit: studioVerticalFit },
+          optionsPatch: { aspectRatio: studioAspectRatio, verticalFit: studioVerticalFit, motionBlur: studioMotionBlur },
         }),
       });
       setJob(updated);
       setStudioAspectRatio(updated.options.aspectRatio);
       setStudioVerticalFit(updated.options.verticalFit || "auto");
+      setStudioMotionBlur(updated.options.motionBlur ?? true);
       setDraftEdl(updated.edl);
       setDirtyEdl(false);
       setStudioNotice("Đã lưu thay đổi timeline.");
@@ -520,7 +769,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
         body: JSON.stringify({
           id: job.id,
           action: "render",
-          optionsPatch: { aspectRatio: studioAspectRatio, verticalFit: studioVerticalFit },
+          optionsPatch: { aspectRatio: studioAspectRatio, verticalFit: studioVerticalFit, motionBlur: studioMotionBlur },
         }),
       });
       setStudioNotice(`Đã bắt đầu xuất MP4 tỷ lệ ${studioAspectRatio} (FFmpeg + HyperFrames). Tiến trình sẽ tự cập nhật sau ít giây.`);
@@ -557,10 +806,10 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
       <section className="card auto-edit-intake-card">
         <div className="card-heading">
           <div>
-            <span className="eyebrow">Whisper · Remotion · HyperFrames · Code Agent CLI</span>
-            <h1>Auto Edit Video thông minh</h1>
+            <span className="eyebrow">Whisper · Remotion · HyperFrames · Three.js · Local Zero-Copy</span>
+            <h1>Auto Edit Video thông minh (12 Chủ đề)</h1>
             <p className="auto-edit-lead">
-              Tải lên các video quay thô và bộ ảnh sản phẩm/minh hoạ. Hệ thống tự động gỡ băng từng từ (Whisper + VAD), dùng Code Agent CLI cắt bỏ đoạn thừa/nói vấp/lặp ý, giấu vết cắt bằng Dynamic Zoom và chèn phụ đề Karaoke + thẻ sản phẩm HyperFrames.
+              Chọn trực tiếp video trên ổ cứng máy tính <strong>không giới hạn dung lượng (0 giây copy)</strong> hoặc dán link mạng xã hội, kết hợp kho <strong>12 Template đa chủ đề</strong>, <strong>59 SFX</strong>, hiệu ứng 3D/Khoanh vùng Pro FX và chuẩn hoá giọng đọc <strong>0 đến -3 dB</strong>.
             </p>
           </div>
         </div>
@@ -573,7 +822,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
               aria-selected={sourceMode === "local"}
               onClick={() => setSourceMode("local")}
             >
-              Tải tệp video từ máy
+              Chọn video trực tiếp trên máy (Local · Không giới hạn GB)
             </button>
             <button
               type="button"
@@ -586,7 +835,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
           </div>
 
           <div className="auto-edit-upload-grid">
-            {/* Multi-video dropbox or URL input */}
+            {/* Multi-video local picker / dropbox or URL input */}
             <div className="auto-edit-dropzone">
               {sourceMode === "url" ? (
                 <>
@@ -605,30 +854,87 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
               ) : (
                 <>
                   <div className="auto-edit-dropzone-header">
-                    <strong><Icon name="scene" size={17} /> 1. Video cần dựng (1–20 clip)</strong>
-                    <label className="secondary-button auto-edit-pick-btn">
-                      <Icon name="upload" size={15} /> Chọn video
-                      <input
-                        type="file"
-                        accept="video/mp4,video/quicktime,video/webm,video/x-matroska,.mp4,.mov,.webm,.mkv,.m4v"
-                        multiple
-                        hidden
-                        onChange={(e) => {
-                          addVideos(e.target.files);
-                          e.target.value = "";
-                        }}
-                      />
-                    </label>
+                    <strong><Icon name="scene" size={17} /> 1. Chọn Video trên máy (1–20 clip · Không giới hạn GB)</strong>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {isLocalRuntime && (
+                        <button
+                          type="button"
+                          className="primary-button auto-edit-pick-btn"
+                          disabled={pickingLocal !== null}
+                          onClick={() => handlePickNativeLocalFiles("video")}
+                          title="Mở Finder/Explorer chọn trực tiếp file gốc trên máy tính — 0 giây copy, không giới hạn dung lượng"
+                        >
+                          <Icon name="folder" size={15} />
+                          {pickingLocal === "video" ? "Đang mở hộp thoại..." : "Chọn trên máy (0s Copy)"}
+                        </button>
+                      )}
+                      <label className="secondary-button auto-edit-pick-btn" title="Kéo thả hoặc chọn qua trình duyệt (không giới hạn GB)">
+                        <Icon name="upload" size={15} /> Kéo thả / Trình duyệt
+                        <input
+                          type="file"
+                          accept="video/mp4,video/quicktime,video/webm,video/x-matroska,.mp4,.mov,.webm,.mkv,.m4v"
+                          multiple
+                          hidden
+                          onChange={(e) => {
+                            addVideos(e.target.files);
+                            e.target.value = "";
+                          }}
+                        />
+                      </label>
+                    </div>
                   </div>
-                  <small>Hỗ trợ MP4, MOV, WebM, MKV. Có thể chọn nhiều góc quay hoặc nhiều take liên tiếp.</small>
+                  <small>
+                    Chạy trực tiếp trên máy bạn: gắn thẳng đường dẫn file gốc (MP4, MOV, MKV, WebM) không cần upload lại, kể cả file quay màn hình / 4K nặng hàng chục GB.
+                  </small>
 
-                  {videoFiles.length > 0 ? (
+                  {isLocalRuntime && (
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <input
+                        type="text"
+                        value={manualLocalPath}
+                        onChange={(e) => setManualLocalPath(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void handleAddManualLocalPath();
+                          }
+                        }}
+                        placeholder="Hoặc dán đường dẫn file trên máy (VD: ~/Movies/video-quay.mov) rồi nhấn Enter..."
+                        style={{ flex: 1, height: 34, padding: "0 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 12.5, background: "#fff" }}
+                      />
+                      <button
+                        type="button"
+                        className="secondary-button auto-edit-pick-btn"
+                        disabled={!manualLocalPath.trim() || pickingLocal !== null}
+                        onClick={handleAddManualLocalPath}
+                      >
+                        Gắn đường dẫn
+                      </button>
+                    </div>
+                  )}
+
+                  {localVideos.length > 0 || videoFiles.length > 0 ? (
                     <ul className="auto-edit-asset-list">
+                      {localVideos.map((item, idx) => (
+                        <li key={item.token} title={item.displayPath}>
+                          <span className="auto-edit-asset-badge is-zerocopy">⚡ Local {idx + 1}</span>
+                          <span className="auto-edit-asset-name">{item.filename}</span>
+                          <small>{formatBytesHuman(item.size)} · 0s Copy</small>
+                          <button
+                            type="button"
+                            className="icon-button"
+                            aria-label="Bỏ chọn video"
+                            onClick={() => setLocalVideos((prev) => prev.filter((v) => v.token !== item.token))}
+                          >
+                            <Icon name="trash" size={15} />
+                          </button>
+                        </li>
+                      ))}
                       {videoFiles.map((file, idx) => (
                         <li key={`${file.name}_${idx}`}>
-                          <span className="auto-edit-asset-badge">Clip {idx + 1}</span>
+                          <span className="auto-edit-asset-badge">Clip {localVideos.length + idx + 1}</span>
                           <span className="auto-edit-asset-name">{file.name}</span>
-                          <small>{(file.size / (1024 * 1024)).toFixed(1)} MB</small>
+                          <small>{formatBytesHuman(file.size)}</small>
                           <button
                             type="button"
                             className="icon-button"
@@ -641,7 +947,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                       ))}
                     </ul>
                   ) : (
-                    <div className="auto-edit-empty-drop">Chưa chọn tệp video nào</div>
+                    <div className="auto-edit-empty-drop">Chưa chọn tệp video nào (Bấm &ldquo;Chọn trên máy (0s Copy)&rdquo; để đọc thẳng từ ổ cứng)</div>
                   )}
                 </>
               )}
@@ -651,27 +957,61 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
             <div className="auto-edit-dropzone">
               <div className="auto-edit-dropzone-header">
                 <strong><Icon name="image" size={17} /> 2. Ảnh sản phẩm / Minh hoạ (Tuỳ chọn, tối đa 20 ảnh)</strong>
-                <label className="secondary-button auto-edit-pick-btn">
-                  <Icon name="plus" size={15} /> Thêm ảnh
-                  <input
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp"
-                    multiple
-                    hidden
-                    onChange={(e) => {
-                      addImages(e.target.files);
-                      e.target.value = "";
-                    }}
-                  />
-                </label>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {isLocalRuntime && (
+                    <button
+                      type="button"
+                      className="secondary-button auto-edit-pick-btn"
+                      disabled={pickingLocal !== null}
+                      onClick={() => handlePickNativeLocalFiles("image")}
+                    >
+                      <Icon name="folder" size={15} /> Chọn ảnh trên máy
+                    </button>
+                  )}
+                  <label className="secondary-button auto-edit-pick-btn">
+                    <Icon name="plus" size={15} /> Kéo thả ảnh
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      multiple
+                      hidden
+                      onChange={(e) => {
+                        addImages(e.target.files);
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
+                </div>
               </div>
               <small>Đặt nhãn ngắn gọn cho từng ảnh để Code Agent tự khớp đúng giây người nói nhắc tới.</small>
 
-              {imageItems.length > 0 ? (
+              {localImages.length > 0 || imageItems.length > 0 ? (
                 <ul className="auto-edit-asset-list">
+                  {localImages.map((item, idx) => (
+                    <li key={item.token} title={item.displayPath}>
+                      <span className="auto-edit-asset-badge is-zerocopy">⚡ Ảnh {idx + 1}</span>
+                      <input
+                        type="text"
+                        value={item.label}
+                        placeholder="Mô tả ảnh (VD: Bảng thành phần, Giá 199K...)"
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setLocalImages((prev) => prev.map((it) => (it.token === item.token ? { ...it, label: val } : it)));
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="icon-button"
+                        aria-label="Xoá ảnh"
+                        onClick={() => setLocalImages((prev) => prev.filter((it) => it.token !== item.token))}
+                      >
+                        <Icon name="trash" size={15} />
+                      </button>
+                    </li>
+                  ))}
                   {imageItems.map((item, idx) => (
                     <li key={`${item.file.name}_${idx}`}>
-                      <span className="auto-edit-asset-badge">Ảnh {idx + 1}</span>
+                      <span className="auto-edit-asset-badge">Ảnh {localImages.length + idx + 1}</span>
                       <input
                         type="text"
                         value={item.label}
@@ -693,24 +1033,55 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                   ))}
                 </ul>
               ) : (
-                <div className="auto-edit-empty-drop">Chưa thêm ảnh sản phẩm (Agent sẽ tập trung cắt dựng + chữ + emoji)</div>
+                <div className="auto-edit-empty-drop">Chưa thêm ảnh minh hoạ (Agent vẫn tự động cắt dựng + phụ đề + khoanh vùng Pro FX)</div>
               )}
             </div>
           </div>
 
-          {/* Presets */}
-          <div className="auto-edit-preset-grid" role="radiogroup" aria-label="Phong cách Auto Edit">
-            {AUTO_EDIT_PRESETS.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={`auto-edit-preset-card ${preset === item.id ? "is-selected" : ""}`}
-                onClick={() => setPreset(item.id)}
-              >
-                <strong>{item.label}</strong>
-                <span>{item.summary}</span>
-              </button>
-            ))}
+          {/* 12 Multi-Topic Templates with Category Filter */}
+          <div className="auto-edit-templates-section">
+            <div className="auto-edit-templates-head">
+              <div>
+                <strong>3. Chọn Template Chủ đề Video ({AUTO_EDIT_PRESETS.length} mẫu chuyên biệt)</strong>
+                <small>Khi chọn Template, hệ thống tự động tối ưu nhịp cắt khoảng lặng, tỷ lệ khung, kiểu phụ đề, hiệu ứng Pro FX và SFX theo đúng thể loại.</small>
+              </div>
+              <div className="auto-edit-cat-pills" role="tablist" aria-label="Nhóm chủ đề Template">
+                {AUTO_EDIT_PRESET_CATEGORIES.map((cat) => (
+                  <button
+                    key={cat.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={presetCategory === cat.id}
+                    className={`auto-edit-cat-pill ${presetCategory === cat.id ? "is-active" : ""}`}
+                    onClick={() => setPresetCategory(cat.id)}
+                  >
+                    {cat.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="auto-edit-preset-grid" role="radiogroup" aria-label="Template Auto Edit">
+              {AUTO_EDIT_PRESETS
+                .filter((item) => presetCategory === "all" || item.category === presetCategory)
+                .map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`auto-edit-preset-card ${preset === item.id ? "is-selected" : ""}`}
+                    onClick={() => applyTemplatePreset(item)}
+                  >
+                    <div className="auto-edit-preset-top">
+                      <span className="auto-edit-preset-badge">{item.badge}</span>
+                      <span className="auto-edit-preset-meta">
+                        {item.recommendedAspect} · {item.recommendedSilenceMs}ms
+                      </span>
+                    </div>
+                    <strong>{item.label}</strong>
+                    <span>{item.summary}</span>
+                  </button>
+                ))}
+            </div>
           </div>
 
           {/* Options row */}
@@ -734,16 +1105,19 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                 ))}
               </div>
             </label>
-            {aspectRatio === "9:16" && (
-              <label className="form-field">
-                <span>Chế độ khi video gốc là 16:9 ngang</span>
-                <select value={verticalFit} onChange={(e) => setVerticalFit(e.target.value as AutoEditVerticalFit)}>
-                  <option value="auto">Tự động (Nền mờ giữ trọn khung nếu clip ngang)</option>
-                  <option value="blur-fit">Khung ngang giữa + Nền mờ Cinema (Không mất chữ)</option>
-                  <option value="fill-crop">Cắt dọc lấp đầy 9:16 (Cho video quay người nói)</option>
-                </select>
-              </label>
-            )}
+            <label className="form-field">
+              <span>Phông nền / Khung sân khấu Video</span>
+              <select value={verticalFit} onChange={(e) => setVerticalFit(e.target.value as AutoEditVerticalFit)}>
+                <option value="auto">Tự động (Nền mờ nếu clip ngang xuất 9:16)</option>
+                <option value="aurora-3d">🌌 Sân khấu 3D Aurora + Three.js Particles</option>
+                {aspectRatio === "9:16" && (
+                  <>
+                    <option value="blur-fit">Khung ngang giữa + Nền mờ Cinema (Không mất chữ)</option>
+                    <option value="fill-crop">Cắt dọc lấp đầy 9:16 (Cho video quay người nói)</option>
+                  </>
+                )}
+              </select>
+            </label>
             <label className="form-field">
               <span>Ngôn ngữ lời thoại</span>
               <select value={language} onChange={(e) => setLanguage(e.target.value === "en" ? "en" : "vi")}>
@@ -815,6 +1189,14 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                   />
                 </label>
               )}
+              <label className="auto-edit-checkbox">
+                <input
+                  type="checkbox"
+                  checked={motionBlur}
+                  onChange={(e) => setMotionBlur(e.target.checked)}
+                />
+                <span>Bật Cinematic Motion Blur cho chuyển động thẻ & chữ (Chuẩn Pro Video FX)</span>
+              </label>
               <label className="auto-edit-checkbox">
                 <input
                   type="checkbox"
@@ -1080,29 +1462,43 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                         <option value="clean-pill">Phụ đề Hộp mờ Clean Pill</option>
                         <option value="minimal-line">Phụ đề Tối giản</option>
                       </select>
-                      {studioAspectRatio === "9:16" && (
-                        <>
-                          <select
-                            value={studioVerticalFit}
-                            onChange={(e) => {
-                              setStudioVerticalFit(e.target.value as AutoEditVerticalFit);
-                              setDirtyEdl(true);
-                            }}
-                            title="Cách hiển thị video gốc 16:9 trong khung dọc 9:16"
-                          >
-                            <option value="auto">16:9→9:16: Tự động</option>
+                      <select
+                        value={studioVerticalFit}
+                        onChange={(e) => {
+                          setStudioVerticalFit(e.target.value as AutoEditVerticalFit);
+                          setDirtyEdl(true);
+                        }}
+                        title="Chọn phông nền sân khấu hoặc chế độ chuyển 16:9 -> 9:16"
+                      >
+                        <option value="auto">Khung: Tự động</option>
+                        <option value="aurora-3d">🌌 3D Aurora Stage</option>
+                        {studioAspectRatio === "9:16" && (
+                          <>
                             <option value="blur-fit">Giữ trọn khung + Nền mờ</option>
                             <option value="fill-crop">Cắt dọc đầy màn hình</option>
-                          </select>
-                          <label className="auto-edit-safezone-toggle">
-                            <input
-                              type="checkbox"
-                              checked={showSafeZoneGuide}
-                              onChange={(e) => setShowSafeZoneGuide(e.target.checked)}
-                            />
-                            <span>Khung Safe-Zone</span>
-                          </label>
-                        </>
+                          </>
+                        )}
+                      </select>
+                      <label className="auto-edit-safezone-toggle" title="Bật hiệu ứng nhòe chuyển động điện ảnh khi thẻ bay vào">
+                        <input
+                          type="checkbox"
+                          checked={studioMotionBlur}
+                          onChange={(e) => {
+                            setStudioMotionBlur(e.target.checked);
+                            setDirtyEdl(true);
+                          }}
+                        />
+                        <span>Motion Blur</span>
+                      </label>
+                      {studioAspectRatio === "9:16" && (
+                        <label className="auto-edit-safezone-toggle">
+                          <input
+                            type="checkbox"
+                            checked={showSafeZoneGuide}
+                            onChange={(e) => setShowSafeZoneGuide(e.target.checked)}
+                          />
+                          <span>Khung Safe-Zone</span>
+                        </label>
                       )}
                     </div>
                   </div>
@@ -1120,6 +1516,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                         showSafeZoneGuide,
                         aspectRatio: studioAspectRatio,
                         verticalFit: studioVerticalFit,
+                        motionBlur: studioMotionBlur,
                       }}
                       durationInFrames={totalFrames}
                       fps={computedTimeline.fps}
@@ -1170,11 +1567,22 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                   </div>
 
                   <div className="auto-edit-overlays-box">
-                    <div className="auto-edit-overlays-header">
-                      <h4>Thẻ Sản phẩm & Overlay HyperFrames ({draftEdl.overlays.length})</h4>
-                      <button type="button" className="auto-edit-mini-btn" onClick={addProductOverlayCard}>
-                        + Thêm thẻ
-                      </button>
+                    <div className="auto-edit-overlays-header" style={{ flexWrap: "wrap", gap: 6 }}>
+                      <h4>Đồ hoạ Pro FX & HyperFrames ({draftEdl.overlays.length})</h4>
+                      <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                        <button type="button" className="auto-edit-mini-btn" onClick={() => addProductOverlayCard("product_card", "stage-3d")}>
+                          + Thẻ 3D
+                        </button>
+                        <button type="button" className="auto-edit-mini-btn" onClick={() => addProductOverlayCard("spotlight_box")}>
+                          + Khoanh vùng
+                        </button>
+                        <button type="button" className="auto-edit-mini-btn" onClick={() => addProductOverlayCard("highlighter")}>
+                          + Dạ quang
+                        </button>
+                        <button type="button" className="auto-edit-mini-btn" onClick={() => addProductOverlayCard("freeze_frame")}>
+                          + Freeze HUD
+                        </button>
+                      </div>
                     </div>
 
                     <div className="auto-edit-overlay-list">
@@ -1186,6 +1594,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                               value={ov.layout}
                               onChange={(e) => updateOverlayField(ov.id, { layout: e.target.value as AutoEditCardLayout })}
                             >
+                              <option value="stage-3d">✨ Khung nổi 3D Stage</option>
                               <option value="floating-right">Nổi góc phải</option>
                               <option value="floating-left">Nổi góc trái</option>
                               <option value="split-top">Nửa trên (Split Top)</option>
@@ -1208,6 +1617,12 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                               placeholder="Tiêu đề chính..."
                               onChange={(e) => updateOverlayField(ov.id, { title: e.target.value })}
                             />
+                            <input
+                              type="text"
+                              value={ov.subtitle || ""}
+                              placeholder="Mô tả phụ / Phụ đề thẻ (tuỳ chọn)..."
+                              onChange={(e) => updateOverlayField(ov.id, { subtitle: e.target.value })}
+                            />
                             <div className="auto-edit-ov-inline">
                               <input
                                 type="text"
@@ -1229,6 +1644,86 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                                 onChange={(e) => updateOverlayField(ov.id, { priceTag: e.target.value })}
                               />
                             </div>
+                            <div className="auto-edit-ov-inline">
+                              <label style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1, fontSize: 11.5 }}>
+                                <span>Trễ mốc (giây)</span>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={600}
+                                  step={0.1}
+                                  value={Number((ov.offsetMs / 1000).toFixed(2))}
+                                  onChange={(e) => {
+                                    const val = Number(e.target.value);
+                                    const nextOffsetMs = Number.isFinite(val)
+                                      ? Math.min(600_000, Math.max(0, Math.round(val * 1000)))
+                                      : 0;
+                                    updateOverlayField(ov.id, { offsetMs: nextOffsetMs });
+                                  }}
+                                />
+                              </label>
+                              <label style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1, fontSize: 11.5 }}>
+                                <span>Thời lượng (giây)</span>
+                                <input
+                                  type="number"
+                                  min={0.5}
+                                  max={25}
+                                  step={0.1}
+                                  value={Number((ov.durationMs / 1000).toFixed(2))}
+                                  onChange={(e) => {
+                                    const val = Number(e.target.value);
+                                    const nextDurMs = Number.isFinite(val)
+                                      ? Math.min(25_000, Math.max(500, Math.round(val * 1000)))
+                                      : 3_000;
+                                    updateOverlayField(ov.id, { durationMs: nextDurMs });
+                                  }}
+                                />
+                              </label>
+                            </div>
+                            {(ov.kind === "spotlight_box" || ov.kind === "highlighter") && (
+                              <div className="auto-edit-ov-inline" style={{ flexWrap: "wrap", gap: 6 }}>
+                                <label style={{ display: "flex", flexDirection: "column", gap: 2, flex: "1 1 45%", fontSize: 11 }}>
+                                  <span>Tâm X ({Math.round((ov.targetX ?? 0.5) * 100)}%)</span>
+                                  <input
+                                    type="range"
+                                    min={5}
+                                    max={95}
+                                    value={Math.round((ov.targetX ?? 0.5) * 100)}
+                                    onChange={(e) => updateOverlayField(ov.id, { targetX: Number(e.target.value) / 100 })}
+                                  />
+                                </label>
+                                <label style={{ display: "flex", flexDirection: "column", gap: 2, flex: "1 1 45%", fontSize: 11 }}>
+                                  <span>Tâm Y ({Math.round((ov.targetY ?? 0.52) * 100)}%)</span>
+                                  <input
+                                    type="range"
+                                    min={5}
+                                    max={95}
+                                    value={Math.round((ov.targetY ?? 0.52) * 100)}
+                                    onChange={(e) => updateOverlayField(ov.id, { targetY: Number(e.target.value) / 100 })}
+                                  />
+                                </label>
+                                <label style={{ display: "flex", flexDirection: "column", gap: 2, flex: "1 1 45%", fontSize: 11 }}>
+                                  <span>Rộng ({Math.round((ov.targetW ?? 0.28) * 100)}%)</span>
+                                  <input
+                                    type="range"
+                                    min={8}
+                                    max={85}
+                                    value={Math.round((ov.targetW ?? 0.28) * 100)}
+                                    onChange={(e) => updateOverlayField(ov.id, { targetW: Number(e.target.value) / 100 })}
+                                  />
+                                </label>
+                                <label style={{ display: "flex", flexDirection: "column", gap: 2, flex: "1 1 45%", fontSize: 11 }}>
+                                  <span>Cao ({Math.round((ov.targetH ?? 0.13) * 100)}%)</span>
+                                  <input
+                                    type="range"
+                                    min={4}
+                                    max={65}
+                                    value={Math.round((ov.targetH ?? 0.13) * 100)}
+                                    onChange={(e) => updateOverlayField(ov.id, { targetH: Number(e.target.value) / 100 })}
+                                  />
+                                </label>
+                              </div>
+                            )}
                             {job.images.length > 0 && ov.kind === "product_card" && (
                               <select
                                 value={ov.imageId || ""}

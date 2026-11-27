@@ -23,7 +23,7 @@ import type {
 } from "./project-types";
 import { IMAGE_DETAIL_LEVELS } from "./project-types";
 import { isFlowStoryOnlyPreset, type StoryPresetId } from "./story-presets";
-import { characterReferencePrompt, locationReferencePrompt, PROFILE_REFERENCE_ASPECT_RATIO } from "./ai-drama-reference-prompts";
+import { characterReferencePrompt, isNaturalCreatureCharacterPrompt, locationReferencePrompt, PROFILE_REFERENCE_ASPECT_RATIO } from "./ai-drama-reference-prompts";
 import { normalizeEntityName } from "./entity-name";
 import { normalizeAiDramaSceneDuration } from "./ai-drama-scene-timing";
 import { availableImageModels, defaultMediaGenerationSettings, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, filterPixverseVideoQualities, FLOW_IMAGE_MODEL_OPTIONS, FLOW_VIDEO_MODEL_OPTION, HIGGSFIELD_SEEDANCE_MODEL_ID, isFlowImageModel, isKlingVideoModel, isMaiVideoPixverseV56Model, isMaiVideoSeedanceModel, isMuseImageModel, isPixverseVideoSettings, isVideoOffPeakRequired, MINIMAX_H3_VIDEO_MODEL_ID, MUSE_IMAGE_MODEL_OPTION, MUSE_VIDEO_MODEL_OPTION, normalizeVideoDuration, PIXVERSE_SEEDANCE_2_FAST_MODEL_ID, resolveMediaGenerationSettings, SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES, shouldUseVideoLocationReference, WAN_3_VIDEO_MODEL_ID } from "./media-generation-settings";
@@ -508,10 +508,11 @@ async function requestJsonOnce(url: string, init: RequestInit = {}, timeoutMs = 
   return payload && typeof payload === "object" ? payload as JsonRecord : {};
 }
 
-async function downloadAsset(url: string, outputPath: string, kind: "image" | "video", extraHeaders: Record<string, string> = {}, seedanceTaskId?: string, signal?: AbortSignal, providerLabel = "Seedance") {
+async function downloadAsset(url: string, outputPath: string, kind: "image" | "video", extraHeaders: Record<string, string> = {}, seedanceTaskId?: string, signal?: AbortSignal, providerLabel = "Seedance", restrictRedirects = false) {
   let response: Response;
   try {
     response = await fetch(url, {
+      ...(restrictRedirects ? { redirect: "error" as const } : {}),
       headers: {
         ...extraHeaders,
         "User-Agent": "StoryAI/1.0",
@@ -1127,7 +1128,11 @@ async function pollJob(url: string, headers: Record<string, string>, timeoutMs: 
     if (!seedanceTaskId && Number.isFinite(providerDeadlineAt) && providerDeadlineAt > Date.now()) {
       effectiveTimeoutMs = Math.max(effectiveTimeoutMs, providerDeadlineAt - activeStartedAt + 60_000);
     }
-    const mediaUrl = firstMediaUrl(lastPayload, preferredKeys, skipKeys);
+    // Public API results live in images/videos; job metadata can contain input URLs.
+    const isMaiVideoPublicApi = provider === "maivideo" && new URL(url).pathname.startsWith("/api/v1/");
+    const mediaUrl = isMaiVideoPublicApi
+      ? firstMediaUrl(preferredKeys.includes("image_url") ? lastPayload.images : lastPayload.videos, preferredKeys, skipKeys)
+      : firstMediaUrl(lastPayload, preferredKeys, skipKeys);
     if (mediaUrl && ["completed", "complete", "partial", "succeeded", "done"].includes(status)) return { payload: lastPayload, mediaUrl };
     throwIfSeedanceDeadlineReached();
     if (["error", "failed", "cancelled", "canceled"].includes(status)) {
@@ -1235,7 +1240,8 @@ async function generateMaiVideoImage(
     : MAIVIDEO_IMAGE_TIMEOUT_MAX_MS;
   const { mediaUrl } = await pollJob(statusUrl, authHeaders(apiKey), pollTimeoutMs, ["file_url", "image_url", "url"], [], undefined, jobId, providerTimeoutFromResponse(created));
   const resolved = resolveUrl(mediaUrl, base);
-  const savedPath = await downloadAsset(resolved, outputPath, "image", authHeaders(apiKey));
+  if (new URL(resolved).origin !== new URL(base).origin) throw new Error("MaiVideo trả về URL ảnh ngoài domain API.");
+  const savedPath = await downloadAsset(resolved, outputPath, "image", authHeaders(apiKey), undefined, undefined, "Seedance", true);
   return { kind: "image", provider: "maivideo-image", status: "ready", localPath: relativePath(savedPath), sourceUrl: resolved, query: prompt, model: settings.imageModel, quality: imageQuality };
 }
 
@@ -1447,8 +1453,9 @@ export async function generateMaiVideoProfileImage(input: {
     visualDirection ? `VISUAL STYLE (light, palette and atmosphere): ${visualDirection}.` : "",
     renderingStyle ? `IMAGE STYLE (rendering medium and materials): ${renderingStyle}.` : "",
   ].filter(Boolean).join(" ");
+  const isCreatureProfile = input.profileKind === "characters" && isNaturalCreatureCharacterPrompt(basePrompt);
   const visualPrompt = styleNotes
-    ? sanitizeDramaVisualPrompt(`${styleNotes} Apply the selected visual and rendering styles consistently to the reference sheet; preserve its required layout. ${input.profileKind === "characters" ? "Use neutral, even studio lighting and a plain neutral background for accurate skin, costume and material colors; cinematic lighting applies to scene images, not this identity sheet." : "Render the complete environment in every panel; preserve its architecture, specified lighting and materials. Do not use a neutral studio background or turn the room into an isolated miniature."}\n\n${basePrompt}`)
+    ? sanitizeDramaVisualPrompt(`${styleNotes} Apply the selected visual and rendering styles consistently to the reference sheet; preserve its required layout. ${input.profileKind === "characters" ? (isCreatureProfile ? "Use neutral, even studio lighting and a plain neutral background for accurate fur, scale, hide and natural marking colors; keep authentic non-human species anatomy without human clothing, and reserve cinematic lighting for scene images." : "Use neutral, even studio lighting and a plain neutral background for accurate skin, costume and material colors; cinematic lighting applies to scene images, not this identity sheet.") : "Render the complete environment in every panel; preserve its architecture, specified lighting and materials. Do not use a neutral studio background or turn the room into an isolated miniature."}\n\n${basePrompt}`)
     : basePrompt;
   const prompt = sanitizeDramaVisualPrompt(input.profileKind === "characters"
     ? characterReferencePrompt(input.profileId, visualPrompt, PROFILE_REFERENCE_ASPECT_RATIO)
@@ -1586,7 +1593,10 @@ function buildAiDramaImagePrompt({
     VIDEO_REFERENCE_RULES.replace("The current scene image binds opening composition, people, positions, setting, props, lighting and palette; do not reset or replace it.", "The scene prompt establishes this image composition and action."),
     "CHARACTER REFERENCE SCOPE: When a character reference image is attached, it is the sole visual identity source; Specific age and facial-appearance descriptions are forbidden in scene-specific text; general rules binding those traits to the reference image are allowed. Frame-specific expression is allowed. Without an attached character image, follow the canonical Character Bible/profile and do not invent or alter age or identity.",
     "References govern stable identity and established set design only. Character descriptions are design notes, not extra actions; do not copy incidental carried objects or add props unless the scene requires them. The current scene governs the subjects present, their actions, pose, expression, camera, composition, lighting and any explicit changes. Keep identities distinct and anatomically plausible; preserve cultural appearance only when established by project canon; do not add unassigned characters or duplicate subjects.",
-    "Keep the image age-appropriate and platform-safe. Use modest clothing and show dramatic tension through expression, distance, framing, lighting, and reactions. Keep unsafe events outside the frame and imply them only through the setting or the characters' reactions.",
+    characters.some((character) => isNaturalCreatureCharacterPrompt(`${character.description || ""} ${character.imagePrompt || ""}`))
+      || /^(?:action|adventure|fantasy|sci-fi|animal-adventure|martial-arts)$/i.test(String(contentGenre || "").trim())
+      ? "Keep the image platform-safe without gore or blood. Preserve natural species anatomy for animals/creatures without adding human clothes; for human characters, use modest clothing. Stage physical momentum, posture, and environmental impact (dust, sparks, water spray) clearly on-camera."
+      : "Keep the image age-appropriate and platform-safe. Use modest clothing and show dramatic tension through expression, distance, framing, lighting, and reactions. Keep unsafe events outside the frame and imply them only through the setting or the characters' reactions.",
     "Respect the story's established era and world rules. Do not introduce technology, magic or system interfaces that the story has not established. Render established magic or interfaces only when the current scene calls for them.",
     `Create exactly one finished, full-frame image of one moment, composed for ${aspectRatio}. Use a clear, natural composition with readable spatial relationships. No storyboard, grid, collage, panels, borders, reference sheet or contact sheet.`,
     "No added captions, subtitles, speech bubbles, decorative typography, watermarks or signatures. Diegetic text on a required prop or established sign is allowed only when explicitly requested by the scene; render the exact requested text, otherwise keep it unreadable. Do not invent text.",
@@ -1792,7 +1802,8 @@ async function generateMaiVideoVideo(
     || (Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0 ? configuredTimeoutMs : 62 * 60 * 1000);
   const { mediaUrl } = await pollJob(statusUrl, headers, pollTimeoutMs, ["file_url", "video_url", "url"], ["reference_images"], undefined, jobId, providerTimeoutFromResponse(created, offPeak), signal, undefined, offPeak);
   const resolved = resolveUrl(mediaUrl, base);
-  await downloadAsset(resolved, outputPath, "video", headers, undefined, signal);
+  if (new URL(resolved).origin !== new URL(base).origin) throw new Error("MaiVideo trả về URL video ngoài domain API.");
+  await downloadAsset(resolved, outputPath, "video", headers, undefined, signal, "Seedance", true);
   return { kind: "video", provider: "maivideo-video", status: "ready", localPath: relativePath(outputPath), sourceUrl: resolved, query: prompt, model: settings.videoModel, quality: videoQuality, durationSec: videoDurationSec };
 }
 
@@ -2467,7 +2478,12 @@ export async function generateMaiVideoVideoForScene({
     visualDirection ? `VISUAL STYLE: ${visualDirection}; match scene frame throughout.` : "",
     renderingStyle ? `RENDERING: ${renderingStyle}; match scene frame throughout.` : "",
     textOnlyNotes ? { text: `CANONICAL APPEARANCE (no image):\n${textOnlyNotes}`, required: true } : "",
-    presetId === "ai-drama" ? "Modest clothing; convey tension through acting/framing. Imply unsafe events off-screen through reactions." : "",
+    presetId === "ai-drama"
+      ? (sceneCharacters.some((character) => isNaturalCreatureCharacterPrompt(`${character.description || ""} ${character.imagePrompt || ""}`))
+        || /^(?:action|adventure|fantasy|sci-fi|animal-adventure|martial-arts)$/i.test(String(contentGenre || "").trim())
+        ? "Platform-safe action without blood or gore: execute physical motion, parries, charges, and environmental impacts (dust, water spray, sparks) directly on-camera. Keep natural animal/creature anatomy without human clothing; use modest clothing for human characters."
+        : "Modest clothing; convey tension through acting/framing. Imply unsafe events off-screen through reactions.")
+      : "",
   ].filter(Boolean);
   const providerPromptMaxLength = settings.videoProvider === "seedance"
     ? seedanceModel?.promptMaxLength || SEEDANCE_DIRECT_VIDEO_PROMPT_MAX_CHARS

@@ -353,11 +353,12 @@ export function updateProjectRecord(project: StoryProject, patch: UpdateProjectI
     } : {}),
   };
   const durationChanged = patch.durationMinutes !== undefined && patch.durationMinutes !== project.durationMinutes;
-  const chunkSizeChanged = patch.chunkSize !== undefined && patch.chunkSize !== project.chunkSize;
+  const chunkSizeChanged = patch.chunkSize !== undefined && normalizeProjectChunkSize(patch.chunkSize) !== project.chunkSize;
   const sourceUrlChanged = patch.sourceUrl !== undefined && patch.sourceUrl.trim() !== project.sourceUrl.trim();
   if (sourceUrlChanged && (patch.sourceText === undefined || patch.sourceText.trim() === project.sourceText.trim())) next.sourceText = "";
   const sourceChanged = (patch.sourceText !== undefined && patch.sourceText.trim() !== project.sourceText.trim()) || sourceUrlChanged;
   const dramaPlanChanged = patch.dramaPlan !== undefined && JSON.stringify(patch.dramaPlan) !== JSON.stringify(project.dramaPlan);
+  const hasChunkOutputs = project.chunks.some((chunk) => Boolean(chunk.outputPath));
   if (sourceChanged) {
     const versions = [...(project.scriptStudio?.versions || [])];
     if ((project.scriptMode || "ai") === "manual" && project.sourceText.trim() && !versions.some((version) => version.sourceText === project.sourceText)) {
@@ -392,7 +393,12 @@ export function updateProjectRecord(project: StoryProject, patch: UpdateProjectI
     const field = key as keyof UpdateProjectInput;
     return patch[field] !== undefined && patch[field] !== project[field];
   });
-  if (durationChanged || chunkSizeChanged || sourceChanged || dramaPlanChanged || scriptConfigChanged || formatChanged) {
+  const shouldRebuildTimeline = durationChanged
+    || chunkSizeChanged
+    || sourceChanged
+    || scriptConfigChanged
+    || (!hasChunkOutputs && (dramaPlanChanged || formatChanged));
+  if (shouldRebuildTimeline) {
     const timing = resolveProjectTiming({
       scriptMode: next.scriptMode,
       scriptFormat: next.scriptFormat,
@@ -418,8 +424,10 @@ export function updateProjectRecord(project: StoryProject, patch: UpdateProjectI
     next.render = { status: "idle", updatedAt: now() };
     next.chunks = createChunks(totalScenes, chunkSize);
     next.status = "draft";
+  } else if (hasChunkOutputs && (dramaPlanChanged || formatChanged)) {
+    next.render = markRenderStale(project.render);
   }
-  if (sourceChanged || dramaPlanChanged || formatChanged) next.continuityContext = undefined;
+  if (shouldRebuildTimeline && (sourceChanged || dramaPlanChanged || formatChanged)) next.continuityContext = undefined;
   next.sourceStatus = next.sourceText?.trim() ? "ready" : "missing";
   next.updatedAt = now();
   return next;

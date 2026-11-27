@@ -91,7 +91,21 @@ export async function PATCH(request: Request) {
   if (!owner) return respond({ message: "Vui lòng đăng nhập lại." }, 401);
   const body = await request.json().catch(() => null);
   if (typeof body?.uploadId !== "string") return respond({ message: "Thiếu mã phiên tải video." }, 400);
-  const result = await finishRemakeUpload(owner, body.uploadId);
+  const hasOptionFields = [
+    "language", "direction", "transcript", "remakeMode", "dialoguePolicy",
+    "visualStyle", "imageStyle", "contentGenre", "storySetting",
+  ].some((key) => body[key] !== undefined);
+  let updatedOptions;
+  if (hasOptionFields) {
+    const parsedOptions = remakeOptionsSchema.safeParse(body);
+    if (!parsedOptions.success) {
+      return respond({ message: "Chọn video và kiểm tra ngôn ngữ, định hướng cùng transcript." }, 400);
+    }
+    updatedOptions = parsedOptions.data;
+  }
+  const agent = await configuredAgent(owner);
+  if (!agent) return respond({ message: "Hãy chọn và kết nối Code Agent CLI trong Cài đặt để phân tích khung hình." }, 503);
+  const result = await finishRemakeUpload(owner, body.uploadId, { options: updatedOptions, agent });
   if (result.kind === "queued") {
     after(() => runRemakeQueue().catch((error) => console.error("[video-remake] Queue failed", error)));
     return respond({ id: result.id }, 202);

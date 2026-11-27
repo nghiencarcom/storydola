@@ -6,14 +6,14 @@ import { dataPath } from "./data-directory";
 import type { AutoEditOptions, AutoEditProductImage, AutoEditSourceVideo } from "./auto-edit";
 
 export const autoEditRoot = dataPath("auto-edit");
-export const autoEditUploadChunkBytes = 8 * 1024 * 1024;
+export const autoEditUploadChunkBytes = 32 * 1024 * 1024; // 32 MiB loopback chunks
 export const maxAutoEditVideos = 20;
 export const maxAutoEditImages = 20;
-export const maxAutoEditImageBytes = 15 * 1024 * 1024;
-export const maxAutoEditVideoBytes = 1024 * 1024 * 1024; // 1 GiB per clip
+export const maxAutoEditImageBytes = 50 * 1024 * 1024; // 50 MiB per image
+export const maxAutoEditVideoBytes = Number.MAX_SAFE_INTEGER; // Không giới hạn dung lượng video chạy local
 
-const allowedVideoExtensions = new Set([".mp4", ".m4v", ".mov", ".webm", ".mkv"]);
-const allowedImageExtensions = new Set([".png", ".jpg", ".jpeg", ".webp"]);
+export const allowedVideoExtensions = new Set([".mp4", ".m4v", ".mov", ".webm", ".mkv"]);
+export const allowedImageExtensions = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 
 export const autoEditOwnerFolder = (owner: string) => createHash("sha256").update(owner).digest("hex");
 export const isValidUuid = (id: string) => /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu.test(id);
@@ -119,7 +119,7 @@ export async function beginAutoEditUploadSession(
     }
     if (!Number.isSafeInteger(item.size) || item.size <= 0 || item.size > maxAutoEditVideoBytes) {
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
-      throw new Error(`Dung lượng video "${filename}" không hợp lệ (tối đa 1 GB mỗi clip).`);
+      throw new Error(`Dung lượng tệp video "${filename}" không hợp lệ (tệp rỗng 0 byte).`);
     }
     const id = `clip_${String(index + 1).padStart(2, "0")}`;
     const partHandle = await open(path.join(dir, "videos", `${id}.part`), "wx", 0o600);
@@ -202,20 +202,21 @@ export async function writeAutoEditVideoChunk(
   return outcome.value;
 }
 
-export async function addAutoEditProductImage(
-  owner: string,
-  sessionId: string,
+export async function normalizeAndSaveProductImage(
+  imagesDir: string,
+  index: number,
   filenameRaw: string,
   labelRaw: string,
   bytes: Buffer,
-) {
-  if (!isValidUuid(sessionId)) return { kind: "missing" as const };
-  if (!bytes.length || bytes.length > maxAutoEditImageBytes) return { kind: "invalid" as const, message: "Ảnh vượt quá 15 MB." };
+): Promise<{ kind: "ok"; image: AutoEditProductImage } | { kind: "invalid"; message: string }> {
+  if (!bytes.length || bytes.length > maxAutoEditImageBytes) {
+    return { kind: "invalid", message: "Ảnh vượt quá 15 MB." };
+  }
 
   const filename = cleanFilename(filenameRaw, "product.png");
   const ext = path.extname(filename).toLowerCase() || ".png";
   if (!allowedImageExtensions.has(ext)) {
-    return { kind: "invalid" as const, message: "Chỉ hỗ trợ ảnh PNG, JPG, JPEG hoặc WebP." };
+    return { kind: "invalid", message: "Chỉ hỗ trợ ảnh PNG, JPG, JPEG hoặc WebP." };
   }
 
   let normalizedBuffer: Buffer;
@@ -233,7 +234,42 @@ export async function addAutoEditProductImage(
     width = meta.width || 720;
     height = meta.height || 720;
   } catch {
-    return { kind: "invalid" as const, message: "Tệp ảnh không hợp lệ hoặc bị hỏng." };
+    return { kind: "invalid", message: "Tệp ảnh không hợp lệ hoặc bị hỏng." };
+  }
+
+  await mkdir(imagesDir, { recursive: true, mode: 0o700 });
+  const id = `img_${String(index).padStart(2, "0")}`;
+  const targetPath = path.join(imagesDir, `${id}.png`);
+  await writeFile(targetPath, normalizedBuffer, { mode: 0o600 });
+
+  const defaultLabel = path.basename(filename, path.extname(filename)).replace(/[_-]+/gu, " ").trim().slice(0, 80);
+  const imageEntry: AutoEditProductImage = {
+    id,
+    filename: `${path.basename(filename, path.extname(filename))}.png`,
+    extension: ".png",
+    size: normalizedBuffer.byteLength,
+    width,
+    height,
+    label: (labelRaw || defaultLabel || `Ảnh minh hoạ ${index}`).trim().slice(0, 100),
+  };
+
+  return { kind: "ok", image: imageEntry };
+}
+
+export async function addAutoEditProductImage(
+  owner: string,
+  sessionId: string,
+  filenameRaw: string,
+  labelRaw: string,
+  bytes: Buffer,
+) {
+  if (!isValidUuid(sessionId)) return { kind: "missing" as const };
+  if (!bytes.length || bytes.length > maxAutoEditImageBytes) return { kind: "invalid" as const, message: "Ảnh vượt quá 15 MB." };
+
+  const filename = cleanFilename(filenameRaw, "product.png");
+  const ext = path.extname(filename).toLowerCase() || ".png";
+  if (!allowedImageExtensions.has(ext)) {
+    return { kind: "invalid" as const, message: "Chỉ hỗ trợ ảnh PNG, JPG, JPEG hoặc WebP." };
   }
 
   const outcome = await withSessionLock(owner, sessionId, async () => {
@@ -245,28 +281,24 @@ export async function addAutoEditProductImage(
     }
 
     const index = manifest.images.length + 1;
-    const id = `img_${String(index).padStart(2, "0")}`;
     const dir = autoEditSessionDir(owner, sessionId);
-    const targetPath = path.join(dir, "images", `${id}.png`);
-    await writeFile(targetPath, normalizedBuffer, { mode: 0o600 });
+    const saved = await normalizeAndSaveProductImage(path.join(dir, "images"), index, filename, labelRaw, bytes);
+    if (saved.kind === "invalid") return saved;
 
-    const defaultLabel = path.basename(filename, path.extname(filename)).replace(/[_-]+/gu, " ").trim().slice(0, 80);
-    const imageEntry: AutoEditProductImage = {
-      id,
-      filename: `${path.basename(filename, path.extname(filename))}.png`,
-      extension: ".png",
-      size: normalizedBuffer.byteLength,
-      width,
-      height,
-      label: (labelRaw || defaultLabel || `Ảnh minh hoạ ${index}`).trim().slice(0, 100),
-    };
-    manifest.images.push(imageEntry);
+    manifest.images.push(saved.image);
     await saveManifest(owner, manifest);
-    return { kind: "ok" as const, image: imageEntry };
+    return { kind: "ok" as const, image: saved.image };
   });
 
   if (!outcome.locked) return { kind: "busy" as const };
   return outcome.value;
+}
+
+export async function rollbackFinalizedUploadSession(owner: string, sessionId: string) {
+  if (!isValidUuid(sessionId)) return;
+  const sessionDir = autoEditSessionDir(owner, sessionId);
+  const jobDir = autoEditJobMediaDir(owner, sessionId);
+  await rename(jobDir, sessionDir).catch(() => undefined);
 }
 
 export async function finalizeAutoEditUploadSession(owner: string, sessionId: string) {

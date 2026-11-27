@@ -67,30 +67,40 @@ export async function downloadFromMaiVideo(sourceUrl: string, work: string) {
     await page.getByPlaceholder(inputPlaceholder).fill(sourceUrl);
     await page.getByRole("button", { name: "Bắt đầu tải hàng loạt", exact: true }).click();
 
-    // Keep waiting for the site's job result without imposing source-duration or file-size limits.
-    stage = "wait for MaiVideo result";
-    await page.waitForFunction(() => {
+    // Fail fast (90s) if MaiVideo's Douyin queue is completely stalled at 0% ("queued / 0 đang tải"),
+    // while allowing up to 12 minutes once MaiVideo actively starts downloading/processing the video.
+    stage = "wait for MaiVideo queue start or result";
+    const queueStartedAt = Date.now();
+    await page.waitForFunction((startedAt) => {
       const visible = (element: Element) => {
         const node = element as HTMLElement;
         return Boolean(node.offsetWidth || node.offsetHeight || node.getClientRects().length);
       };
       const ready = Array.from(document.querySelectorAll("a")).some((anchor) =>
-        anchor.textContent?.trim() === "Tải file" && visible(anchor));
+        /^(?:Tải file|Tải xuống|Download)$/iu.test(anchor.textContent?.trim() || "") && visible(anchor));
       if (ready) return true;
       const text = document.body?.innerText || "";
-      return /(?:tải thất bại|không thể tải video|link không hợp lệ|không hỗ trợ link|download failed|unsupported link)/iu.test(text);
-    }, undefined, { timeout: 0 });
+      if (/(?:tải thất bại|không thể tải video|link không hợp lệ|không hỗ trợ link|download failed|unsupported link|video không tồn tại|đã bị xóa)/iu.test(text)) {
+        return true;
+      }
+      const stalledInQueue = /\bqueued\b/iu.test(text) && /\b0\s*đang\s*tải\b/iu.test(text) && /\b0%\b/u.test(text);
+      if (stalledInQueue && Date.now() - startedAt > 90_000) {
+        throw new Error("MAIVIDEO_QUEUE_STALLED");
+      }
+      return false;
+    }, queueStartedAt, { timeout: 12 * 60_000 });
 
     stage = "read MaiVideo result link";
-    const downloadLink = page.getByRole("link", { name: "Tải file", exact: true }).first();
+    const downloadLink = page.locator("a").filter({ hasText: /^(?:Tải file|Tải xuống|Download)$/iu }).first();
     if (!(await downloadLink.count())) throw new Error("MaiVideo không tải được link video này.");
     const href = await downloadLink.getAttribute("href");
     if (!href) throw new Error("MaiVideo chưa tạo liên kết file tải.");
     const resultUrl = new URL(href, bulkDownloadUrl);
-    if (resultUrl.protocol !== "https:" || resultUrl.hostname !== "maivideo.top" || resultUrl.port
+    const validMaiVideoHost = resultUrl.hostname === "maivideo.top" || resultUrl.hostname.endsWith(".maivideo.top");
+    if (resultUrl.protocol !== "https:" || !validMaiVideoHost || resultUrl.port
       || resultUrl.username || resultUrl.password) throw new Error("MaiVideo trả về liên kết file không hợp lệ.");
     stage = "download video in MaiVideo browser session";
-    const downloadStarted = page.waitForEvent("download", { timeout: 0 });
+    const downloadStarted = page.waitForEvent("download", { timeout: 15 * 60_000 });
     await downloadLink.click();
     const download = await downloadStarted;
     const failure = await download.failure();
@@ -102,6 +112,9 @@ export async function downloadFromMaiVideo(sourceUrl: string, work: string) {
     return file;
   } catch (error) {
     if (error instanceof Error && /^(?:Không tìm thấy Chrome|STORYAI_BROWSER_PATH)/u.test(error.message)) throw error;
+    if (error instanceof Error && /MAIVIDEO_QUEUE_STALLED/u.test(error.message)) {
+      throw new Error("Hàng đợi tải Douyin trên MaiVideo hiện đang nghẽn (queued 0% quá 90s). Bạn có thể tải tệp MP4 về máy rồi chọn 'Chọn video trên máy' để phân tích ngay.");
+    }
     console.error("[video-remake] MaiVideo failed at", stage, error instanceof Error ? error.name : "error");
     throw new Error("MaiVideo chưa hoàn tất tải video từ link này.");
   } finally {

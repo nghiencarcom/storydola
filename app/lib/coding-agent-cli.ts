@@ -139,8 +139,10 @@ async function getCodingAgentModels(agent: CodingAgent, command: AgentCommand): 
     const ansiFree = stdout.replace(/\u001b\[[0-9;]*m/g, "");
     const models = ansiFree.split(/\r?\n/u).flatMap((line) => {
       const normalized = line.trim().replace(/^[*•\-]\s*/u, "");
-      const match = normalized.match(/^([a-z0-9][a-z0-9._/-]*)\s*(?:\||\s{2,}|\s+)(.+)?$/iu);
-      if (!match || /^(model|available|name|id)$/iu.test(match[1])) return [];
+      if (!normalized || /\.\.\.$/u.test(normalized) || /^(?:fetching|loading|listing|checking)\b/iu.test(normalized)) return [];
+      const match = normalized.match(/^([a-z0-9][a-z0-9._/-]*)(?:\s*\|\s*|\t+|\s{2,})(.+)?$/iu)
+        || normalized.match(/^([a-z0-9][a-z0-9._/-]*)$/iu);
+      if (!match || /^(model|models|available|name|id|slug|provider)$/iu.test(match[1])) return [];
       return [{ id: match[1], label: match[2]?.trim() ? `${match[1]} · ${match[2].trim()}` : match[1] }];
     });
     return [...new Map(models.map((model) => [model.id, model] as const)).values()];
@@ -316,17 +318,30 @@ export async function generateWithCodingAgent(agent: CodingAgent, prompt: string
     if (normalizedModel && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$/u.test(normalizedModel)) {
       throw new Error("AGENT_MODEL_INVALID: Model ID contains unsupported characters.");
     }
-    const imageData = imagePaths.length && agent !== "codex"
-      ? await Promise.all(imagePaths.map(async (file) => (await readFile(file)).toString("base64")))
+    const detectImageMimeType = (bytes: Buffer, filePath: string): "image/png" | "image/webp" | "image/gif" | "image/jpeg" => {
+      if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "image/png";
+      if (bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return "image/webp";
+      if (bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) return "image/gif";
+      const ext = path.extname(filePath).toLowerCase();
+      if (ext === ".png") return "image/png";
+      if (ext === ".webp") return "image/webp";
+      if (ext === ".gif") return "image/gif";
+      return "image/jpeg";
+    };
+    const imagePayloads = imagePaths.length && agent !== "codex"
+      ? await Promise.all(imagePaths.map(async (file) => {
+        const raw = await readFile(file);
+        return { mimeType: detectImageMimeType(raw, file), data: raw.toString("base64") };
+      }))
       : [];
-    if (imageData.length && agent === "antigravity") {
+    if (imagePayloads.length && agent === "antigravity") {
       const output = await runAntigravityImages({
         ...command, cwd: workDir, env: agentEnvironment(agent), model: normalizedModel, quality,
-        prompt: taskInstruction, images: imageData.map((data) => ({ type: "image", mimeType: "image/jpeg", data })),
+        prompt: taskInstruction, images: imagePayloads.map(({ mimeType, data }) => ({ type: "image", mimeType, data })),
       });
       return { model: normalizedModel ? `${AGENT_LABELS[agent]} · ${normalizedModel}` : AGENT_LABELS[agent], result: parseJsonOutput(output) };
     }
-    const claudeImages = imageData.length > 0 && agent === "claude";
+    const claudeImages = imagePayloads.length > 0 && agent === "claude";
     const mcpConfig = path.join(workDir, "empty-mcp.json");
     if (claudeImages) await writeFile(mcpConfig, '{"mcpServers":{}}', { mode: 0o600 });
     const modelArgs = normalizedModel ? ["--model", normalizedModel] : [];
@@ -349,7 +364,7 @@ export async function generateWithCodingAgent(agent: CodingAgent, prompt: string
     const stdinText = claudeImages
       ? `${JSON.stringify({ type: "user", message: { role: "user", content: [
         { type: "text", text: taskInstruction },
-        ...imageData.map((data) => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data } })),
+        ...imagePayloads.map(({ mimeType, data }) => ({ type: "image", source: { type: "base64", media_type: mimeType, data } })),
       ] } })}\n`
       : agent === "codex" || agent === "claude"
         ? taskInstruction

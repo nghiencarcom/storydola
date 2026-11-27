@@ -1,26 +1,211 @@
 import { z } from "zod";
+import type { CodingAgentPreference } from "./coding-agent-preferences";
 import { getSfxById, isValidSfxId, pickDefaultOverlaySfx } from "./sfx-library";
+
+export const SAFE_OVERLAY_ID_REGEX = /^[A-Za-z0-9_-]{1,64}$/;
+
+export function sanitizeOverlayId(raw: string | undefined, fallback: string): string {
+  const trimmed = (raw || "").trim();
+  if (SAFE_OVERLAY_ID_REGEX.test(trimmed)) return trimmed;
+  const cleaned = trimmed.replace(/[^A-Za-z0-9_-]+/gu, "_").replace(/^_+|_+$/gu, "").slice(0, 64);
+  return cleaned && SAFE_OVERLAY_ID_REGEX.test(cleaned) ? cleaned : fallback;
+}
+
+export function resolveHttpByteRange(
+  rangeHeader: string,
+  total: number,
+): { ok: true; start: number; end: number } | { ok: false } {
+  const match = rangeHeader.trim().match(/^bytes=(\d*)-(\d*)$/u);
+  if (!match || (!match[1] && !match[2]) || total <= 0) {
+    return { ok: false };
+  }
+
+  let start: number;
+  let end: number;
+  if (!match[1] && match[2]) {
+    const suffixLength = Number(match[2]);
+    if (!Number.isFinite(suffixLength) || suffixLength <= 0) {
+      return { ok: false };
+    }
+    start = Math.max(0, total - suffixLength);
+    end = total - 1;
+  } else {
+    start = Number(match[1]);
+    end = match[2] ? Math.min(total - 1, Number(match[2])) : total - 1;
+  }
+
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || start > end || start >= total) {
+    return { ok: false };
+  }
+
+  return { ok: true, start, end };
+}
+
+export type AutoEditPresetCategory = "commerce" | "knowledge" | "lifestyle";
+
+export const AUTO_EDIT_PRESET_CATEGORIES: ReadonlyArray<{ id: "all" | AutoEditPresetCategory; label: string }> = [
+  { id: "all", label: "Tất cả chủ đề (12)" },
+  { id: "commerce", label: "🛍️ Bán hàng · Review · BĐS · F&B" },
+  { id: "knowledge", label: "🎓 Hướng dẫn · Podcast · Giáo dục · Tin tức" },
+  { id: "lifestyle", label: "🎬 Công nghệ · Vlog · Gaming · Thẩm mỹ" },
+];
 
 export const AUTO_EDIT_PRESETS = [
   {
     id: "ugc-review",
-    label: "UGC Review tự nhiên",
-    summary: "Giữ nhịp thở đời thường, lọc câu nói vấp/lặp ý, Hook 3s đối trọng và thẻ sản phẩm đúng điểm rơi.",
+    category: "commerce" as AutoEditPresetCategory,
+    badge: "Affiliate · TikTok Shop",
+    label: "🛍️ UGC Review & Bán hàng",
+    summary: "Giữ nhịp nói chân thật, lọc sạch câu vấp/lặp ý, Hook 3s đối trọng và thẻ sản phẩm 3D đúng lúc nhắc giá.",
+    recommendedAspect: "9:16" as const,
+    recommendedVerticalFit: "auto" as const,
+    recommendedSilenceMs: 420,
+    defaultCaptionStyle: "karaoke-pop" as const,
+    preferredCardLayout: "stage-3d" as const,
+    directorRules: "Tập trung chuyển đổi đơn hàng: mở đầu bằng nỗi đau hoặc kết quả thật trong 3s đầu, hiện product_card (layout stage-3d) ngay giây nhắc tên/công dụng/giá bán kèm SFX reveal-sparkle hoặc ding.",
   },
   {
     id: "fast-tiktok",
-    label: "TikTok / Reels nhịp nhanh",
-    summary: "Cắt sát khoảng lặng, Dynamic Punch-in liên tục giấu jump-cut, phụ đề Karaoke & Emoji nảy mạnh.",
+    category: "commerce" as AutoEditPresetCategory,
+    badge: "Short · Reels · Viral",
+    label: "⚡ Nhịp Nhanh Bắt Trend",
+    summary: "Cắt cực sát khoảng nghỉ (300ms), Punch-in Zoom liên tục mỗi câu, phụ đề Karaoke & Emoji nảy mạnh.",
+    recommendedAspect: "9:16" as const,
+    recommendedVerticalFit: "fill-crop" as const,
+    recommendedSilenceMs: 300,
+    defaultCaptionStyle: "karaoke-pop" as const,
+    preferredCardLayout: "center-pop" as const,
+    directorRules: "Nhịp Hormozi tốc độ cao: cắt triệt để mọi khoảng thở >300ms, đổi zoom 1.0x <-> 1.16x liên tục giữa các câu, nhiều keywordHighlights rực rỡ và callout_pill/emoji_burst mỗi 6-8 giây.",
   },
   {
-    id: "minimal-aesthetic",
-    label: "Tối giản tinh tế",
-    summary: "Chuyển cảnh mượt, thẻ sản phẩm kính mờ HyperFrames thanh lịch, tiết chế chữ và emoji.",
+    id: "tutorial-saas",
+    category: "knowledge" as AutoEditPresetCategory,
+    badge: "Screencast · Phần mềm · AI",
+    label: "💻 Hướng dẫn Web / Phần mềm / AI",
+    summary: "Cắt đoạn chờ tải trang/gõ nhầm, tự động khoanh vùng nút bấm (Spotlight Box), tô dạ quang thông số & thẻ bước 3D.",
+    recommendedAspect: "16:9" as const,
+    recommendedVerticalFit: "aurora-3d" as const,
+    recommendedSilenceMs: 450,
+    defaultCaptionStyle: "clean-pill" as const,
+    preferredCardLayout: "stage-3d" as const,
+    directorRules: "Video hướng dẫn thao tác màn hình: cắt gọn đoạn chờ cài đặt hoặc thao tác nhầm; ưu tiên dùng spotlight_box khoanh sáng vùng bấm nút (kèm sfx mouse-clicks), highlighter tô sáng tên model/thông số và thẻ tổng kết từng bước.",
+  },
+  {
+    id: "podcast-talk",
+    category: "knowledge" as AutoEditPresetCategory,
+    badge: "Podcast · Talkshow · Chuyên gia",
+    label: "🎙️ Podcast & Trích đoạn Đối thoại",
+    summary: "Giữ nhịp nghỉ có chiều sâu (600ms), lọc từ thừa 'ờ, à', tô sáng câu trích dẫn đắt giá và phụ đề hộp mờ sang trọng.",
+    recommendedAspect: "9:16" as const,
+    recommendedVerticalFit: "aurora-3d" as const,
+    recommendedSilenceMs: 600,
+    defaultCaptionStyle: "clean-pill" as const,
+    preferredCardLayout: "split-top" as const,
+    directorRules: "Giữ nhịp điềm tĩnh và chiều sâu cảm xúc của cuộc trò chuyện: chỉ cắt đoạn ngập ngừng/nói lắp hoặc khoảng lặng quá dài; dùng zoom 1.12x nhẹ nhàng vào câu kết luận đắt giá kèm highlighter/callout_pill tinh tế.",
+  },
+  {
+    id: "edu-course",
+    category: "knowledge" as AutoEditPresetCategory,
+    badge: "Giáo dục · Tài chính · Vox",
+    label: "🎓 Bài giảng & Giải thích Kiến thức",
+    summary: "Phong cách Vox Documentary: bút dạ quang nhấn khái niệm cốt lõi, thẻ tóm tắt công thức và đóng băng phân tích số liệu.",
+    recommendedAspect: "16:9" as const,
+    recommendedVerticalFit: "aurora-3d" as const,
+    recommendedSilenceMs: 460,
+    defaultCaptionStyle: "clean-pill" as const,
+    preferredCardLayout: "stage-3d" as const,
+    directorRules: "Phong cách giải thích trực quan kiểu Vox: chia mạch bài giảng theo luận điểm rõ ràng, dùng highlighter quét sáng thuật ngữ/con số quan trọng, product_card đóng vai trò thẻ ghi nhớ kiến thức và freeze_frame khi chốt kết luận.",
+  },
+  {
+    id: "news-recap",
+    category: "knowledge" as AutoEditPresetCategory,
+    badge: "Điểm tin · Recap Phim 60s",
+    label: "📰 Bản tin Nhanh & Tóm tắt Sự kiện",
+    summary: "Nhịp bản tin dứt khoát (320ms), tiêu đề Hook báo chí nổi bật, chuyển mục mượt với hiệu ứng lướt âm thanh.",
+    recommendedAspect: "9:16" as const,
+    recommendedVerticalFit: "blur-fit" as const,
+    recommendedSilenceMs: 320,
+    defaultCaptionStyle: "clean-pill" as const,
+    preferredCardLayout: "split-top" as const,
+    directorRules: "Nhịp bản tin 60s cô đọng, không một giây chết: Hook mở đầu giật tít sự kiện chính, chèn thẻ tóm tắt từng diễn biến ở nửa trên (split-top) kèm SFX transition-sweep khi chuyển ý.",
+  },
+  {
+    id: "real-estate",
+    category: "commerce" as AutoEditPresetCategory,
+    badge: "BĐS · Nội thất · Showroom",
+    label: "🏢 Bất động sản & Không gian Luxury",
+    summary: "Tôn vinh khung hình rộng, thẻ thông số diện tích/vị trí/giá dạng kính nổi 3D và âm thanh chuông thanh lịch.",
+    recommendedAspect: "9:16" as const,
+    recommendedVerticalFit: "blur-fit" as const,
+    recommendedSilenceMs: 540,
+    defaultCaptionStyle: "clean-pill" as const,
+    preferredCardLayout: "stage-3d" as const,
+    directorRules: "Phong cách sang trọng: giữ các cú lia máy không gian mượt mà, không cắt vụn; hiển thị thông số diện tích, hướng nhà, vị trí, pháp lý và giá bán trên thẻ stage-3d thanh lịch kèm SFX reveal-chime nhẹ nhàng.",
+  },
+  {
+    id: "food-mukbang",
+    category: "commerce" as AutoEditPresetCategory,
+    badge: "Ẩm thực · Quán ngon · Nấu ăn",
+    label: "🍜 Food Tour · Mukbang & Công thức",
+    summary: "Nhịp tươi vui kích thích vị giác, giữ cảm thán ngon miệng, nổi bật thẻ tên món + giá bán + địa chỉ quán.",
+    recommendedAspect: "9:16" as const,
+    recommendedVerticalFit: "fill-crop" as const,
+    recommendedSilenceMs: 380,
+    defaultCaptionStyle: "karaoke-pop" as const,
+    preferredCardLayout: "floating-right" as const,
+    directorRules: "Tạo cảm giác thèm ăn & năng lượng tích cực: giữ lại khoảnh khắc thử món và cảm thán tự nhiên, tô màu amber/rose cho tính từ miêu tả hương vị, gắn thẻ tên món - mức giá - chấm điểm và địa chỉ quán.",
   },
   {
     id: "tech-unbox",
-    label: "Unbox & Thông số",
-    summary: "Nhấn mạnh chi tiết cận cảnh, bảng Spec Card HyperFrames rõ ràng và điểm nhấn ưu/nhược điểm.",
+    category: "lifestyle" as AutoEditPresetCategory,
+    badge: "Gear · Điện thoại · So sánh",
+    label: "📱 Unbox Công nghệ & Bảng Spec",
+    summary: "Nhấn cận cảnh thiết kế, bảng thông số Spec Card HyperFrames có thanh tiến trình và Freeze HUD soi chi tiết.",
+    recommendedAspect: "16:9" as const,
+    recommendedVerticalFit: "aurora-3d" as const,
+    recommendedSilenceMs: 400,
+    defaultCaptionStyle: "karaoke-pop" as const,
+    preferredCardLayout: "stage-3d" as const,
+    directorRules: "Review công nghệ sắc nét: dùng thẻ stage-3d hiển thị chip/pin/màn hình/giá bán với thanh điểm số --hf-progress, chèn spotlight_box hoặc freeze_frame khi soi cổng kết nối/camera và phân tách rõ ưu - nhược điểm.",
+  },
+  {
+    id: "vlog-travel",
+    category: "lifestyle" as AutoEditPresetCategory,
+    badge: "Daily Vlog · Hành trình",
+    label: "✈️ Vlog Đời sống & Du lịch Điện ảnh",
+    summary: "Giữ khoảnh khắc cảm xúc và cảnh đẹp B-roll, phụ đề Minimal thoáng mắt, nhãn địa điểm & thời gian tinh gọn.",
+    recommendedAspect: "16:9" as const,
+    recommendedVerticalFit: "blur-fit" as const,
+    recommendedSilenceMs: 580,
+    defaultCaptionStyle: "minimal-line" as const,
+    preferredCardLayout: "floating-left" as const,
+    directorRules: "Chất điện ảnh nhẹ nhàng: tôn trọng khoảng nghỉ cảm xúc và cảnh quay thiên nhiên/đường phố đẹp, dùng phụ đề minimal-line thoáng khung hình, nhãn địa điểm nhỏ gọn và hạn chế tối đa emoji/SFX ồn ào.",
+  },
+  {
+    id: "gaming-highlight",
+    category: "lifestyle" as AutoEditPresetCategory,
+    badge: "Gaming · Stream · Reaction",
+    label: "🎮 Gaming Highlight & Pha Gay Cấn",
+    summary: "Lọc sạch lúc chạy map trống từ file quay hàng chục GB, giữ trọn pha cao trào kèm Zoom gắt, Freeze HUD & SFX Wow.",
+    recommendedAspect: "9:16" as const,
+    recommendedVerticalFit: "aurora-3d" as const,
+    recommendedSilenceMs: 280,
+    defaultCaptionStyle: "karaoke-pop" as const,
+    preferredCardLayout: "center-pop" as const,
+    directorRules: "Cắt bỏ mạnh tay toàn bộ thời gian chết/chờ trận, dồn nhịp vào các pha giao tranh và biểu cảm hài hước: kết hợp zoom 1.2x đột ngột, freeze_frame ngay khoảnh khắc thắng/thua bất ngờ và SFX omg-wow, buzzer, tada.",
+  },
+  {
+    id: "minimal-aesthetic",
+    category: "lifestyle" as AutoEditPresetCategory,
+    badge: "Spa · Thời trang · Thương hiệu",
+    label: "✨ Tối giản Tinh tế (Aesthetic Brand)",
+    summary: "Chuyển cảnh êm ái, thẻ kính mờ HyperFrames thanh lịch, màu chữ trang nhã và tiết chế hiệu ứng nảy.",
+    recommendedAspect: "9:16" as const,
+    recommendedVerticalFit: "blur-fit" as const,
+    recommendedSilenceMs: 520,
+    defaultCaptionStyle: "clean-pill" as const,
+    preferredCardLayout: "floating-right" as const,
+    directorRules: "Thẩm mỹ tối giản cao cấp cho thời trang, mỹ phẩm luxury, spa: nhịp cắt êm, câu chữ súc tích, không lạm dụng emoji sặc sỡ, chỉ dùng SFX whoosh-soft và reveal-bubble thật khẽ.",
   },
 ] as const;
 
@@ -29,13 +214,33 @@ export type AutoEditAspectRatio = "9:16" | "16:9" | "1:1";
 export type AutoEditStage = "uploading" | "queued" | "analyzing_media" | "directing" | "ready" | "rendering" | "rendered" | "failed";
 export type AutoEditTranscriptKind = "whisper_words" | "whisper_segments" | "manual" | "acoustic_only";
 export type AutoEditCutReason = "silence" | "hesitation" | "retake" | "dead_air" | "off_topic" | "manual";
-export type AutoEditOverlayKind = "hook_banner" | "product_card" | "callout_pill" | "emoji_burst";
-export type AutoEditCardLayout = "floating-right" | "floating-left" | "split-top" | "center-pop";
+export type AutoEditOverlayKind =
+  | "hook_banner"
+  | "product_card"
+  | "callout_pill"
+  | "emoji_burst"
+  | "spotlight_box"
+  | "highlighter"
+  | "freeze_frame";
+export type AutoEditCardLayout = "floating-right" | "floating-left" | "split-top" | "center-pop" | "stage-3d";
 export type AutoEditHighlightColor = "amber" | "emerald" | "rose" | "cyan";
 
-export const autoEditPresetSchema = z.enum(["ugc-review", "fast-tiktok", "minimal-aesthetic", "tech-unbox"]);
+export const autoEditPresetSchema = z.enum([
+  "ugc-review",
+  "fast-tiktok",
+  "tutorial-saas",
+  "podcast-talk",
+  "edu-course",
+  "news-recap",
+  "real-estate",
+  "food-mukbang",
+  "tech-unbox",
+  "vlog-travel",
+  "gaming-highlight",
+  "minimal-aesthetic",
+]);
 export const autoEditAspectSchema = z.enum(["9:16", "16:9", "1:1"]);
-export const autoEditVerticalFitSchema = z.enum(["auto", "blur-fit", "fill-crop"]);
+export const autoEditVerticalFitSchema = z.enum(["auto", "blur-fit", "aurora-3d", "fill-crop"]);
 export type AutoEditVerticalFit = z.infer<typeof autoEditVerticalFitSchema>;
 
 export const autoEditOptionsSchema = z.object({
@@ -44,6 +249,7 @@ export const autoEditOptionsSchema = z.object({
   preset: autoEditPresetSchema.default("ugc-review"),
   aspectRatio: autoEditAspectSchema.default("9:16"),
   verticalFit: autoEditVerticalFitSchema.default("auto"),
+  motionBlur: z.boolean().default(true),
   language: z.enum(["vi", "en"]).default("vi"),
   productName: z.string().trim().max(160).default(""),
   productHighlights: z.string().trim().max(2_000).default(""),
@@ -52,7 +258,7 @@ export const autoEditOptionsSchema = z.object({
   silenceThresholdMs: z.number().int().min(250).max(2_000).default(450),
   voiceTargetPeakDb: z.number().min(-3).max(-0.3).default(-1.2),
   autoSfx: z.boolean().default(true),
-  sfxVolumeDb: z.number().min(-26).max(-4).default(-8.5),
+  sfxVolumeDb: z.number().min(-24).max(-4).default(-8.5),
   safeZoneGuard: z.boolean().default(true),
 });
 
@@ -131,6 +337,11 @@ export type AutoEditOverlay = {
   priceTag?: string;
   emoji?: string;
   accentColor?: AutoEditHighlightColor;
+  /** Normalized [0..1] target region for spotlight_box & highlighter annotations. */
+  targetX?: number;
+  targetY?: number;
+  targetW?: number;
+  targetH?: number;
   /** ID from assets/sfx/catalog.json, or "none" to mute SFX on this overlay. */
   sfxId?: string;
   sfxVolumeDb?: number;
@@ -195,6 +406,7 @@ export type AutoEditJob = {
   progress?: string;
   error?: string;
   agentLabel?: string;
+  agentPreference?: CodingAgentPreference;
   videos: AutoEditSourceVideo[];
   images: AutoEditProductImage[];
   analysis?: AutoEditAnalysis;
@@ -284,25 +496,31 @@ export const agentAutoEditGenerationSchema = z.object({
     cutReason: z.enum(["silence", "hesitation", "retake", "dead_air", "off_topic", "manual"]).optional(),
     zoom: z.number().min(1).max(1.35).optional().default(1),
     zoomFocusY: z.number().min(0.15).max(0.85).optional().default(0.38),
-    transcriptText: z.string().trim().max(600).default(""),
+    transcriptText: z.string().trim().max(4_000).default(""),
     note: z.string().trim().max(260).optional(),
+  }).refine((seg) => seg.sourceEndMs > seg.sourceStartMs, {
+    message: "sourceEndMs must be greater than sourceStartMs",
   })).min(1).max(1_200),
   overlays: z.array(z.object({
     id: z.string().trim().min(1).max(64).optional(),
-    kind: z.enum(["hook_banner", "product_card", "callout_pill", "emoji_burst"]),
+    kind: z.enum(["hook_banner", "product_card", "callout_pill", "emoji_burst", "spotlight_box", "highlighter", "freeze_frame"]),
     anchorSegmentId: z.string().trim().max(64).optional(),
     offsetMs: z.number().min(0).max(600_000).default(0),
     durationMs: z.number().min(600).max(20_000).default(3_000),
     imageId: z.string().trim().max(64).optional(),
-    layout: z.enum(["floating-right", "floating-left", "split-top", "center-pop"]).optional().default("floating-right"),
+    layout: z.enum(["floating-right", "floating-left", "split-top", "center-pop", "stage-3d"]).optional().default("floating-right"),
     badge: z.string().trim().max(48).optional(),
     title: z.string().trim().max(110).default(""),
     subtitle: z.string().trim().max(160).optional(),
     priceTag: z.string().trim().max(48).optional(),
     emoji: z.string().trim().max(16).optional(),
     accentColor: z.enum(["amber", "emerald", "rose", "cyan"]).optional().default("amber"),
+    targetX: z.number().min(0.02).max(0.98).optional(),
+    targetY: z.number().min(0.02).max(0.98).optional(),
+    targetW: z.number().min(0.04).max(0.92).optional(),
+    targetH: z.number().min(0.03).max(0.85).optional(),
     sfxId: z.string().trim().max(80).optional(),
-    sfxVolumeDb: z.number().min(-32).max(-6).optional(),
+    sfxVolumeDb: z.number().min(-24).max(-4).optional(),
     hyperframesHtml: z.string().max(4_000).optional(),
     hyperframesCss: z.string().max(4_000).optional(),
   })).max(60).default([]),
@@ -311,7 +529,7 @@ export const agentAutoEditGenerationSchema = z.object({
     sfxId: z.string().trim().min(1).max(80),
     anchorSegmentId: z.string().trim().max(64).optional(),
     offsetMs: z.number().min(0).max(600_000).default(0),
-    volumeDb: z.number().min(-32).max(-6).optional(),
+    volumeDb: z.number().min(-24).max(-4).optional(),
     note: z.string().trim().max(160).optional(),
   })).max(60).default([]),
   keywordHighlights: z.array(z.object({
@@ -337,30 +555,180 @@ export function isLikelyFillerWord(word: string) {
   return VIETNAMESE_FILLERS.has(cleaned);
 }
 
+const ALLOWED_HYPERFRAMES_TAGS = new Set(["div", "span", "strong", "em", "b", "i", "small", "p", "br"]);
+
+function sanitizeInlineStyleAttr(raw: string): string {
+  return raw
+    .replace(/@import[^;{}]*;?/giu, "")
+    .replace(/url\s*\([^)]*\)/giu, "none")
+    .replace(/expression\s*\([^)]*\)/giu, "none")
+    .replace(/javascript\s*:/giu, "")
+    .replace(/[<>"]/gu, "")
+    .trim();
+}
+
+function stripUnbalancedCssBraces(raw: string): string {
+  const chars: string[] = [];
+  const openBraceIndices: number[] = [];
+  let inSingle = false;
+  let inDouble = false;
+  let inComment = false;
+
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    const next = raw[i + 1];
+
+    if (inComment) {
+      chars.push(ch);
+      if (ch === "*" && next === "/") {
+        chars.push("/");
+        i += 1;
+        inComment = false;
+      }
+      continue;
+    }
+    if (inSingle) {
+      chars.push(ch);
+      if (ch === "\\" && next !== undefined) {
+        chars.push(next);
+        i += 1;
+      } else if (ch === "'") {
+        inSingle = false;
+      }
+      continue;
+    }
+    if (inDouble) {
+      chars.push(ch);
+      if (ch === "\\" && next !== undefined) {
+        chars.push(next);
+        i += 1;
+      } else if (ch === "\"") {
+        inDouble = false;
+      }
+      continue;
+    }
+
+    if (ch === "/" && next === "*") {
+      chars.push("/", "*");
+      i += 1;
+      inComment = true;
+      continue;
+    }
+    if (ch === "'") {
+      chars.push(ch);
+      inSingle = true;
+      continue;
+    }
+    if (ch === "\"") {
+      chars.push(ch);
+      inDouble = true;
+      continue;
+    }
+    if (ch === "{") {
+      openBraceIndices.push(chars.length);
+      chars.push(ch);
+      continue;
+    }
+    if (ch === "}") {
+      if (openBraceIndices.length > 0) {
+        openBraceIndices.pop();
+        chars.push(ch);
+      }
+      continue;
+    }
+    chars.push(ch);
+  }
+
+  if (inSingle) chars.push("'");
+  if (inDouble) chars.push("\"");
+  if (inComment) chars.push("*", "/");
+
+  if (openBraceIndices.length > 0) {
+    const toRemove = new Set(openBraceIndices);
+    return chars.filter((_, idx) => !toRemove.has(idx)).join("").trim();
+  }
+  return chars.join("").trim();
+}
+
 /**
  * Sanitizes HyperFrames HTML/CSS authored by Code Agent so only safe, deterministic
  * markup and styles render inside the preview & headless Chromium compositor.
  */
 export function sanitizeHyperframesMarkup(html?: string, css?: string): { html?: string; css?: string } {
-  const cleanHtml = html
-    ? html
-      .replace(/<\s*(?:script|iframe|object|embed|link|meta|base|form|input|button|textarea|select)[^>]*>[\s\S]*?<\s*\/\s*(?:script|iframe|object|embed|link|meta|base|form|input|button|textarea|select)\s*>/giu, "")
-      .replace(/<\s*(?:script|iframe|object|embed|link|meta|base|form|input|button|textarea|select)[^>]*\/?\s*>/giu, "")
-      .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/giu, "")
-      .replace(/(?:href|src|xlink:href)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/giu, "")
-      .trim()
-      .slice(0, 4_000)
-    : undefined;
+  let cleanHtml: string | undefined;
+  if (html) {
+    const strippedDangerous = html
+      .replace(/<!--[\s\S]*?-->/gu, "")
+      .replace(/<\s*(script|style|iframe|object|embed|svg|math|template|noscript|textarea|title|form|button|select)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/giu, "")
+      .replace(/<\s*\/?\s*(?:script|style|iframe|object|embed|link|meta|base|form|input|button|textarea|select|svg|math|template|noscript|title)\b[^>]*\/?\s*>/giu, "")
+      .replace(/(?:^|[\s/"'<])on[a-z0-9_-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>"']*)/giu, (m) => (m.startsWith("<") ? "<" : " "))
+      .replace(/(?:href|src|xlink:href|srcdoc|formaction|action)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>"']*)/giu, "");
 
-  const cleanCss = css
-    ? css
-      .replace(/@import[^;]+;?/giu, "")
+    const tokens: string[] = [];
+    let lastIdx = 0;
+    const tagRegex = /<\s*(\/?)\s*([a-zA-Z][a-zA-Z0-9:-]*)([^<>]*)>/gu;
+    let match: RegExpExecArray | null;
+    while ((match = tagRegex.exec(strippedDangerous)) !== null) {
+      if (match.index > lastIdx) {
+        tokens.push(strippedDangerous.slice(lastIdx, match.index).replace(/</gu, "&lt;").replace(/>/gu, "&gt;"));
+      }
+      lastIdx = tagRegex.lastIndex;
+      const isClosing = match[1] === "/";
+      const tag = match[2].toLowerCase();
+      const rawAttrs = match[3] || "";
+      if (!ALLOWED_HYPERFRAMES_TAGS.has(tag)) {
+        continue;
+      }
+      if (isClosing) {
+        if (tag !== "br") tokens.push(`</${tag}>`);
+        continue;
+      }
+      if (tag === "br") {
+        tokens.push("<br />");
+        continue;
+      }
+      const cleanedAttrSource = rawAttrs
+        .replace(/(?:^|[\s/"'<])on[a-z0-9_-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>"']*)/giu, " ")
+        .replace(/(?:href|src|xlink:href|srcdoc|formaction|action)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>"']*)/giu, " ");
+      const safeAttrs: string[] = [];
+      const attrRegex = /([a-zA-Z_:][a-zA-Z0-9_.:-]*)\s*(?:=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/gu;
+      let attrMatch: RegExpExecArray | null;
+      while ((attrMatch = attrRegex.exec(cleanedAttrSource)) !== null) {
+        const attrName = attrMatch[1].toLowerCase();
+        if (attrName.startsWith("on")) continue;
+        const attrVal = attrMatch[2] ?? attrMatch[3] ?? attrMatch[4] ?? "";
+        if (attrName === "class") {
+          const safeClass = attrVal.replace(/[^A-Za-z0-9_\-\s]/gu, "").trim();
+          if (safeClass) safeAttrs.push(`class="${safeClass}"`);
+        } else if (attrName === "style") {
+          const safeStyle = sanitizeInlineStyleAttr(attrVal);
+          if (safeStyle) safeAttrs.push(`style="${safeStyle}"`);
+        } else if (attrName.startsWith("data-") && /^[a-z0-9-]+$/u.test(attrName)) {
+          const safeData = attrVal.replace(/[<>"'&]/gu, "").trim();
+          safeAttrs.push(`data-${attrName.slice(5)}="${safeData}"`);
+        }
+      }
+      tokens.push(`<${tag}${safeAttrs.length ? ` ${safeAttrs.join(" ")}` : ""}>`);
+    }
+    if (lastIdx < strippedDangerous.length) {
+      tokens.push(strippedDangerous.slice(lastIdx).replace(/</gu, "&lt;").replace(/>/gu, "&gt;"));
+    }
+    cleanHtml = tokens.join("").trim().slice(0, 4_000);
+  }
+
+  let cleanCss: string | undefined;
+  if (css) {
+    const preCleaned = css
+      .replace(/@import[^;{}]*;?/giu, "")
       .replace(/url\s*\([^)]*\)/giu, "none")
       .replace(/expression\s*\([^)]*\)/giu, "none")
+      .replace(/javascript\s*:/giu, "")
       .replace(/<\s*\/?\s*style[^>]*>/giu, "")
+      .replace(/[<>]/gu, "")
       .trim()
-      .slice(0, 4_000)
-    : undefined;
+      .slice(0, 4_000);
+    cleanCss = stripUnbalancedCssBraces(preCleaned);
+  }
 
   return {
     html: cleanHtml || undefined,
@@ -442,16 +810,47 @@ export function computeAutoEditTimeline(
   }
 
   const segmentById = new Map(keptSegments.map((seg) => [seg.id, seg]));
+  const resolveAnchorStartMs = (
+    anchorSegmentId: string | undefined,
+    offsetMs: number,
+  ): { startMs: number; usedFallback: boolean } => {
+    const cleanOffset = Math.max(0, Math.round(offsetMs));
+    if (!anchorSegmentId) {
+      return { startMs: cleanOffset, usedFallback: false };
+    }
+    const direct = segmentById.get(anchorSegmentId);
+    if (direct) {
+      return { startMs: direct.timelineStartMs + cleanOffset, usedFallback: false };
+    }
+    const idxInEdl = edl.segments.findIndex((s) => s.id === anchorSegmentId);
+    if (idxInEdl >= 0) {
+      for (let f = idxInEdl + 1; f < edl.segments.length; f++) {
+        const nextKept = segmentById.get(edl.segments[f].id);
+        if (nextKept) {
+          return { startMs: nextKept.timelineStartMs + cleanOffset, usedFallback: true };
+        }
+      }
+      for (let b = idxInEdl - 1; b >= 0; b--) {
+        const prevKept = segmentById.get(edl.segments[b].id);
+        if (prevKept) {
+          return { startMs: prevKept.timelineStartMs + cleanOffset, usedFallback: true };
+        }
+      }
+    }
+    return { startMs: cleanOffset, usedFallback: true };
+  };
+
   const computedOverlays: ComputedTimelineOverlay[] = [];
   for (const overlay of edl.overlays) {
-    let startMs = Math.max(0, Math.round(overlay.offsetMs));
-    if (overlay.anchorSegmentId) {
-      const anchor = segmentById.get(overlay.anchorSegmentId);
-      if (!anchor) continue;
-      startMs = anchor.timelineStartMs + Math.max(0, Math.round(overlay.offsetMs));
+    if (totalDurationMs <= 0) continue;
+    const reqDur = Math.max(600, Math.round(overlay.durationMs));
+    const resolved = resolveAnchorStartMs(overlay.anchorSegmentId, overlay.offsetMs);
+    let startMs = resolved.startMs;
+    if (resolved.usedFallback && startMs >= totalDurationMs - 350 && totalDurationMs >= 350) {
+      startMs = Math.max(0, totalDurationMs - Math.min(totalDurationMs, reqDur));
     }
-    if (totalDurationMs <= 0 || startMs >= totalDurationMs) continue;
-    const endMs = Math.min(totalDurationMs, startMs + Math.max(600, Math.round(overlay.durationMs)));
+    if (startMs >= totalDurationMs) continue;
+    const endMs = Math.min(totalDurationMs, startMs + reqDur);
     if (endMs - startMs < 350) continue;
     computedOverlays.push({
       ...overlay,
@@ -463,7 +862,7 @@ export function computeAutoEditTimeline(
   computedOverlays.sort((a, b) => a.timelineStartMs - b.timelineStartMs);
 
   const sfxEnabled = sfxOptions?.autoSfx !== false;
-  const baseSfxDb = Math.min(-4, Math.max(-26, sfxOptions?.sfxVolumeDb ?? -8.5));
+  const baseSfxDb = Math.min(-4, Math.max(-24, sfxOptions?.sfxVolumeDb ?? -8.5));
   const rawSfxCandidates: ComputedTimelineSfxEvent[] = [];
 
   if (sfxEnabled && totalDurationMs > 0) {
@@ -489,11 +888,10 @@ export function computeAutoEditTimeline(
       const cue = edl.sfxCues![i];
       const entry = getSfxById(cue.sfxId);
       if (!entry) continue;
-      let startMs = Math.max(0, Math.round(cue.offsetMs));
-      if (cue.anchorSegmentId) {
-        const anchor = segmentById.get(cue.anchorSegmentId);
-        if (!anchor) continue;
-        startMs = anchor.timelineStartMs + Math.max(0, Math.round(cue.offsetMs));
+      const resolved = resolveAnchorStartMs(cue.anchorSegmentId, cue.offsetMs);
+      let startMs = resolved.startMs;
+      if (resolved.usedFallback && startMs >= totalDurationMs && totalDurationMs > 200) {
+        startMs = Math.max(0, totalDurationMs - 200);
       }
       if (startMs >= totalDurationMs) continue;
       rawSfxCandidates.push({
@@ -606,7 +1004,7 @@ export function buildCandidateSegments(
           cutReason: onlyFiller ? "hesitation" : undefined,
           zoom: keep && keptInClip % 2 === 0 ? 1.12 : 1,
           zoomFocusY: 0.38,
-          transcriptText: text,
+          transcriptText: text.slice(0, 4_000),
         });
       }
       if (pEnd - pStart >= silenceThresholdMs) {
@@ -637,7 +1035,7 @@ export function buildCandidateSegments(
         keep: true,
         zoom: keptInClip % 2 === 0 ? 1.12 : 1,
         zoomFocusY: 0.38,
-        transcriptText: text,
+        transcriptText: text.slice(0, 4_000),
       });
     }
   }
@@ -690,7 +1088,7 @@ export function normalizeAgentAutoEditEdl(
       cutReason: seg.keep ? undefined : (seg.cutReason || "hesitation"),
       zoom: seg.keep ? Math.min(1.28, Math.max(1, Number((seg.zoom || 1).toFixed(3)))) : 1,
       zoomFocusY: Math.min(0.8, Math.max(0.2, Number((seg.zoomFocusY ?? 0.38).toFixed(2)))),
-      transcriptText: derivedText,
+      transcriptText: derivedText.slice(0, 4_000),
       note: seg.note,
     });
     idx += 1;
@@ -700,7 +1098,7 @@ export function normalizeAgentAutoEditEdl(
     ? normalizedSegments
     : fallbackSegments.map((s) => ({ ...s }));
 
-  const keptIds = new Set(finalSegments.filter((s) => s.keep).map((s) => s.id));
+  const allSegmentIds = new Set(finalSegments.map((s) => s.id));
   const overlays: AutoEditOverlay[] = parsed.overlays.map((ov, index) => {
     const sanitized = sanitizeHyperframesMarkup(ov.hyperframesHtml, ov.hyperframesCss);
     const resolvedImageId = ov.imageId && validImages.has(ov.imageId)
@@ -708,14 +1106,14 @@ export function normalizeAgentAutoEditEdl(
       : ov.kind === "product_card" && images[0]
         ? images[0].id
         : undefined;
-    const resolvedAnchor = ov.anchorSegmentId && keptIds.has(ov.anchorSegmentId) ? ov.anchorSegmentId : undefined;
+    const resolvedAnchor = ov.anchorSegmentId && allSegmentIds.has(ov.anchorSegmentId) ? ov.anchorSegmentId : undefined;
     const chosenSfx = ov.sfxId && isValidSfxId(ov.sfxId)
       ? ov.sfxId
       : options.autoSfx !== false
         ? pickDefaultOverlaySfx(ov, index, options.preset)
         : undefined;
     return {
-      id: ov.id || `ov_${String(index + 1).padStart(2, "0")}`,
+      id: sanitizeOverlayId(ov.id, `ov_${String(index + 1).padStart(2, "0")}`),
       kind: ov.kind,
       anchorSegmentId: resolvedAnchor,
       offsetMs: Math.max(0, Math.round(ov.offsetMs)),
@@ -728,6 +1126,10 @@ export function normalizeAgentAutoEditEdl(
       priceTag: ov.priceTag,
       emoji: ov.emoji,
       accentColor: ov.accentColor || "amber",
+      targetX: ov.targetX,
+      targetY: ov.targetY,
+      targetW: ov.targetW,
+      targetH: ov.targetH,
       sfxId: chosenSfx,
       sfxVolumeDb: ov.sfxVolumeDb,
       hyperframesHtml: sanitized.html,
@@ -755,9 +1157,9 @@ export function normalizeAgentAutoEditEdl(
   const sfxCues: AutoEditSfxCue[] = (parsed.sfxCues || [])
     .filter((cue) => isValidSfxId(cue.sfxId) && cue.sfxId !== "none")
     .map((cue, idx) => ({
-      id: cue.id || `sfx_${String(idx + 1).padStart(2, "0")}`,
+      id: sanitizeOverlayId(cue.id, `sfx_${String(idx + 1).padStart(2, "0")}`),
       sfxId: cue.sfxId.trim().toLowerCase(),
-      anchorSegmentId: cue.anchorSegmentId && keptIds.has(cue.anchorSegmentId) ? cue.anchorSegmentId : undefined,
+      anchorSegmentId: cue.anchorSegmentId && allSegmentIds.has(cue.anchorSegmentId) ? cue.anchorSegmentId : undefined,
       offsetMs: Math.max(0, Math.round(cue.offsetMs)),
       volumeDb: cue.volumeDb,
       note: cue.note,

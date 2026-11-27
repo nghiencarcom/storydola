@@ -57,6 +57,7 @@ export async function synthesizeOmniVoice(text: string, voiceId: string, languag
   if (resolvedAudioUrl.origin !== new URL(baseUrl).origin) throw new Error("MaiVideo trả về URL audio ngoài domain API; đã chặn gửi API key sang domain khác.");
 
   const audioResponse = await fetch(resolvedAudioUrl, {
+    redirect: "error",
     headers: { Accept: "audio/wav", "X-API-Key": apiKey },
     signal: signal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), signal]) : AbortSignal.timeout(timeoutMs),
   });
@@ -125,6 +126,7 @@ export async function synthesizeOmniVoiceFromSrt(srtText: string, voiceId: strin
   if (resolvedAudioUrl.origin !== new URL(baseUrl).origin) throw new Error("MaiVideo trả về URL audio ngoài domain API; đã chặn gửi API key sang domain khác.");
 
   const audioResponse = await fetch(resolvedAudioUrl, {
+    redirect: "error",
     headers: { Accept: "audio/*", "X-API-Key": apiKey },
     signal: timeoutSignal(),
   });

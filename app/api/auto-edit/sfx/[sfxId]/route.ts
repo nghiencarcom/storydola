@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
 import { getCurrentUserId } from "../../../../lib/auth-server";
+import { resolveHttpByteRange } from "../../../../lib/auto-edit";
 import { getSfxById } from "../../../../lib/sfx-library";
 
 export const runtime = "nodejs";
@@ -10,6 +11,23 @@ function mimeForSfx(filename: string) {
   if (filename.toLowerCase().endsWith(".wav")) return "audio/wav";
   if (filename.toLowerCase().endsWith(".ogg")) return "audio/ogg";
   return "audio/mpeg";
+}
+
+async function readSfxAssetBytes(filename: string) {
+  const safeName = path.basename(filename);
+  const candidates = [
+    path.join(process.cwd(), "assets", "sfx", safeName),
+    path.resolve(process.cwd(), "..", "..", "assets", "sfx", safeName),
+  ];
+  let lastError: unknown;
+  for (const candidate of candidates) {
+    try {
+      return await readFile(candidate);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError;
 }
 
 export async function GET(request: Request, context: { params: Promise<{ sfxId: string }> }) {
@@ -22,34 +40,36 @@ export async function GET(request: Request, context: { params: Promise<{ sfxId: 
     return NextResponse.json({ message: "Không tìm thấy hiệu ứng âm thanh (SFX)." }, { status: 404 });
   }
 
-  const filePath = path.join(process.cwd(), "assets", "sfx", entry.filename);
   try {
-    const bytes = await readFile(filePath);
+    const bytes = await readSfxAssetBytes(entry.filename);
     const total = bytes.byteLength;
     const range = request.headers.get("range");
 
     if (range) {
-      const match = range.match(/^bytes=(\d*)-(\d*)$/u);
-      if (match) {
-        const start = match[1] ? Number(match[1]) : 0;
-        const end = match[2] ? Math.min(total - 1, Number(match[2])) : total - 1;
-        if (start <= end && start < total) {
-          const slice = bytes.subarray(start, end + 1);
-          return new NextResponse(slice, {
-            status: 206,
-            headers: {
-              "Content-Type": mimeForSfx(entry.filename),
-              "Content-Length": String(slice.byteLength),
-              "Accept-Ranges": "bytes",
-              "Content-Range": `bytes ${start}-${end}/${total}`,
-              "Cache-Control": "private, max-age=86400",
-            },
-          });
-        }
+      const parsed = resolveHttpByteRange(range, total);
+      if (!parsed.ok) {
+        return new NextResponse(null, {
+          status: 416,
+          headers: {
+            "Accept-Ranges": "bytes",
+            "Content-Range": `bytes */${total}`,
+          },
+        });
       }
+      const slice = bytes.subarray(parsed.start, parsed.end + 1);
+      return new NextResponse(new Uint8Array(slice), {
+        status: 206,
+        headers: {
+          "Content-Type": mimeForSfx(entry.filename),
+          "Content-Length": String(slice.byteLength),
+          "Accept-Ranges": "bytes",
+          "Content-Range": `bytes ${parsed.start}-${parsed.end}/${total}`,
+          "Cache-Control": "private, max-age=86400",
+        },
+      });
     }
 
-    return new NextResponse(bytes, {
+    return new NextResponse(new Uint8Array(bytes), {
       headers: {
         "Content-Type": mimeForSfx(entry.filename),
         "Content-Length": String(total),

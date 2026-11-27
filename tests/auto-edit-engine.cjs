@@ -36,8 +36,28 @@ function loadTsModule(relPath, mocks = {}) {
   return mod.exports;
 }
 
+const os = require("node:os");
 const autoEdit = loadTsModule("app/lib/auto-edit.ts");
 const autoEditMedia = loadTsModule("app/lib/auto-edit-media.ts");
+const autoEditRender = loadTsModule("app/lib/auto-edit-render.ts", {
+  "playwright-core": { chromium: { executablePath: () => "", launch: async () => ({}) } },
+  "next/server": { NextResponse: { json: (b, i) => ({ body: b, init: i }) } },
+});
+const sfxRoute = loadTsModule("app/api/auto-edit/sfx/[sfxId]/route.ts", {
+  "next/server": {
+    NextResponse: class MockRes {
+      constructor(body, init = {}) {
+        this.body = body;
+        this.status = init.status || 200;
+        this.headers = init.headers || {};
+      }
+      static json(body, init = {}) {
+        return { body, status: init.status || 200, headers: init.headers || {} };
+      }
+    },
+  },
+  "../../../../lib/auth-server": { getCurrentUserId: async () => "test-user" },
+});
 
 // 1. Verify Whisper JSON word-level parser
 {
@@ -232,4 +252,385 @@ const autoEditMedia = loadTsModule("app/lib/auto-edit-media.ts");
   }
 }
 
-console.log("auto-edit-engine tests passed!");
+// 6. Verify hardened HyperFrames HTML/CSS sanitizer, overlay.id allowlist, and EDL bounds
+{
+  const sanitized = autoEdit.sanitizeHyperframesMarkup(
+    `<div/onload=alert(1) class="hf-box"><img src=x onerror=alert(1)><svg onload=evil()><path/></svg><strong"onclick="steal()">Giảm 50%</strong><br><a href="https://evil.test">Click</a></div>`,
+    `} body { display: none !important } .hf-box { width: calc(var(--hf-progress, 1) * 100%); {`,
+  );
+  assert.ok(sanitized.html);
+  assert.ok(!/on[a-z0-9_-]+\s*=/iu.test(sanitized.html), `Unexpected event handler in ${sanitized.html}`);
+  assert.ok(!sanitized.html.includes("<img") && !sanitized.html.includes("<svg") && !sanitized.html.includes("<a"));
+  assert.ok(sanitized.html.includes('<div class="hf-box">'));
+  assert.ok(sanitized.html.includes("<strong>Giảm 50%</strong>"));
+  assert.ok(sanitized.html.includes("<br />"));
+
+  // Check balanced {} in CSS (depth never < 0 and ends at 0)
+  assert.ok(sanitized.css);
+  let depth = 0;
+  for (const ch of sanitized.css) {
+    if (ch === "{") depth += 1;
+    if (ch === "}") depth -= 1;
+    assert.ok(depth >= 0, `Negative brace depth in sanitized CSS: ${sanitized.css}`);
+  }
+  assert.equal(depth, 0, `Unbalanced braces remaining in sanitized CSS: ${sanitized.css}`);
+
+  // Overlay ID restricted to /^[A-Za-z0-9_-]{1,64}$/
+  const cleanId = autoEdit.sanitizeOverlayId("bad}{</style><script>", "ov_fallback");
+  assert.ok(autoEdit.SAFE_OVERLAY_ID_REGEX.test(cleanId));
+
+  // Segment sourceEndMs > sourceStartMs & transcriptText up to 4000 chars & sfxVolumeDb up to -4
+  assert.throws(() =>
+    autoEdit.agentAutoEditGenerationSchema.parse({
+      title: "T",
+      summary: "S",
+      hookHeadline: "H",
+      segments: [{ id: "s1", clipId: "c1", sourceStartMs: 2000, sourceEndMs: 2000, keep: true }],
+    }),
+  );
+  const longText = "a".repeat(3500);
+  const validParsed = autoEdit.agentAutoEditGenerationSchema.parse({
+    title: "T",
+    summary: "S",
+    hookHeadline: "H",
+    segments: [{ id: "s1", clipId: "c1", sourceStartMs: 500, sourceEndMs: 3500, keep: true, transcriptText: longText }],
+    overlays: [{ id: "ov_1", kind: "callout_pill", title: "OK", sfxVolumeDb: -4 }],
+  });
+  assert.equal(validParsed.segments[0].transcriptText.length, 3500);
+  assert.equal(validParsed.overlays[0].sfxVolumeDb, -4);
+}
+
+// 7. Verify computeAutoEditTimeline graceful fallback when anchorSegmentId is cut (keep: false)
+{
+  const edlWithCutAnchors = {
+    schema: "auto-edit-edl.v1",
+    title: "Cut Anchor Test",
+    summary: "Ensure hook_banner & product_card survive when anchored segment is cut",
+    hookHeadline: "HOOK KHÔNG BIẾN MẤT",
+    captionStyle: "karaoke-pop",
+    segments: [
+      { id: "seg_01", clipId: "clip_01", sourceStartMs: 0, sourceEndMs: 1500, keep: false, cutReason: "manual", zoom: 1, zoomFocusY: 0.38, transcriptText: "" },
+      { id: "seg_02", clipId: "clip_01", sourceStartMs: 1500, sourceEndMs: 5500, keep: true, zoom: 1, zoomFocusY: 0.38, transcriptText: "Đoạn chính" },
+      { id: "seg_03", clipId: "clip_01", sourceStartMs: 5500, sourceEndMs: 7000, keep: false, cutReason: "silence", zoom: 1, zoomFocusY: 0.38, transcriptText: "" },
+    ],
+    overlays: [
+      { id: "ov_hook_01", kind: "hook_banner", anchorSegmentId: "seg_01", offsetMs: 0, durationMs: 2500, layout: "center-pop", title: "HOOK ĐẦU" },
+      { id: "ov_prod_01", kind: "product_card", anchorSegmentId: "seg_03", offsetMs: 400, durationMs: 2000, layout: "floating-right", title: "Thẻ cuối" },
+      { id: "ov_unknown", kind: "callout_pill", anchorSegmentId: "seg_missing", offsetMs: 800, durationMs: 1200, layout: "center-pop", title: "Fallback offset" },
+    ],
+    keywordHighlights: [],
+    directorNotes: [],
+  };
+
+  const timeline = autoEdit.computeAutoEditTimeline(edlWithCutAnchors, [], "9:16", 7000, { autoSfx: false });
+  assert.equal(timeline.totalDurationMs, 4000);
+  const hook = timeline.overlays.find((o) => o.id === "ov_hook_01");
+  assert.ok(hook, "Expected hook_banner anchored to cut seg_01 to survive via fallback");
+  assert.equal(hook.timelineStartMs, 0);
+
+  const prod = timeline.overlays.find((o) => o.id === "ov_prod_01");
+  assert.ok(prod, "Expected product_card anchored to trailing cut seg_03 to survive via previous kept segment");
+  assert.equal(prod.timelineStartMs, 400);
+
+  const unknown = timeline.overlays.find((o) => o.id === "ov_unknown");
+  assert.ok(unknown);
+  assert.equal(unknown.timelineStartMs, 800);
+}
+
+// 8. Verify FFmpeg post-scale crop expressions, orientation framing, blur-canvas fgH, silent guard & Pango escape
+{
+  // Vertical 9:16 source inside 1:1 or 16:9 MUST stay "cover" at 1.0x (never switch from contain sidebars to cover!)
+  const vertInSquare1x = autoEditRender.buildSegmentFramingFilter({
+    width: 1080,
+    height: 1080,
+    fps: 30,
+    zoom: 1.0,
+    zoomFocusY: 0.38,
+    isLandscapeSource: false,
+    verticalFit: "auto",
+    clipWidth: 720,
+    clipHeight: 1280,
+  });
+  assert.equal(vertInSquare1x.mode, "cover");
+  assert.ok(vertInSquare1x.vf.includes("(iw-1080)/2"));
+  assert.ok(vertInSquare1x.vf.includes("min(ih-1080\\,max(0\\,(ih-1080)*0.380))"));
+
+  const vertInWide1x = autoEditRender.buildSegmentFramingFilter({
+    width: 1280,
+    height: 720,
+    fps: 30,
+    zoom: 1.0,
+    zoomFocusY: 0.38,
+    isLandscapeSource: false,
+    verticalFit: "auto",
+    clipWidth: 720,
+    clipHeight: 1280,
+  });
+  assert.equal(vertInWide1x.mode, "cover");
+
+  // Landscape 16:9 source inside 16:9 at 1.0x uses "contain", and at 1.12x uses "cover"
+  const landInWide1x = autoEditRender.buildSegmentFramingFilter({
+    width: 1280,
+    height: 720,
+    fps: 30,
+    zoom: 1.0,
+    zoomFocusY: 0.38,
+    isLandscapeSource: true,
+    verticalFit: "auto",
+    clipWidth: 1920,
+    clipHeight: 1080,
+  });
+  assert.equal(landInWide1x.mode, "contain");
+
+  // Landscape 16:9 in 9:16 blur-fit keeps fgH constant across zoom 1.0x and 1.2x
+  const blur1x = autoEditRender.buildSegmentFramingFilter({
+    width: 720,
+    height: 1280,
+    fps: 30,
+    zoom: 1.0,
+    zoomFocusY: 0.4,
+    isLandscapeSource: true,
+    verticalFit: "blur-fit",
+    clipWidth: 1920,
+    clipHeight: 1080,
+  });
+  const blur12x = autoEditRender.buildSegmentFramingFilter({
+    width: 720,
+    height: 1280,
+    fps: 30,
+    zoom: 1.2,
+    zoomFocusY: 0.4,
+    isLandscapeSource: true,
+    verticalFit: "blur-fit",
+    clipWidth: 1920,
+    clipHeight: 1080,
+  });
+  assert.equal(blur1x.mode, "blur-canvas");
+  assert.equal(blur12x.mode, "blur-canvas");
+  assert.equal(blur1x.fgH, 406);
+  assert.equal(blur12x.fgH, 406);
+  assert.ok(blur12x.filterComplex.includes("crop=720:406:(iw-720)/2:min(ih-406\\,max(0\\,(ih-406)*0.400))"));
+
+  // Silent / quiet room guard
+  assert.equal(
+    autoEditRender.shouldSkipVoiceNormalization({
+      videos: [{ id: "c1", filename: "a.mp4", extension: ".mp4", size: 1, order: 0, hasAudio: false }],
+      analysis: { transcriptKind: "acoustic_only", rawDurationMs: 3000, words: [], pauses: [] },
+    }),
+    true,
+  );
+  assert.equal(
+    autoEditRender.shouldSkipVoiceNormalization({
+      videos: [{ id: "c1", filename: "a.mp4", extension: ".mp4", size: 1, order: 0, hasAudio: true }],
+      analysis: { transcriptKind: "acoustic_only", rawDurationMs: 3000, inputMaxVolumeDb: -52, words: [], pauses: [] },
+    }),
+    true,
+  );
+  assert.equal(
+    autoEditRender.shouldSkipVoiceNormalization({
+      videos: [{ id: "c1", filename: "a.mp4", extension: ".mp4", size: 1, order: 0, hasAudio: true }],
+      analysis: {
+        transcriptKind: "whisper_words",
+        rawDurationMs: 3000,
+        inputMaxVolumeDb: -18,
+        words: [{ id: "w1", clipId: "c1", text: "Alo", startMs: 100, endMs: 400 }],
+        pauses: [],
+      },
+    }),
+    false,
+  );
+
+  // Pango XML escape
+  assert.equal(autoEditRender.escapePangoText("Mua 1 & Tặng <2> > 50%"), "Mua 1 &amp; Tặng &lt;2&gt; &gt; 50%");
+}
+
+// 9. Verify rotation metadata, WhisperKit array report + offline model discovery, and SFX suffix byte-range
+(async () => {
+  // Stream rotation from non-first side_data_list item and tags.rotate fallback
+  assert.equal(
+    autoEditMedia.extractStreamRotationDegrees({
+      side_data_list: [{}, { rotation: -90 }],
+    }),
+    -90,
+  );
+  assert.equal(
+    autoEditMedia.extractStreamRotationDegrees({
+      side_data_list: [{}],
+      tags: { rotate: "270" },
+    }),
+    270,
+  );
+
+  // WhisperKit array report with <|startoftranscript|> tokens
+  const wkReport = [
+    {
+      segments: [
+        {
+          start: 0,
+          end: 1.5,
+          words: [
+            { word: "<|startoftranscript|><|vi|><|0.00|> Xin", start: 0.1, end: 0.5, probability: 0.96 },
+            { word: " chào<|1.50|><|endoftext|>", start: 0.52, end: 1.1, probability: 0.98 },
+          ],
+        },
+      ],
+    },
+  ];
+  const wkParsed = autoEditMedia.parseWhisperJsonWords(wkReport, "clip_01");
+  assert.equal(wkParsed.kind, "whisper_words");
+  assert.deepEqual(wkParsed.words.map((w) => w.text), ["Xin", "chào"]);
+
+  // WhisperKit local HuggingFace CoreML model auto-discovery (preferring large > medium > small > base)
+  const tmpHf = fs.mkdtempSync(path.join(os.tmpdir(), "storyai-wk-test-"));
+  try {
+    const baseDir = path.join(tmpHf, "openai_whisper-base");
+    const largeDir = path.join(tmpHf, "openai_whisper-large-v3_turbo");
+    const incompleteDir = path.join(tmpHf, "openai_whisper-large-v3_empty");
+    fs.mkdirSync(baseDir, { recursive: true });
+    fs.writeFileSync(path.join(baseDir, "config.json"), "{}");
+    fs.mkdirSync(largeDir, { recursive: true });
+    fs.writeFileSync(path.join(largeDir, "config.json"), "{}");
+    fs.mkdirSync(incompleteDir, { recursive: true });
+
+    const chosen = await autoEditMedia.resolveWhisperKitModelDir("", tmpHf);
+    assert.equal(chosen, largeDir);
+  } finally {
+    fs.rmSync(tmpHf, { recursive: true, force: true });
+  }
+
+  // SFX byte-range parser & route handler: suffix bytes=-500 and 416 cases
+  const suffixRange = autoEdit.resolveHttpByteRange("bytes=-500", 2000);
+  assert.deepEqual(suffixRange, { ok: true, start: 1500, end: 1999 });
+  const clampedSuffix = autoEdit.resolveHttpByteRange("bytes=-5000", 1200);
+  assert.deepEqual(clampedSuffix, { ok: true, start: 0, end: 1199 });
+  assert.deepEqual(autoEdit.resolveHttpByteRange("bytes=-0", 2000), { ok: false });
+  assert.deepEqual(autoEdit.resolveHttpByteRange("bytes=-", 2000), { ok: false });
+  assert.deepEqual(autoEdit.resolveHttpByteRange("bytes=2500-3000", 2000), { ok: false });
+  assert.deepEqual(autoEdit.resolveHttpByteRange("bytes=900-400", 2000), { ok: false });
+
+  const suffixRes = await sfxRoute.GET(
+    { headers: new Headers({ range: "bytes=-500" }) },
+    { params: Promise.resolve({ sfxId: "tada" }) },
+  );
+  assert.equal(suffixRes.status, 206);
+  assert.equal(suffixRes.body.byteLength, 500);
+
+  const invalidRangeRes = await sfxRoute.GET(
+    { headers: new Headers({ range: "bytes=999999999-999999999" }) },
+    { params: Promise.resolve({ sfxId: "tada" }) },
+  );
+  assert.equal(invalidRangeRes.status, 416);
+
+  // 10. Verify Pro Visual Pack: stage-3d, spotlight_box, highlighter, freeze_frame & aurora-3d framing
+  {
+    const videos = [{ id: "clip_01", filename: "tut.mp4", extension: ".mp4", size: 1000, order: 0, durationMs: 12000 }];
+    const images = [{ id: "img_01", filename: "ui.png", extension: ".png", size: 500, width: 800, height: 600, label: "UI" }];
+    const options = autoEdit.autoEditOptionsSchema.parse({
+      productName: "StoryAI",
+      verticalFit: "aurora-3d",
+      motionBlur: true,
+      autoSfx: true,
+    });
+    assert.equal(options.verticalFit, "aurora-3d");
+    assert.equal(options.motionBlur, true);
+
+    const edl = autoEdit.normalizeAgentAutoEditEdl(
+      {
+        title: "Pro FX Test",
+        summary: "Test 3D stage & hand-drawn spotlight annotations",
+        hookHeadline: "PRO FX DEMO",
+        segments: [{ id: "seg_01", clipId: "clip_01", sourceStartMs: 0, sourceEndMs: 10000, keep: true, zoom: 1 }],
+        overlays: [
+          { id: "ov_3d", kind: "product_card", anchorSegmentId: "seg_01", offsetMs: 1000, durationMs: 3000, imageId: "img_01", layout: "stage-3d", title: "Thẻ 3D" },
+          { id: "ov_spot", kind: "spotlight_box", anchorSegmentId: "seg_01", offsetMs: 4200, durationMs: 2500, title: "Bấm nút này", targetX: 0.32, targetY: 0.78, targetW: 0.24, targetH: 0.12 },
+          { id: "ov_hl", kind: "highlighter", anchorSegmentId: "seg_01", offsetMs: 6800, durationMs: 2000, title: "Wan 3.0", targetX: 0.3, targetY: 0.82, targetW: 0.22, targetH: 0.06 },
+          { id: "ov_frz", kind: "freeze_frame", anchorSegmentId: "seg_01", offsetMs: 8900, durationMs: 1000, title: "Hoàn tất kết nối" },
+        ],
+      },
+      videos,
+      images,
+      [],
+      [],
+      options,
+    );
+
+    const spot = edl.overlays.find((o) => o.id === "ov_spot");
+    assert.ok(spot);
+    assert.equal(spot.targetX, 0.32);
+    assert.ok(["mouse-clicks", "reveal-click"].includes(spot.sfxId));
+
+    const frz = edl.overlays.find((o) => o.id === "ov_frz");
+    assert.ok(frz);
+    assert.equal(frz.sfxId, "camera-shutter");
+
+    const card3d = edl.overlays.find((o) => o.id === "ov_3d");
+    assert.ok(card3d);
+    assert.equal(card3d.layout, "stage-3d");
+
+    const auroraFilter = autoEditRender.buildSegmentFramingFilter({
+      width: 720,
+      height: 1280,
+      fps: 30,
+      zoom: 1.0,
+      zoomFocusY: 0.4,
+      isLandscapeSource: true,
+      verticalFit: "aurora-3d",
+      clipWidth: 1662,
+      clipHeight: 1080,
+    });
+    assert.equal(auroraFilter.mode, "aurora-stage");
+    assert.ok(auroraFilter.filterComplex.includes("colorbalance="));
+    assert.ok(auroraFilter.filterComplex.includes("overlay=(W-w)/2:(H-h)/2"));
+  }
+
+  // 11. Verify 12 Multi-Topic Templates & Local Zero-Copy unlimited GB staging
+  {
+    assert.equal(autoEdit.AUTO_EDIT_PRESETS.length, 12);
+    const sfxLib = loadTsModule("app/lib/sfx-library.ts");
+    for (const tpl of autoEdit.AUTO_EDIT_PRESETS) {
+      const parsed = autoEdit.autoEditOptionsSchema.parse({ preset: tpl.id });
+      assert.equal(parsed.preset, tpl.id);
+      const sfx = sfxLib.pickDefaultOverlaySfx({ kind: "product_card", title: "Demo" }, 0, tpl.id);
+      assert.ok(sfxLib.isValidSfxId(sfx), `Invalid SFX ${sfx} for template ${tpl.id}`);
+    }
+
+    const uploadLib = loadTsModule("app/lib/auto-edit-upload.ts");
+    assert.equal(uploadLib.maxAutoEditVideoBytes, Number.MAX_SAFE_INTEGER);
+
+    const localFilesLib = loadTsModule("app/lib/auto-edit-local-files.ts");
+    assert.equal(
+      localFilesLib.isLocalLoopbackRequest(new Request("http://localhost:3012/api/auto-edit/local-files", { headers: { host: "localhost:3012", origin: "http://localhost:3012" } })),
+      true,
+    );
+    assert.equal(
+      localFilesLib.isLocalLoopbackRequest(new Request("https://storyai.example.com/api/auto-edit/local-files", { headers: { host: "storyai.example.com" } })),
+      false,
+    );
+
+    // Verify Zero-Copy symlink staging against a real MP4 deliverable without copying bytes
+    const sampleVideo = path.join(__dirname, "..", "deliverables", "auto-edit-ongQkJLhMqo.mp4");
+    if (fs.existsSync(sampleVideo)) {
+      const picked = await localFilesLib.resolvePastedLocalPaths("unit-test-owner", [sampleVideo], "video");
+      assert.equal(picked.length, 1);
+      assert.ok(picked[0].token.startsWith("lf_"));
+      const testJobId = "00000000-0000-4000-8000-000000009999";
+      const jobDir = uploadLib.autoEditJobMediaDir("unit-test-owner", testJobId);
+      try {
+        const staged = await localFilesLib.stageZeroCopyLocalAutoEditJob("unit-test-owner", testJobId, [picked[0].token], [], []);
+        assert.equal(staged.videos.length, 1);
+        const linkedClip = path.join(jobDir, "videos", "clip_01.mp4");
+        const lstat = fs.lstatSync(linkedClip);
+        assert.equal(lstat.isSymbolicLink(), true, "Expected clip_01.mp4 to be a zero-copy symlink");
+        const probed = await autoEditMedia.probeAutoEditVideo(linkedClip);
+        assert.ok(probed.durationMs > 1000);
+      } finally {
+        fs.rmSync(jobDir, { recursive: true, force: true });
+      }
+    }
+  }
+
+  console.log("auto-edit-engine tests passed!");
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

@@ -34,9 +34,13 @@ export async function PATCH(request: Request, context: { params: Promise<{ slug:
       if (body.dramaPlan !== undefined) {
         if (before.presetId !== "ai-drama") throw new Error("DRAMA_PLAN_PROJECT_REQUIRED");
         try {
+          const durationChanged = body.durationMinutes !== undefined && body.durationMinutes !== before.durationMinutes;
+          const chunkSizeChanged = body.chunkSize !== undefined && normalizeProjectChunkSize(body.chunkSize) !== before.chunkSize;
           const durationMinutes = Math.max(1, Number(body.durationMinutes ?? before.durationMinutes) || 60);
           const chunkSize = normalizeProjectChunkSize(body.chunkSize ?? before.chunkSize);
-          const expectedEpisodes = Math.ceil(Math.ceil(durationMinutes * 4) / chunkSize);
+          const expectedEpisodes = !durationChanged && !chunkSizeChanged && before.chunks.length > 0
+            ? before.chunks.length
+            : Math.ceil(Math.ceil(durationMinutes * 4) / chunkSize);
           plan = normalizeDramaPlan(body.dramaPlan, expectedEpisodes);
         } catch (cause) {
           throw new Error(`DRAMA_PLAN_INVALID:${cause instanceof Error ? cause.message : "Kế hoạch Phim AI không hợp lệ."}`);

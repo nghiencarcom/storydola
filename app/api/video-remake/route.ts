@@ -2,9 +2,10 @@ import { after, NextResponse } from "next/server";
 import { getCurrentUserId } from "../../lib/auth-server";
 import { getCodingAgentCliStatuses } from "../../lib/coding-agent-cli";
 import { getCodingAgentPreference, type CodingAgentPreference } from "../../lib/coding-agent-preferences";
+import { readDataForUser } from "../../lib/server-store";
 import { remakeInputSchema } from "../../lib/video-remake";
 import { createRemakeProject } from "../../lib/video-remake-project";
-import { addRemakeJob, getRemakeJob, linkRemakeProject, listRemakeJobs, retryRemakeJob, runRemakeQueue } from "../../lib/video-remake-worker";
+import { addRemakeJob, deleteRemakeJob, getRemakeJob, linkRemakeProject, listRemakeJobs, retryRemakeJob, runRemakeQueue } from "../../lib/video-remake-worker";
 
 export const runtime = "nodejs";
 
@@ -25,9 +26,30 @@ export async function GET(request: Request) {
   const owner = await getCurrentUserId().catch(() => null);
   if (!owner) return respond({ message: "Vui lòng đăng nhập lại." }, 401);
   const id = new URL(request.url).searchParams.get("id");
-  if (!id) return respond({ jobs: await listRemakeJobs(owner) });
-  const job = await getRemakeJob(owner, id);
-  return job ? respond({ job }) : respond({ message: "Không tìm thấy job remake." }, 404);
+  if (!id) {
+    const [jobs, data] = await Promise.all([listRemakeJobs(owner), readDataForUser(owner)]);
+    const existingSlugs = new Set(data.projects.map((project) => project.slug));
+    const sanitizedJobs = jobs.map((entry) => {
+      if (entry.projectSlug && !existingSlugs.has(entry.projectSlug)) {
+        return { ...entry, projectSlug: undefined };
+      }
+      return entry;
+    });
+    if (sanitizedJobs.some(({ status }) => status === "queued" || status === "reading" || status === "analyzing")) {
+      wakeQueue();
+    }
+    return respond({ jobs: sanitizedJobs });
+  }
+  const [job, data] = await Promise.all([getRemakeJob(owner, id), readDataForUser(owner)]);
+  if (!job) return respond({ message: "Không tìm thấy job remake." }, 404);
+  if (job.status === "queued" || job.status === "reading" || job.status === "analyzing") {
+    wakeQueue();
+  }
+  if (job.projectSlug && !data.projects.some((project) => project.slug === job.projectSlug)) {
+    await linkRemakeProject(owner, job, undefined);
+    return respond({ job: { ...job, projectSlug: undefined } });
+  }
+  return respond({ job });
 }
 
 export async function POST(request: Request) {
@@ -47,7 +69,13 @@ export async function PATCH(request: Request) {
   const owner = await getCurrentUserId().catch(() => null);
   if (!owner) return respond({ message: "Vui lòng đăng nhập lại." }, 401);
   const body = await request.json().catch(() => null);
-  if (typeof body?.id !== "string") return respond({ message: "Thiếu mã job remake." }, 400);
+  if (typeof body?.id !== "string" || !body.id.trim()) return respond({ message: "Thiếu mã job remake." }, 400);
+  if (body.action === "delete") {
+    const status = await deleteRemakeJob(owner, body.id);
+    if (status === "missing") return respond({ message: "Không tìm thấy job remake." }, 404);
+    wakeQueue();
+    return respond({ ok: true });
+  }
   if (body.action === "retry") {
     const agent = await configuredAgent(owner);
     if (!agent) return respond({ message: "Hãy chọn và kết nối Code Agent CLI trong Cài đặt để phân tích khung hình." }, 503);
@@ -58,9 +86,12 @@ export async function PATCH(request: Request) {
     return respond({ ok: true }, 202);
   }
   if (body.action === "create-project") {
-    const job = await getRemakeJob(owner, body.id);
+    const [job, data] = await Promise.all([getRemakeJob(owner, body.id), readDataForUser(owner)]);
     if (!job) return respond({ message: "Không tìm thấy job remake." }, 404);
     if (job.status !== "ready" || !job.result) return respond({ message: "Bản remake chưa sẵn sàng." }, 409);
+    if (job.projectSlug && data.projects.some((project) => project.slug === job.projectSlug)) {
+      return respond({ slug: job.projectSlug });
+    }
     try {
       const slug = await createRemakeProject(owner, { ...job, result: job.result });
       await linkRemakeProject(owner, job, slug);
@@ -71,4 +102,21 @@ export async function PATCH(request: Request) {
     }
   }
   return respond({ message: "Tác vụ remake không hợp lệ." }, 400);
+}
+
+export async function DELETE(request: Request) {
+  const owner = await getCurrentUserId().catch(() => null);
+  if (!owner) return respond({ message: "Vui lòng đăng nhập lại." }, 401);
+  const queryId = new URL(request.url).searchParams.get("id");
+  const bodyId = queryId ? undefined : (await request.json().catch(() => null))?.id;
+  const id = typeof queryId === "string" && queryId.trim()
+    ? queryId.trim()
+    : typeof bodyId === "string" && bodyId.trim()
+      ? bodyId.trim()
+      : "";
+  if (!id) return respond({ message: "Thiếu mã job remake." }, 400);
+  const status = await deleteRemakeJob(owner, id);
+  if (status === "missing") return respond({ message: "Không tìm thấy job remake." }, 404);
+  wakeQueue();
+  return respond({ ok: true });
 }

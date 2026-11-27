@@ -11,7 +11,19 @@ function load(name, imports = {}) {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
   });
   const exports = {};
-  vm.runInNewContext(outputText, { exports, console, process, URL, require: (id) => imports[id] ?? require(id) });
+  vm.runInNewContext(outputText, {
+    exports,
+    console,
+    process,
+    URL,
+    Buffer,
+    AbortController,
+    AbortSignal,
+    DOMException,
+    setTimeout,
+    clearTimeout,
+    require: (id) => imports[id] ?? require(id),
+  });
   return exports;
 }
 
@@ -78,15 +90,18 @@ async function main() {
       const rhythm = start === 0 ? [3, 2, 1, 1, 1, 1, 1, 1, 1] : Array(size).fill(1);
       let sourceIndex = start;
       const usesNewLocation = batchIndex === 1;
+      const usesNewCharacter = batchIndex === 2;
       return { result: {
+        ...(usesNewCharacter ? { newCharacters: [{ name: "Tơ Vàng", description: "Golden squirrel", imagePrompt: "Stylized 3D golden squirrel on plain clean white studio background" }] } : {}),
         ...(usesNewLocation ? { newLocations: [{ name: "Hành lang", description: "Hành lang gỗ", imagePrompt: "Narrow wooden corridor with warm wall lamps, empty of people, no text" }] } : {}),
         scenes: rhythm.map((sourceWindows, sceneIdx) => {
           sourceIndex += sourceWindows;
           const location = usesNewLocation && sceneIdx === 0 ? "Hành lang" : "Sân";
+          const includeToVang = usesNewCharacter && sceneIdx === 0;
           return {
             sourceWindows,
             sourceVisuals: "Hình ảnh", sourceStory: "Nội dung", sourceRole: "Nhịp",
-            purpose: "Mục đích", action: `Cảnh ${sourceIndex}`, characters: ["Mai"], location,
+            purpose: "Mục đích", action: `Cảnh ${sourceIndex}`, characters: includeToVang ? ["Mai", "Tơ Vàng"] : ["Mai"], location,
             dialogueMode: "visual_led",
             actingBeat: "@Mai scans the package carefully.",
             blocking: "@Mai stands center facing camera.",
@@ -95,8 +110,8 @@ async function main() {
             eyelineAction: "@Mai looks toward the wooden gate.",
             sfx: "Footsteps on stone courtyard.", vfx: "none",
             continuityIn: "Trước cảnh", continuityOut: `Sau cảnh ${sourceIndex}`,
-            imagePrompt: `@Mai stands at ${location} holding a parcel, focused expression, 9:16 framing.`,
-            videoPrompt: `PRIMARY CAMERA COMBO: 02 Tracking Forward + Gentle Pan. @Mai walks steadily toward the door. End state: @Mai reaches the latch.`,
+            imagePrompt: `@Mai${includeToVang ? " and To Vang" : ""} stands at ${location} holding a parcel, focused expression, 9:16 framing.`,
+            videoPrompt: `PRIMARY CAMERA COMBO: 02 Tracking Forward + Gentle Pan. @Mai${includeToVang ? " and @ToVang" : ""} walks steadily toward the door. End state: @Mai reaches the latch.`,
             dialogue: [],
           };
         }),
@@ -117,6 +132,9 @@ async function main() {
   assert.equal(job.result.draft.visualStyle, "Warm & emotional");
   assert.equal(job.result.draft.contentGenre, "comedy");
   assert.ok(job.result.draft.locations.some((loc) => loc.name === "Hành lang"));
+  assert.ok(job.result.draft.characters.some((char) => char.name === "Tơ Vàng"));
+  assert.match(observed[0].prompt, /NHỊP CẢNH ĐA DẠNG & PHỐI HỢP 5s · 10s · 15s/);
+  assert.match(observed[0].prompt, /sourceWindows = 3/);
   assert.deepEqual(Array.from(job.result.windows.slice(0, 3), ({ duration }) => duration), [15, 10, 5]);
   assert.equal(job.result.draft.scenes.at(-1).action, "Cảnh 122");
   assert.equal(observed.length, 12);
@@ -133,12 +151,18 @@ async function main() {
   assert.match(observed.at(-1).prompt, /Sau cảnh 120/);
   const projects = [];
   const payloads = new Map();
+  const dramaPlanModule = load("drama-plan", {
+    "./image-scene-guidance": load("image-scene-guidance"),
+    "./ai-drama-reference-prompts": load("ai-drama-reference-prompts"),
+    "./visual-prompt-safety": visualPromptSafety,
+  });
   const projectModule = load("video-remake-project", {
     "./content-genres": contentGenres,
     "./visual-styles": visualStyles,
     "./video-remake": remake,
+    "./entity-name": entityName,
     "./continuity-qa": { buildContinuityQaReport: async () => ({}) },
-    "./drama-plan": { normalizeDramaPlan: (plan) => plan, dramaPlanSourceText: () => "Nguồn" },
+    "./drama-plan": dramaPlanModule,
     "./episode-locations": { reconcileEpisodeLocations: (locations, { scenes }) => ({ locations, scenes }) },
     "./episode-script-validation": load("episode-script-validation", {
       "./ai-drama-scene-timing": load("ai-drama-scene-timing"),
@@ -160,6 +184,9 @@ async function main() {
   const slug = await projectModule.createRemakeProject("test-user", job);
   assert.equal(await projectModule.createRemakeProject("test-user", job), slug);
   assert.equal(projects.length, 1);
+  assert.match(projects[0].sourceText, /A01 · .* · S001–S057/);
+  assert.match(projects[0].sourceText, /A02 · .* · S058–S117/);
+  assert.match(projects[0].sourceText, /A03 · .* · S118–S119/);
   assert.equal(projects[0].imageStyle, "Stylized 3D");
   assert.equal(projects[0].visualStyle, "Warm & emotional");
   assert.equal(projects[0].contentGenre, "comedy");
@@ -340,7 +367,349 @@ async function main() {
   assert.match(funnyScene.video_prompt, /SFX: 0\.0-1\.2s comedic pause/);
   assert.match(funnyScene.video_prompt, /VFX: 1\.9-2\.7s spiral golden dust burst/);
 
-  console.log("Passed 10-minute queue, newLocations, style/genre mapping, reference lock repair, funny silent SFX/VFX auto workflow and two-episode handoff.");
+  // Verify case-sensitive mentionedCanonicalCharacters false-positive guard (Vietnamese & English common words).
+  const canonical = ["Mai", "Yên", "Bình", "Nam", "Max", "Amber", "Shadow"];
+  assert.deepEqual(
+    Array.from(queue.mentionedCanonicalCharacters("Trời sáng mai yên tâm đặt chiếc bình về phía nam.", canonical)),
+    [],
+  );
+  assert.deepEqual(
+    Array.from(queue.mentionedCanonicalCharacters("Camera tracks at max speed through warm amber light as a tree casts a shadow.", canonical)),
+    [],
+  );
+  assert.deepEqual(
+    Array.from(queue.mentionedCanonicalCharacters("Mai và @nam chạy qua sân cùng Max.", canonical)),
+    ["Mai", "Nam", "Max"],
+  );
+  assert.deepEqual(
+    Array.from(queue.mentionedCanonicalCharacters("Sợi tơ vàng óng ánh dưới nắng sớm.", ["Tơ Vàng", "Ánh Kim"])),
+    [],
+  );
+  assert.deepEqual(
+    Array.from(queue.mentionedCanonicalCharacters("To Vang leaps beside @AnhKim across the stone ledge.", ["Tơ Vàng", "Ánh Kim"])),
+    ["Tơ Vàng", "Ánh Kim"],
+  );
+
+  // Verify Docker PID-1 / dead-PID crash lock recovery, 8-sheet compactRetry preservation, sfx/vfx validation & full validateDraft repair.
+  const eightSheetWindows = remake.makeRemakeWindows(120, 5); // 24 windows = 8 sheets
+  const eightSheets = Array.from({ length: 8 }, (_, idx) => ({
+    imagePath: `eight-sheet-${idx + 1}`,
+    rows: eightSheetWindows.slice(idx * 3, idx * 3 + 3).map(({ sourceStart }, r) => ({
+      scene: idx * 3 + r + 1,
+      framesAt: [sourceStart + 0.5],
+    })),
+  }));
+  let edgeAttempt = 0;
+  const edgeImages = [];
+  const edgePrompts = [];
+  delete globalThis.storyAiRemake;
+  const edgeQueue = load("video-remake-worker", {
+    "./ai-drama-video-prompt-guidance": aiDramaGuidance,
+    "./content-genres": contentGenres,
+    "./visual-styles": visualStyles,
+    "./video-prompt-policy": videoPromptPolicy,
+    "./visual-prompt-safety": visualPromptSafety,
+    "./dialogue-pacing": dialoguePacing,
+    "./data-directory": { dataPath: (...parts) => path.join(root, ...parts) },
+    "./video-remake": remake,
+    "./entity-name": entityName,
+    "./video-remake-media": { prepareRemakeMedia: async () => ({
+      windows: eightSheetWindows,
+      sheets: eightSheets,
+      aspectRatio: "16:9",
+      transcript: { kind: "silent", text: "" },
+      audioCues: [],
+    }) },
+    "./coding-agent-cli": { generateWithCodingAgent: async (_agent, prompt, { imagePaths }) => {
+      edgeAttempt += 1;
+      edgeImages.push(Array.from(imagePaths));
+      edgePrompts.push(prompt);
+      if (edgeAttempt === 1) {
+        const err = new Error("AGENT_OUTPUT_INVALID_JSON");
+        err.name = "AGENT_OUTPUT_INVALID_JSON";
+        throw err;
+      }
+      const makeEightScenes = (overrideFirst = {}) => Array.from({ length: 8 }, (_, idx) => ({
+        sourceWindows: 3,
+        sourceVisuals: "Hình", sourceStory: "Truyện", sourceRole: "Beat",
+        purpose: "Mục đích", action: `Barnaby bật nhảy nhịp ${idx + 1}`,
+        characters: ["Barnaby"], location: "Canyon",
+        dialogueMode: "visual_led",
+        actingBeat: "Barnaby leaps playfully.", blocking: "Barnaby center.",
+        shotSize: "Medium Shot", cameraMovement: "02 Tracking Forward + Gentle Pan",
+        eyelineAction: "Barnaby looks ahead.",
+        sfx: "1.0s soft sand thump.", vfx: "none",
+        continuityIn: "Tiếp đà", continuityOut: "Đáp xuống",
+        imagePrompt: "Barnaby crouches on Canyon sandstone rim, 16:9 Stylized 3D.",
+        videoPrompt: "PRIMARY CAMERA COMBO: 02 Tracking Forward + Gentle Pan. 0.0-15.0s: Barnaby bounds across the sandstone rim without speaking.",
+        dialogue: [],
+        ...(idx === 0 ? overrideFirst : {}),
+      }));
+      if (edgeAttempt === 2) {
+        // Trigger unknown location error -> must be caught by RemakeValidationError and repaired!
+        return {
+          result: {
+            ...plan,
+            dialoguePolicy: "silent_sfx",
+            characters: [{ name: "Barnaby", description: "Sóc", imagePrompt: "Squirrel on white background" }],
+            locations: [{ name: "Canyon", description: "Mỏm đá", imagePrompt: "Sandstone ledge, empty" }],
+            scenes: makeEightScenes({ location: "Địa điểm lạ" }),
+          },
+        };
+      }
+      if (edgeAttempt === 3) {
+        // Trigger out-of-bounds timestamp inside SFX -> must be caught by sfx/vfx validation and repaired!
+        return {
+          result: {
+            ...plan,
+            dialoguePolicy: "silent_sfx",
+            characters: [{ name: "Barnaby", description: "Sóc", imagePrompt: "Squirrel on white background" }],
+            locations: [{ name: "Canyon", description: "Mỏm đá", imagePrompt: "Sandstone ledge, empty" }],
+            scenes: makeEightScenes({ sfx: "18.0-22.0s loud boulder rumble." }),
+          },
+        };
+      }
+      return {
+        result: {
+          ...plan,
+          dialoguePolicy: "silent_sfx",
+          characters: [{ name: "Barnaby", description: "Sóc", imagePrompt: "Squirrel on white background" }],
+          locations: [{ name: "Canyon", description: "Mỏm đá", imagePrompt: "Sandstone ledge, empty" }],
+          scenes: makeEightScenes(),
+        },
+      };
+    } },
+  });
+
+  const edgeUser = "docker-pid1-user";
+  const edgeJobId = await edgeQueue.addRemakeJob(edgeUser, {
+    url: "https://example.test/eight.mp4", language: "vi", direction: "", transcript: "",
+    remakeMode: "faithful", dialoguePolicy: "auto", visualStyle: "", imageStyle: "", contentGenre: "", storySetting: "",
+  }, { agent: "codex", model: "", quality: "auto", speed: "standard" });
+  // Plant a fresh lock from a "previous Docker container boot" with the SAME PID (simulating PID 1 restart).
+  const edgeFolder = edgeQueue.remakeOwnerFolder(edgeUser);
+  const plantedLock = path.join(root, "video-remake", edgeFolder, `.${edgeJobId}.lock`);
+  fs.writeFileSync(plantedLock, JSON.stringify({
+    pid: process.pid,
+    bootId: "00000000-0000-4000-8000-000000000001",
+    startedAt: new Date().toISOString(),
+  }));
+  await edgeQueue.runRemakeQueue();
+  const edgeJob = await edgeQueue.getRemakeJob(edgeUser, edgeJobId);
+  assert.equal(edgeJob.status, "ready", edgeJob.error);
+  // compactRetry on 8 sheets must keep all 8 sheets!
+  assert.equal(edgeImages[0].length, 8);
+  assert.equal(edgeImages[1].length, 8);
+  assert.match(edgePrompts[2], /bối cảnh nằm ngoài danh sách chuẩn/);
+  assert.match(edgePrompts[3], /mốc thời gian trong videoPrompt sai/);
+
+  // Verify local upload stale .upload.lock recovery, updated options/agent on finishRemakeUpload, upload auto-cleanup on ready, and deleteRemakeJob cancellation.
+  delete globalThis.storyAiRemake;
+  let cancelableStarted;
+  const startedPromise = new Promise((resolve) => { cancelableStarted = resolve; });
+  const localWorker = load("video-remake-worker", {
+    "./ai-drama-video-prompt-guidance": aiDramaGuidance,
+    "./content-genres": contentGenres,
+    "./visual-styles": visualStyles,
+    "./video-prompt-policy": videoPromptPolicy,
+    "./visual-prompt-safety": visualPromptSafety,
+    "./dialogue-pacing": dialoguePacing,
+    "./data-directory": { dataPath: (...parts) => path.join(root, ...parts) },
+    "./video-remake": remake,
+    "./entity-name": entityName,
+    "./video-remake-media": {
+      prepareRemakeMedia: async (input, _work, _dl, localSourceFile, signal) => {
+        if (localSourceFile) assert.ok(fs.existsSync(localSourceFile));
+        if (input.direction === "cancel-me") {
+          cancelableStarted();
+          await new Promise((_, reject) => {
+            signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+          });
+        }
+        return {
+          windows: funnyWindows,
+          sheets: [{ imagePath: "local-1", rows: [{ scene: 1, framesAt: [0.5] }] }],
+          aspectRatio: "9:16",
+          transcript: { kind: "silent", text: "" },
+          audioCues: [],
+        };
+      },
+    },
+    "./coding-agent-cli": {
+      generateWithCodingAgent: async (agentName, prompt) => {
+        if (prompt.includes("timeout-me")) {
+          const err = new Error("Command timed out");
+          err.name = "AGENT_RUN_TIMEOUT";
+          throw err;
+        }
+        assert.equal(agentName, "claude");
+        return {
+          result: {
+            ...plan,
+            dialoguePolicy: "silent_sfx",
+            characters: [{ name: "Barnaby", description: "Sóc", imagePrompt: "Squirrel on white background" }],
+            locations: [{ name: "Canyon", description: "Mỏm đá", imagePrompt: "Sandstone ledge, empty" }],
+            scenes: [{
+              sourceWindows: 1,
+              sourceVisuals: "Hình", sourceStory: "Truyện", sourceRole: "Hook",
+              purpose: "Mục đích", action: "Barnaby nhảy qua đá",
+              characters: ["Barnaby"], location: "Canyon",
+              dialogueMode: "visual_led",
+              actingBeat: "Barnaby jumps.", blocking: "Center.",
+              shotSize: "Medium", cameraMovement: "02 Tracking Forward + Gentle Pan",
+              eyelineAction: "Forward.", sfx: "0.5s sand thump.", vfx: "none",
+              continuityIn: "Đầu", continuityOut: "Cuối",
+              imagePrompt: "Barnaby on Canyon, 9:16 Stylized 3D.",
+              videoPrompt: "PRIMARY CAMERA COMBO: 02 Tracking Forward + Gentle Pan. 0.0-5.0s: Barnaby hops across the ledge without speaking.",
+              dialogue: [],
+            }],
+          },
+        };
+      },
+    },
+  });
+  const uploadModule = load("video-remake-upload", {
+    "./data-directory": { dataPath: (...parts) => path.join(root, ...parts) },
+    "./video-remake-worker": localWorker,
+  });
+  const uploadOwner = "upload-user";
+  const uploadFolder = localWorker.remakeOwnerFolder(uploadOwner);
+  const payloadBytes = Buffer.from("fake-mp4-video-bytes");
+  const begun = await uploadModule.beginRemakeUpload(uploadOwner, "clip.mp4", payloadBytes.length, {
+    language: "vi", direction: "initial", transcript: "", remakeMode: "faithful",
+    dialoguePolicy: "auto", visualStyle: "", imageStyle: "", contentGenre: "", storySetting: "",
+  }, { agent: "codex", model: "", quality: "auto", speed: "standard" });
+
+  // Plant a stale .upload.lock from a crashed PID and ensure writeRemakeUploadChunk recovers immediately.
+  const staleUploadLock = path.join(root, "video-remake", uploadFolder, "uploads", begun.uploadId, ".upload.lock");
+  fs.writeFileSync(staleUploadLock, JSON.stringify({ pid: 99999999, bootId: "dead", startedAt: new Date().toISOString() }));
+  const chunkRes = await uploadModule.writeRemakeUploadChunk(uploadOwner, begun.uploadId, 0, payloadBytes);
+  assert.equal(chunkRes.kind, "ok");
+
+  // Finish upload with updated options + updated agent (claude instead of codex).
+  const finished = await uploadModule.finishRemakeUpload(uploadOwner, begun.uploadId, {
+    options: {
+      language: "en", direction: "updated-direction", transcript: "", remakeMode: "creative",
+      dialoguePolicy: "silent_sfx", visualStyle: "", imageStyle: "", contentGenre: "", storySetting: "",
+    },
+    agent: { agent: "claude", model: "claude-sonnet", quality: "high", speed: "standard" },
+  });
+  assert.equal(finished.kind, "queued");
+  await localWorker.runRemakeQueue();
+  const completedLocalJob = await localWorker.getRemakeJob(uploadOwner, finished.id);
+  assert.equal(completedLocalJob.status, "ready", completedLocalJob.error);
+  assert.equal(completedLocalJob.input.language, "en");
+  assert.equal(completedLocalJob.input.direction, "updated-direction");
+  assert.equal(completedLocalJob.agent.agent, "claude");
+  // Upload directory must be cleaned up automatically once ready!
+  assert.equal(fs.existsSync(path.join(root, "video-remake", uploadFolder, "uploads", begun.uploadId)), false);
+
+  // Verify accurate timeout error message (not masked under login message).
+  const timeoutJobId = await localWorker.addRemakeJob(uploadOwner, {
+    url: "https://example.test/timeout.mp4", language: "vi", direction: "timeout-me", transcript: "",
+    remakeMode: "faithful", dialoguePolicy: "auto", visualStyle: "", imageStyle: "", contentGenre: "", storySetting: "",
+  }, { agent: "claude", model: "", quality: "auto", speed: "standard" });
+  await localWorker.runRemakeQueue();
+  const timeoutJob = await localWorker.getRemakeJob(uploadOwner, timeoutJobId);
+  assert.equal(timeoutJob.status, "failed");
+  assert.match(timeoutJob.error, /quá thời gian chờ/);
+
+  // Verify deleteRemakeJob aborts an in-flight local upload job and deletes json, lock, and upload directory.
+  const cancelBegun = await uploadModule.beginRemakeUpload(uploadOwner, "cancel.mp4", payloadBytes.length, {
+    language: "vi", direction: "cancel-me", transcript: "", remakeMode: "faithful",
+    dialoguePolicy: "auto", visualStyle: "", imageStyle: "", contentGenre: "", storySetting: "",
+  }, { agent: "claude", model: "", quality: "auto", speed: "standard" });
+  await uploadModule.writeRemakeUploadChunk(uploadOwner, cancelBegun.uploadId, 0, payloadBytes);
+  const cancelQueued = await uploadModule.finishRemakeUpload(uploadOwner, cancelBegun.uploadId);
+  const runningPromise = localWorker.runRemakeQueue();
+  await startedPromise;
+  const deleteStatus = await localWorker.deleteRemakeJob(uploadOwner, cancelQueued.id);
+  assert.equal(deleteStatus, "deleted");
+  await runningPromise;
+  assert.equal(await localWorker.getRemakeJob(uploadOwner, cancelQueued.id), undefined);
+  assert.equal(fs.existsSync(path.join(root, "video-remake", uploadFolder, "uploads", cancelBegun.uploadId)), false);
+  assert.equal(fs.existsSync(path.join(root, "video-remake", uploadFolder, `.${cancelQueued.id}.lock`)), false);
+
+  // Verify true parallel execution when a second job is added while a first job is already analyzing.
+  let activeParallelCount = 0;
+  let peakParallelCount = 0;
+  let releaseBothJobs;
+  const bothGate = new Promise((resolve) => { releaseBothJobs = resolve; });
+  let firstEnteredResolve;
+  const firstEntered = new Promise((resolve) => { firstEnteredResolve = resolve; });
+  let secondEnteredResolve;
+  const secondEntered = new Promise((resolve) => { secondEnteredResolve = resolve; });
+  const parallelWorker = load("video-remake-worker", {
+    "./ai-drama-video-prompt-guidance": aiDramaGuidance,
+    "./content-genres": contentGenres,
+    "./visual-styles": visualStyles,
+    "./video-prompt-policy": videoPromptPolicy,
+    "./visual-prompt-safety": visualPromptSafety,
+    "./dialogue-pacing": dialoguePacing,
+    "./data-directory": { dataPath: (...parts) => path.join(root, "parallel-data", ...parts) },
+    "./video-remake": remake,
+    "./entity-name": entityName,
+    "./video-remake-media": {
+      prepareRemakeMedia: async () => ({
+        windows: remake.makeRemakeWindows(5, 5),
+        sheets: [{ imagePath: "s-1", rows: [{ scene: 1, framesAt: [0.5] }] }],
+        aspectRatio: "16:9",
+        transcript: { kind: "silent", text: "" },
+        audioCues: [],
+      }),
+    },
+    "./coding-agent-cli": {
+      generateWithCodingAgent: async () => {
+        activeParallelCount += 1;
+        if (activeParallelCount > peakParallelCount) peakParallelCount = activeParallelCount;
+        if (activeParallelCount === 1) firstEnteredResolve();
+        if (activeParallelCount === 2) secondEnteredResolve();
+        await bothGate;
+        activeParallelCount -= 1;
+        return {
+          result: {
+            ...plan,
+            dialoguePolicy: "silent_sfx",
+            characters: [{ name: "Barnaby", description: "Sóc", imagePrompt: "Squirrel on white background" }],
+            locations: [{ name: "Canyon", description: "Mỏm đá", imagePrompt: "Sandstone ledge, empty" }],
+            scenes: [{
+              sourceWindows: 1,
+              sourceVisuals: "Hình", sourceStory: "Truyện", sourceRole: "Hook",
+              purpose: "Mục đích", action: "Barnaby nhảy qua đá",
+              characters: ["Barnaby"], location: "Canyon",
+              dialogueMode: "visual_led",
+              actingBeat: "Barnaby jumps.", blocking: "Center.",
+              shotSize: "Medium", cameraMovement: "02 Tracking Forward + Gentle Pan",
+              eyelineAction: "Forward.", sfx: "0.5s sand thump.", vfx: "none",
+              continuityIn: "Đầu", continuityOut: "Cuối",
+              imagePrompt: "Barnaby on Canyon, 16:9 Stylized 3D.",
+              videoPrompt: "PRIMARY CAMERA COMBO: 02 Tracking Forward + Gentle Pan. 0.0-5.0s: Barnaby hops across the ledge without speaking.",
+              dialogue: [],
+            }],
+          },
+        };
+      },
+    },
+  });
+  const pJob1 = await parallelWorker.addRemakeJob("parallel-user", {
+    url: "https://example.test/p1.mp4", language: "vi", direction: "", transcript: "",
+    remakeMode: "faithful", dialoguePolicy: "auto", visualStyle: "", imageStyle: "", contentGenre: "", storySetting: "",
+  }, { agent: "claude", model: "", quality: "auto", speed: "standard" });
+  const pQueuePromise = parallelWorker.runRemakeQueue();
+  await firstEntered;
+  const pJob2 = await parallelWorker.addRemakeJob("parallel-user", {
+    url: "https://example.test/p2.mp4", language: "vi", direction: "", transcript: "",
+    remakeMode: "faithful", dialoguePolicy: "auto", visualStyle: "", imageStyle: "", contentGenre: "", storySetting: "",
+  }, { agent: "claude", model: "", quality: "auto", speed: "standard" });
+  parallelWorker.runRemakeQueue();
+  await secondEntered;
+  assert.equal(peakParallelCount, 2);
+  releaseBothJobs();
+  await pQueuePromise;
+  assert.equal((await parallelWorker.getRemakeJob("parallel-user", pJob1)).status, "ready");
+  assert.equal((await parallelWorker.getRemakeJob("parallel-user", pJob2)).status, "ready");
+
+  console.log("Passed 10-minute queue, PID/bootId lock recovery, case-sensitive character matching, sfx/vfx & full draft repair, upload cleanup, job cancellation and episode range handoff.");
 }
 
 main().catch((error) => { console.error(error); process.exitCode = 1; })

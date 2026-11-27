@@ -39,7 +39,8 @@ export function classifyRemakeSource(url: URL) {
     if ((["vm.tiktok.com", "vt.tiktok.com"].includes(host) && /^\/[\w-]+\/?$/u.test(pathname))
       || /^\/t\/[\w-]+\/?$/u.test(pathname)) return source("tiktok", `https://${host}${pathname}`, true);
     const video = pathname.match(/^\/(?:@[\w.-]+|share|embed)\/video\/\d+\/?$/u)?.[0]
-      || pathname.match(/^\/embed(?:\/v2)?\/(\d+)\/?$/u)?.[1];
+      || pathname.match(/^\/embed(?:\/v2)?\/(\d+)\/?$/u)?.[1]
+      || pathname.match(/^\/v\/(\d+)(?:\.html)?\/?$/u)?.[1];
     if (!video) return invalid("TikTok");
     return source("tiktok", `https://www.tiktok.com${video.startsWith("/") ? video : `/share/video/${video}`}`);
   }

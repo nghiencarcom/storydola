@@ -1,6 +1,7 @@
 import { normalizeContentGenre, normalizeStorySetting } from "./content-genres";
 import { buildContinuityQaReport } from "./continuity-qa";
 import { dramaPlanSourceText, normalizeDramaPlan } from "./drama-plan";
+import { normalizeEntityName } from "./entity-name";
 import { reconcileEpisodeLocations } from "./episode-locations";
 import { validateEpisode } from "./episode-script-validation";
 import { MAX_PROJECT_CHUNK_SIZE, type ProjectChunk } from "./project-types";
@@ -69,6 +70,7 @@ export async function createRemakeProject(owner: string, job: RemakeJob & { resu
         projectTitle: draft.title, brief: job.input.direction || draft.logline,
         durationMinutes, chunkSize, language: job.input.language,
         totalScenes: windows.length,
+        episodeRanges: episodePlan.map(({ sceneStart, sceneEnd }) => ({ sceneStart, sceneEnd })),
       }),
     }, slug);
     const timestamp = project.createdAt;
@@ -90,15 +92,24 @@ export async function createRemakeProject(owner: string, job: RemakeJob & { resu
     project.scriptModel = job.agent.model ? `${agentLabel} · ${job.agent.model}` : agentLabel;
     project.characters = dramaPlan.characters.map((item, index) => ({ ...item, ...referenceFields, id: `char-ai-${index + 1}` }));
     project.locations = dramaPlan.locations.map((item, index) => ({ ...item, ...referenceFields, id: `loc-ai-${index + 1}` }));
-    const characterIds = new Map(project.characters.map(({ name, id }) => [name, id]));
-    const locationDescriptions = new Map(draft.locations.map(({ name, description, imagePrompt }) => [name, description || imagePrompt]));
+    const characterIds = new Map(project.characters.map(({ name, id }) => [normalizeEntityName(name), id]));
+    const canonicalCharacterNames = new Map(project.characters.map(({ name }) => [normalizeEntityName(name), name]));
+    const locationDescriptions = new Map(project.locations.map(({ name, description, imagePrompt }) => [normalizeEntityName(name), description || imagePrompt]));
+    const canonicalLocationNames = new Map(project.locations.map(({ name }) => [normalizeEntityName(name), name]));
     const episodeStarts = new Set(episodePlan.map(({ sceneStart }) => sceneStart));
     const episodeEnds = new Set(episodePlan.map(({ sceneEnd }) => sceneEnd));
     const scenes = draft.scenes.map((scene, index) => {
       const sceneNum = index + 1;
       const window = windows[index];
       const dialogueMode = scene.dialogueMode || (scene.dialogue.length ? "dialogue_led" : "visual_led");
-      const primarySpeaker = scene.dialogue[0]?.speaker || "";
+      const rawPrimarySpeaker = scene.dialogue[0]?.speaker || "";
+      const primarySpeaker = rawPrimarySpeaker ? (canonicalCharacterNames.get(normalizeEntityName(rawPrimarySpeaker)) || rawPrimarySpeaker) : "";
+      const resolvedCharacters = scene.characters.map((name) => canonicalCharacterNames.get(normalizeEntityName(name)) || name);
+      const resolvedCharacterIds = scene.characters
+        .map((name) => characterIds.get(normalizeEntityName(name)))
+        .filter((id): id is string => Boolean(id));
+      const locationKey = normalizeEntityName(scene.location);
+      const resolvedLocationName = canonicalLocationNames.get(locationKey) || scene.location;
       const act = sceneNum === 1 || episodeStarts.has(sceneNum)
         ? "Opening hook"
         : sceneNum === draft.scenes.length
@@ -114,13 +125,20 @@ export async function createRemakeProject(owner: string, job: RemakeJob & { resu
         dialogue_mode: dialogueMode,
         speaker_character: dialogueMode === "visual_led" && scene.dialogue.length === 0 ? "NONE" : primarySpeaker,
         dialogue_or_voiceover: scene.dialogue.map(({ text }) => text).join("\n"),
-        dialogue_segments: scene.dialogue.map(({ speaker, text, start, end }) => ({
-          speaker_character: speaker, speaker_character_id: characterIds.get(speaker), text, start_sec: start, end_sec: end,
-        })),
+        dialogue_segments: scene.dialogue.map(({ speaker, text, start, end }) => {
+          const speakerKey = normalizeEntityName(speaker);
+          return {
+            speaker_character: canonicalCharacterNames.get(speakerKey) || speaker,
+            speaker_character_id: characterIds.get(speakerKey),
+            text,
+            start_sec: start,
+            end_sec: end,
+          };
+        }),
         voiceover_target_sec: scene.dialogue.at(-1)?.end || 0,
-        characters: scene.characters, character_ids: scene.characters.map((name) => characterIds.get(name)!),
-        location_name: scene.location,
-        location_description: locationDescriptions.get(scene.location) || "",
+        characters: resolvedCharacters, character_ids: resolvedCharacterIds,
+        location_name: resolvedLocationName,
+        location_description: locationDescriptions.get(locationKey) || "",
         image_keyword: englishStockKeywords(scene.imagePrompt, scene.location),
         video_keyword: englishStockKeywords(scene.actingBeat || scene.videoPrompt, scene.action),
         image_prompt: scene.imagePrompt, video_prompt: composeRemakeVideoPrompt(scene),

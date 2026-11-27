@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint-disable @typescript-eslint/no-require-imports */
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -83,6 +84,44 @@ const WHISPER_LOGO = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 1
   <rect x="14" y="14" width="100" height="100" rx="24" fill="#064E3B" stroke="#34D399" stroke-width="4"/>
   <path d="M34 64v12M48 46v36M64 34v60M80 48v32M94 58v16" stroke="#34D399" stroke-width="8" stroke-linecap="round"/>
 </svg>
+`;
+
+const THREE_GSAP_MANIFEST = {
+  name: "threejs-gsap-fx",
+  displayName: "Three.js, GSAP & Pro Video FX",
+  version: "1.0.0",
+  description:
+    "3D Device/Product Stages with Three.js & @remotion/three, Aurora WebGL/Canvas Shaders, GSAP + @remotion/paths hand-drawn spotlight annotations, and cinematic motion blur.",
+  logo: "assets/logo.svg",
+  suggestedPrompts: [
+    "Render a 3D floating product or browser stage with Three.js and Aurora shader",
+    "Add an animated hand-drawn spotlight circle and Vox highlighter to a video",
+    "Apply camera motion blur, freeze-frame flash, and GSAP elastic card reveals",
+  ],
+  author: {
+    name: "StoryAI",
+  },
+};
+
+const THREE_GSAP_LOGO = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <rect x="14" y="14" width="100" height="100" rx="24" fill="#0F172A" stroke="#38BDF8" stroke-width="4"/>
+  <polygon points="64,28 96,84 32,84" fill="none" stroke="#38BDF8" stroke-width="6" stroke-linejoin="round"/>
+  <polygon points="64,46 82,78 46,78" fill="none" stroke="#FBBF24" stroke-width="5" stroke-linejoin="round"/>
+  <circle cx="64" cy="66" r="5" fill="#34D399"/>
+</svg>
+`;
+
+const THREE_GSAP_SKILL_MD = `---
+name: threejs-video-fx
+description: >-
+  Author deterministic 3D scenes, floating device/product stages, Aurora shaders,
+  GSAP/@remotion/paths spotlight annotations, and cinematic motion blur in StoryAI.
+---
+
+# Three.js, GSAP & Pro Video FX Workflow
+
+- Drive all Three.js meshes, Aurora shaders, and SVG stroke evolutions deterministically from frame time (\`frame / fps\` or \`var(--hf-progress)\`).
+- Use \`spotlight_box\` for hand-drawn circles/boxes + pointer arrows, \`highlighter\` for Vox neon marker sweeps, \`freeze_frame\` for camera-shutter flash + HUD brackets, and \`stage-3d\` / \`aurora-3d\` for 3D perspective stages.
 `;
 
 const WHISPER_SKILL_MD = `---
@@ -277,6 +316,19 @@ function ensureRemotionPlugin(pluginsDir, force, log) {
   }
 }
 
+function ensureThreeGsapPlugin(pluginsDir, force, log) {
+  const targetDir = path.join(pluginsDir, "threejs-gsap-fx");
+  if (!force && isPluginHealthy(targetDir, "threejs-video-fx")) {
+    return { id: "threejs-gsap-fx", action: "present" };
+  }
+  const skillDir = path.join(targetDir, "skills", "threejs-video-fx");
+  fs.mkdirSync(skillDir, { recursive: true });
+  fs.writeFileSync(path.join(skillDir, "SKILL.md"), THREE_GSAP_SKILL_MD, "utf8");
+  writePluginBundleMeta(targetDir, THREE_GSAP_MANIFEST, THREE_GSAP_LOGO);
+  log("[antigravity-plugins] Installed Three.js, GSAP & Pro Video FX plugin.");
+  return { id: "threejs-gsap-fx", action: "installed" };
+}
+
 function ensureAntigravityVideoPlugins(options = {}) {
   const pluginsDir = options.pluginsDir || defaultPluginsDirectory();
   const force = Boolean(options.force);
@@ -286,6 +338,7 @@ function ensureAntigravityVideoPlugins(options = {}) {
     fs.mkdirSync(pluginsDir, { recursive: true });
     const results = [
       ensureWhisperPlugin(pluginsDir, force, log),
+      ensureThreeGsapPlugin(pluginsDir, force, log),
       ensureHyperframesPlugin(pluginsDir, force, log),
       ensureRemotionPlugin(pluginsDir, force, log),
     ];

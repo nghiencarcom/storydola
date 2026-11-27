@@ -97,17 +97,21 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       let status = 200;
 
       if (range) {
-        const match = range.match(/^bytes=(\d*)-(\d*)$/u);
-        if (match) {
-          if (!match[1] && match[2]) {
-            const suffix = Number(match[2]);
-            start = Math.max(0, details.size - suffix);
-          } else {
-            if (match[1]) start = Number(match[1]);
-            if (match[2]) end = Math.min(details.size - 1, Number(match[2]));
-          }
-          if (start <= end && start < details.size) status = 206;
+        const match = range.trim().match(/^bytes=(\d*)-(\d*)$/u);
+        if (!match || (!match[1] && !match[2])) {
+          return new NextResponse(null, { status: 416, headers: { "Content-Range": `bytes */${details.size}` } });
         }
+        if (!match[1] && match[2]) {
+          const suffix = Number(match[2]);
+          if (!Number.isFinite(suffix) || suffix <= 0 || details.size === 0) {
+            return new NextResponse(null, { status: 416, headers: { "Content-Range": `bytes */${details.size}` } });
+          }
+          start = Math.max(0, details.size - suffix);
+        } else {
+          start = Number(match[1]);
+          if (match[2]) end = Math.min(details.size - 1, Number(match[2]));
+        }
+        if (start <= end && start < details.size) status = 206;
       }
 
       if (start > end || start >= details.size) {
@@ -129,9 +133,27 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     }
   }
 
+  const rendersDir = path.join(jobDir, "renders");
+  let resolvedRenderPath: string | undefined;
+  if (job.render?.status === "ready") {
+    const deterministicMp4 = path.join(rendersDir, `auto-edit-${job.id}.mp4`);
+    if (job.render.outputPath) {
+      const candidate = path.resolve(jobDir, job.render.outputPath);
+      const rel = path.relative(rendersDir, candidate);
+      if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) {
+        const exists = await stat(candidate).then((s) => s.isFile()).catch(() => false);
+        resolvedRenderPath = exists ? candidate : deterministicMp4;
+      } else {
+        resolvedRenderPath = deterministicMp4;
+      }
+    } else {
+      resolvedRenderPath = deterministicMp4;
+    }
+  }
+
   return renderFileResponse(request, {
-    localPath: job.render?.outputPath,
-    outputRoot: path.join(jobDir, "renders"),
+    localPath: resolvedRenderPath,
+    outputRoot: rendersDir,
     kind: "video",
     filenameBase: job.edl?.title || `auto-edit-${job.id}`,
     missingMessage: "Video MP4 chưa được xuất hoặc đang trong quá trình render.",

@@ -67,9 +67,11 @@ export async function buildContinuityQaReport(project: StoryProject): Promise<Co
   }
 
   const ids = new Set<string>();
+  const isAiDrama = project.presetId === "ai-drama";
   let orderOkay = true;
   let timingOkay = true;
   let fieldsOkay = true;
+  let previousEnd = 0;
   for (let index = 0; index < scenes.length; index += 1) {
     const scene = recordValue(scenes[index]);
     const id = String(scene.id || `S${String(index + 1).padStart(3, "0")}`);
@@ -91,11 +93,14 @@ export async function buildContinuityQaReport(project: StoryProject): Promise<Co
       timingOkay = false;
       issue(issues, { code: "timing", severity: "fail", sceneId: id, message: `${id} có thời lượng không hợp lệ hoặc vượt ${targetDuration}s.` });
     }
-    const expectedStart = index * targetDuration;
+    const expectedStart = isAiDrama ? (index === 0 ? 0 : previousEnd) : index * targetDuration;
     if (start !== undefined && Math.abs(start - expectedStart) > 0.6) {
       timingOkay = false;
       issue(issues, { code: "timeline_gap", severity: "warning", sceneId: id, message: `${id} bắt đầu ở ${start.toFixed(1)}s thay vì khoảng ${expectedStart.toFixed(1)}s; renderer sẽ chuẩn hóa lại timeline.` });
     }
+    if (end !== undefined) previousEnd = end;
+    else if (duration !== undefined) previousEnd = expectedStart + duration;
+    else previousEnd = expectedStart + targetDuration;
 
     const continuityIn = textValue(scene, "continuity_in", "continuityIn");
     const continuityOut = textValue(scene, "continuity_out", "continuityOut");

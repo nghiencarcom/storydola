@@ -4,13 +4,33 @@ function referenceFrameInstruction(aspectRatio: string) {
   return `OUTPUT FRAME: Render the complete reference image in exactly ${aspectRatio}. This required reference frame overrides any different aspect ratio or orientation mentioned earlier. Fit every required view inside the frame without cropping.`;
 }
 
-function characterViewBlock(aspectRatio: string) {
+export function isNaturalCreatureCharacterPrompt(prompt: string) {
+  const cleaned = prompt
+    .replace(/\n\s*CHARACTER REFERENCE SHEET — REQUIRED THREE CAMERA VIEWS[\s\S]*$/i, "")
+    .trim();
+  if (!cleaned) return false;
+  const explicitHuman = /\b(?:human|person|woman|man|girl|boy|lady|gentleman|teenager|elderly|grandmother|grandfather|chef|courier|detective|officer|doctor|student|villager|người|phụ nữ|đàn ông|cô gái|chàng trai|bà cụ|ông cụ)\b/iu.test(cleaned)
+    && !/\b(?:without\s+(?:human\s+)?clothes|no\s+(?:human\s+)?clothes|non-?human|natural\s+\w+\s+anatomy|standing\s+(?:naturally\s+)?on\s+four\s+paws|quadruped(?:al)?)\b/iu.test(cleaned);
+  if (explicitHuman) return false;
+  return /\b(?:natural\s+\w+\s+anatomy|standing\s+(?:naturally\s+)?on\s+four\s+paws|on\s+all\s+fours|quadruped(?:al)?|bipedal\s+(?:creature|dinosaur|reptile|beast|monster)|canine|feline|felid|equine|bovine|ursine|ceratopsian|proboscidean|theropod|sauropod|crustacean|dinosaur|t-?rex|tyrannosaurus|triceratops|spinosaurus|velociraptor|raptor|ankylosaurus|stegosaurus|brachiosaurus|allosaurus|pterosaur|mammoth|mastodon|smilodon|megalodon|mosasaurus|plesiosaur|kaiju|monster|beast|dragon|creature|tiger|lion|leopard|panther|jaguar|cheetah|sabertooth|gorilla|orangutan|gigantopithecus|ape|chimp|mandrill|baboon|monkey|bear|grizzly|polar\s+bear|panda|wolf|hound|dog|puppy|bulldog|rottweiler|retriever|husky|malamute|shepherd|mastiff|doberman|terrier|beagle|poodle|corgi|shiba|akita|chihuahua|pug|dachshund|dalmatian|collie|spaniel|shar[- ]?pei|greyhound|mutt|ridgeback|cat|kitten|tabby|calico|siamese|fox|squirrel|rabbit|hare|raccoon|badger|otter|beaver|boar|warthog|pig|hog|bull|buffalo|bison|rhino|elephant|hippo|horse|stallion|pony|donkey|deer|stag|moose|elk|camel|goat|sheep|ram|kangaroo|koala|sloth|pangolin|crocodile|alligator|lizard|turtle|tortoise|frog|toad|serpent|snake|shark|whale|orca|dolphin|seal|walrus|octopus|crab|lobster|scorpion|spider|eagle|hawk|falcon|owl|crow|raven|parrot|penguin|swan|rooster|chicken|hen|duck|goose|khủng\s+long|voi\s+ma\s+mút|quái\s+thú|cự\s+thú|mãnh\s+thú|hổ|sư\s+tử|báo|khỉ\s+đột|đười\s+ươi|gấu|sói|chó|cún|mèo|sóc|thỏ|ngựa|trâu|bò|voi|cá\s+sấu|cá\s+mập|cua|tôm\s+hùm|bọ\s+cạp|đại\s+bàng)\b/iu.test(cleaned);
+}
+
+function characterViewBlock(aspectRatio: string, isCreature = false) {
   const [width, height] = aspectRatio.split(":").map(Number);
   const layout = width > height
     ? "arranged horizontally in one row"
     : width < height
       ? "stacked vertically in one column"
       : "arranged in a clear three-panel 2×2 composition: front view in the upper-left cell, back view in the upper-right cell, and one wide portrait spanning both cells of the bottom row";
+  if (isCreature) {
+    return `CHARACTER REFERENCE SHEET — REQUIRED THREE CAMERA VIEWS.
+Create one clean reference sheet on a plain white or neutral background, ${layout}. The sheet contains exactly three panels and exactly one creature/animal subject repeated across those panels:
+1. FRONT VIEW: full body, facing the camera, complete anatomy visible from head to paws/claws/tail.
+2. BACK/THREE-QUARTER REAR VIEW: full body showing dorsal markings, spine/crest, limbs and tail clearly.
+3. PORTRAIT: one front-facing close-up of the head, snout/jaw, eyes, horns/ears and neck markings, occupying the wide bottom panel.
+Keep the exact same species anatomy, head structure, fur/scale/hide texture, color pattern, scars/markings, body proportions and any explicitly specified collar or gear in every view. Do NOT anthropomorphize into a human or add human clothing, shirts, pants or footwear unless explicitly stated in the character description. Use grounded natural stances, consistent scale and even studio lighting. Keep the three panels distinct and fully inside the frame. Do not add a fourth view, extra subject, scene backdrop, text, labels, logos or watermark.
+${referenceFrameInstruction(aspectRatio)}`;
+  }
   return `CHARACTER REFERENCE SHEET — REQUIRED THREE CAMERA VIEWS.
 Create one clean reference sheet on a plain white or neutral background, ${layout}. The sheet contains exactly three panels and exactly one person repeated across those panels:
 1. FRONT VIEW: full body, facing the camera, head to toe visible.
@@ -46,7 +66,7 @@ function cleanBasePrompt(prompt: string, kind: "character" | "location", name: s
 
 export function characterReferencePrompt(name: string, prompt: string, aspectRatio = PROFILE_REFERENCE_ASPECT_RATIO) {
   const base = cleanBasePrompt(prompt, "character", name);
-  const block = characterViewBlock(aspectRatio);
+  const block = characterViewBlock(aspectRatio, isNaturalCreatureCharacterPrompt(base));
   return checkedReferencePrompt(base, block);
 }
 
