@@ -124,6 +124,19 @@ description: >-
 - Use \`spotlight_box\` for hand-drawn circles/boxes + pointer arrows, \`highlighter\` for Vox neon marker sweeps, \`freeze_frame\` for camera-shutter flash + HUD brackets, and \`stage-3d\` / \`aurora-3d\` for 3D perspective stages.
 `;
 
+const GSAP_ANNOTATIONS_SKILL_MD = `---
+name: gsap-motion-annotations
+description: >-
+  Author editorial annotations (hand-drawn red circles, Vox neon highlighters, curved pointer arrows),
+  GSAP elastic kinetic typography, freeze-frame shutter flashes, and @remotion/motion-blur transitions.
+---
+
+# GSAP, @remotion/paths & Motion-Blur Editorial Annotations
+
+- Animate SVG \`strokeDashoffset\` deterministically over the entrance window for hand-drawn circles, rounded spotlight boxes, and curved pointer arrows.
+- Pair \`highlighter\` wipes with normalized \`[0..1]\` coordinates and \`freeze_frame\` camera-shutter flashes with HUD corner brackets.
+`;
+
 const WHISPER_SKILL_MD = `---
 name: whisper-auto-edit
 description: >-
@@ -177,19 +190,29 @@ function runGit(gitExecutable, args, cwd, timeout = 90_000) {
   return res.status === 0;
 }
 
+function replaceDirectorySafe(stagingDir, targetDir) {
+  fs.rmSync(targetDir, { recursive: true, force: true });
+  try {
+    fs.renameSync(stagingDir, targetDir);
+  } catch {
+    fs.cpSync(stagingDir, targetDir, { recursive: true, force: true });
+    fs.rmSync(stagingDir, { recursive: true, force: true });
+  }
+}
+
 async function fetchSkillsSubtree(ownerRepo, repoUrl, targetDir, sparsePaths, log) {
   const gitExecutable = resolveGitExecutable();
   if (gitExecutable) {
     // Fast sparse checkout first (~200 KB download instead of full repo)
     if (
       sparsePaths.length > 0 &&
-      runGit(gitExecutable, ["clone", "--depth", "1", "--filter=blob:none", "--sparse", repoUrl, targetDir], os.tmpdir(), 90_000) &&
+      runGit(gitExecutable, ["-c", "core.longpaths=true", "clone", "--depth", "1", "--filter=blob:none", "--sparse", repoUrl, targetDir], os.tmpdir(), 90_000) &&
       runGit(gitExecutable, ["sparse-checkout", "set", ...sparsePaths], targetDir, 45_000)
     ) {
       return true;
     }
     fs.rmSync(targetDir, { recursive: true, force: true });
-    if (runGit(gitExecutable, ["clone", "--depth", "1", repoUrl, targetDir], os.tmpdir(), 120_000)) {
+    if (runGit(gitExecutable, ["-c", "core.longpaths=true", "clone", "--depth", "1", repoUrl, targetDir], os.tmpdir(), 120_000)) {
       return true;
     }
     fs.rmSync(targetDir, { recursive: true, force: true });
@@ -256,7 +279,7 @@ async function ensureHyperframesPlugin(pluginsDir, force, log) {
     return { id: "hyperframes", action: "present" };
   }
 
-  const tmpClone = fs.mkdtempSync(path.join(os.tmpdir(), "storyai-hf-plugin-"));
+  const tmpClone = fs.mkdtempSync(path.join(os.tmpdir(), "hf-"));
   const stagingDir = `${targetDir}.staging-${process.pid}`;
   try {
     log("[antigravity-plugins] Downloading official HyperFrames skills from GitHub (heygen-com/hyperframes)...");
@@ -277,8 +300,7 @@ async function ensureHyperframesPlugin(pluginsDir, force, log) {
     }
 
     writePluginBundleMeta(stagingDir, HYPERFRAMES_MANIFEST, HYPERFRAMES_LOGO);
-    fs.rmSync(targetDir, { recursive: true, force: true });
-    fs.renameSync(stagingDir, targetDir);
+    replaceDirectorySafe(stagingDir, targetDir);
     log(`[antigravity-plugins] Installed HyperFrames plugin (${primaryCount + extraCount} skills).`);
     return { id: "hyperframes", action: "installed", skills: primaryCount + extraCount };
   } finally {
@@ -293,7 +315,7 @@ async function ensureRemotionPlugin(pluginsDir, force, log) {
     return { id: "remotion", action: "present" };
   }
 
-  const tmpClone = fs.mkdtempSync(path.join(os.tmpdir(), "storyai-remotion-plugin-"));
+  const tmpClone = fs.mkdtempSync(path.join(os.tmpdir(), "rm-"));
   const stagingDir = `${targetDir}.staging-${process.pid}`;
   try {
     log("[antigravity-plugins] Downloading official Remotion skills from GitHub (remotion-dev/skills)...");
@@ -310,8 +332,7 @@ async function ensureRemotionPlugin(pluginsDir, force, log) {
     }
 
     writePluginBundleMeta(stagingDir, REMOTION_MANIFEST, REMOTION_LOGO);
-    fs.rmSync(targetDir, { recursive: true, force: true });
-    fs.renameSync(stagingDir, targetDir);
+    replaceDirectorySafe(stagingDir, targetDir);
     log(`[antigravity-plugins] Installed Remotion plugin (${count} skills).`);
     return { id: "remotion", action: "installed", skills: count };
   } finally {
@@ -322,15 +343,31 @@ async function ensureRemotionPlugin(pluginsDir, force, log) {
 
 function ensureThreeGsapPlugin(pluginsDir, force, log) {
   const targetDir = path.join(pluginsDir, "threejs-gsap-fx");
-  if (!force && isPluginHealthy(targetDir, "threejs-video-fx")) {
+  if (
+    !force &&
+    isPluginHealthy(targetDir, "threejs-video-fx") &&
+    fs.existsSync(path.join(targetDir, "skills", "gsap-motion-annotations", "SKILL.md"))
+  ) {
     return { id: "threejs-gsap-fx", action: "present" };
   }
   const skillDir = path.join(targetDir, "skills", "threejs-video-fx");
+  const gsapSkillDir = path.join(targetDir, "skills", "gsap-motion-annotations");
   fs.mkdirSync(skillDir, { recursive: true });
+  fs.mkdirSync(gsapSkillDir, { recursive: true });
   fs.writeFileSync(path.join(skillDir, "SKILL.md"), THREE_GSAP_SKILL_MD, "utf8");
+  fs.writeFileSync(path.join(gsapSkillDir, "SKILL.md"), GSAP_ANNOTATIONS_SKILL_MD, "utf8");
   writePluginBundleMeta(targetDir, THREE_GSAP_MANIFEST, THREE_GSAP_LOGO);
   log("[antigravity-plugins] Installed Three.js, GSAP & Pro Video FX plugin.");
   return { id: "threejs-gsap-fx", action: "installed" };
+}
+
+async function runSafePluginStep(id, fn, log) {
+  try {
+    return await fn();
+  } catch (error) {
+    log(`[antigravity-plugins] Plugin ${id} setup warning: ${error instanceof Error ? error.message : String(error)}`);
+    return { id, action: "failed" };
+  }
 }
 
 async function ensureAntigravityVideoPlugins(options = {}) {
@@ -341,10 +378,10 @@ async function ensureAntigravityVideoPlugins(options = {}) {
   try {
     fs.mkdirSync(pluginsDir, { recursive: true });
     const results = [
-      ensureWhisperPlugin(pluginsDir, force, log),
-      ensureThreeGsapPlugin(pluginsDir, force, log),
-      await ensureHyperframesPlugin(pluginsDir, force, log),
-      await ensureRemotionPlugin(pluginsDir, force, log),
+      await runSafePluginStep("whisper-auto-edit", () => ensureWhisperPlugin(pluginsDir, force, log), log),
+      await runSafePluginStep("threejs-gsap-fx", () => ensureThreeGsapPlugin(pluginsDir, force, log), log),
+      await runSafePluginStep("hyperframes", () => ensureHyperframesPlugin(pluginsDir, force, log), log),
+      await runSafePluginStep("remotion", () => ensureRemotionPlugin(pluginsDir, force, log), log),
     ];
     return { ok: true, pluginsDir, results };
   } catch (error) {

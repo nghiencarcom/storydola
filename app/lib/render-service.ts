@@ -459,12 +459,24 @@ function escapeFilterPath(value: string) {
 }
 
 function renderFontPath() {
-  const candidates = [
-    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-    "/Library/Fonts/Arial Unicode.ttf",
-    "/System/Library/Fonts/HelveticaNeue.ttc",
-    "/System/Library/Fonts/Helvetica.ttc",
-  ];
+  const winFontsDir = path.join(process.env.WINDIR || "C:\\Windows", "Fonts");
+  const candidates = process.platform === "win32"
+    ? [
+      path.join(winFontsDir, "arial.ttf"),
+      path.join(winFontsDir, "segoeui.ttf"),
+      path.join(winFontsDir, "tahoma.ttf"),
+    ]
+    : process.platform === "darwin"
+      ? [
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/Library/Fonts/Arial Unicode.ttf",
+        "/System/Library/Fonts/HelveticaNeue.ttc",
+        "/System/Library/Fonts/Helvetica.ttc",
+      ]
+      : [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+      ];
   return candidates.find((candidate) => existsSync(candidate));
 }
 

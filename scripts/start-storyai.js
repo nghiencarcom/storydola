@@ -7,6 +7,7 @@ const { spawn, spawnSync } = require("node:child_process");
 const { ensureAntigravityVideoPlugins } = require("./ensure-antigravity-video-plugins.cjs");
 const {
   resolveGitExecutable,
+  resolveFfmpegExecutables,
   fetchRemoteBranchSha,
   downloadAndExtractGitHubArchive,
   syncExtractedArchiveToProject,
@@ -63,7 +64,7 @@ function ensureLocalConfig() {
   const examplePath = path.join(projectRoot, ".env.example");
   if (!fs.existsSync(envPath)) {
     fs.copyFileSync(examplePath, envPath);
-    fs.chmodSync(envPath, 0o600);
+    try { fs.chmodSync(envPath, 0o600); } catch {}
     log("Created .env from .env.example.");
   }
 
@@ -102,14 +103,57 @@ function readArchiveManifest() {
   }
 }
 
-function autoInstallGitEnabled() {
-  let value = process.env.STORYAI_AUTO_INSTALL_GIT;
+function findWingetExecutable() {
+  if (!isWindows) return "";
+  const localAppData = process.env.LOCALAPPDATA?.trim() || path.join(os.homedir(), "AppData", "Local");
+  const windowsAppsWinget = path.join(localAppData, "Microsoft", "WindowsApps", "winget.exe");
+  if (commandWorks("winget.exe", ["--version"])) return "winget.exe";
+  if (fs.existsSync(windowsAppsWinget) && commandWorks(windowsAppsWinget, ["--version"])) return windowsAppsWinget;
+  return "";
+}
+
+function findBrewExecutable() {
+  if (process.platform !== "darwin") return "";
+  const brewCandidates = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew", "brew"];
+  return brewCandidates.find((candidate) => (candidate === "brew" || fs.existsSync(candidate)) && commandWorks(candidate, ["--version"])) || "";
+}
+
+function installWingetPackage(wingetBin, packageId) {
+  const baseArgs = [
+    "install", "--id", packageId, "--exact",
+    "--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity",
+  ];
+  const scoped = spawnSync(wingetBin, [...baseArgs, "--scope", "user"], {
+    cwd: projectRoot,
+    env: process.env,
+    stdio: "inherit",
+    shell: false,
+    windowsHide: true,
+    timeout: 300_000,
+  });
+  if (scoped.status === 0) return;
+  spawnSync(wingetBin, baseArgs, {
+    cwd: projectRoot,
+    env: process.env,
+    stdio: "inherit",
+    shell: false,
+    windowsHide: true,
+    timeout: 300_000,
+  });
+}
+
+function envToggleEnabled(name) {
+  let value = process.env[name];
   if (value === undefined) {
     const content = fs.readFileSync(path.join(projectRoot, ".env"), "utf8");
-    const match = content.match(/^\s*STORYAI_AUTO_INSTALL_GIT\s*=\s*(.*?)\s*$/m);
+    const match = content.match(new RegExp(`^\\s*${name}\\s*=\\s*(.*?)\\s*$`, "m"));
     value = match?.[1].replace(/\s+#.*$/, "").replace(/^["']|["']$/g, "");
   }
   return !["false", "0", "off", "no"].includes((value || "").trim().toLowerCase());
+}
+
+function autoInstallGitEnabled() {
+  return envToggleEnabled("STORYAI_AUTO_INSTALL_GIT");
 }
 
 function ensureGitInstalled() {
@@ -121,41 +165,14 @@ function ensureGitInstalled() {
   }
 
   if (isWindows) {
-    const localAppData = process.env.LOCALAPPDATA?.trim() || path.join(os.homedir(), "AppData", "Local");
-    const windowsAppsWinget = path.join(localAppData, "Microsoft", "WindowsApps", "winget.exe");
-    const wingetBin = commandWorks("winget.exe", ["--version"])
-      ? "winget.exe"
-      : (fs.existsSync(windowsAppsWinget) && commandWorks(windowsAppsWinget, ["--version"]) ? windowsAppsWinget : "");
+    const wingetBin = findWingetExecutable();
     if (wingetBin) {
       log("Git was not found. Automatically installing Git via WinGet (no user setup required)...");
-      const baseArgs = [
-        "install", "--id", "Git.Git", "--exact",
-        "--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity",
-      ];
-      spawnSync(wingetBin, [...baseArgs, "--scope", "user"], {
-        cwd: projectRoot,
-        env: process.env,
-        stdio: "inherit",
-        shell: false,
-        windowsHide: true,
-        timeout: 300_000,
-      });
+      installWingetPackage(wingetBin, "Git.Git");
       gitBin = resolveGitExecutable();
-      if (!gitBin) {
-        spawnSync(wingetBin, baseArgs, {
-          cwd: projectRoot,
-          env: process.env,
-          stdio: "inherit",
-          shell: false,
-          windowsHide: true,
-          timeout: 300_000,
-        });
-        gitBin = resolveGitExecutable();
-      }
     }
   } else if (process.platform === "darwin") {
-    const brewCandidates = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew", "brew"];
-    const brewBin = brewCandidates.find((candidate) => (candidate === "brew" || fs.existsSync(candidate)) && commandWorks(candidate, ["--version"]));
+    const brewBin = findBrewExecutable();
     if (brewBin) {
       log("Git was not found. Automatically installing Git via Homebrew...");
       spawnSync(brewBin, ["install", "git"], {
@@ -210,7 +227,10 @@ function bootstrapGitCheckoutIfZip(gitBin, repoUrl, branch = "main") {
     return { bootstrapped: false };
   }
 
-  const checkoutRes = runGitStep(["checkout", "-f", "-B", branch, "--track", `origin/${branch}`], 60_000);
+  const checkoutArgs = isWindows
+    ? ["-c", "core.longpaths=true", "checkout", "-f", "-B", branch, "--track", `origin/${branch}`]
+    : ["checkout", "-f", "-B", branch, "--track", `origin/${branch}`];
+  const checkoutRes = runGitStep(checkoutArgs, 60_000);
   if (checkoutRes.status !== 0) {
     fs.rmSync(gitDir, { recursive: true, force: true });
     return { bootstrapped: false };
@@ -289,7 +309,10 @@ async function updateFromMain(gitBin) {
     const previousCommit = capture(gitBin, ["rev-parse", "HEAD"], { env: gitEnv });
     if (!previousCommit) return { updated: false };
 
-    const result = spawnSync(gitBin, ["pull", "--ff-only", "origin", "main"], {
+    const pullArgs = isWindows
+      ? ["-c", "core.longpaths=true", "pull", "--ff-only", "origin", "main"]
+      : ["pull", "--ff-only", "origin", "main"];
+    const result = spawnSync(gitBin, pullArgs, {
       cwd: projectRoot,
       env: gitEnv,
       stdio: "inherit",
@@ -403,17 +426,45 @@ function installHint(tool) {
       : "Install FFmpeg with your OS package manager; both ffmpeg and ffprobe are required.";
 }
 
-function checkExternalTools() {
-  const ffmpegCommand = isWindows ? "ffmpeg.exe" : "ffmpeg";
-  const ffprobeCommand = isWindows ? "ffprobe.exe" : "ffprobe";
+function ensureFfmpegInstalled() {
+  let pair = resolveFfmpegExecutables();
+  if (pair.ffmpeg && pair.ffprobe) return pair;
+
+  if (envToggleEnabled("STORYAI_AUTO_INSTALL_FFMPEG")) {
+    if (isWindows) {
+      const wingetBin = findWingetExecutable();
+      if (wingetBin) {
+        log("FFmpeg/FFprobe not found. Automatically installing Gyan.FFmpeg via WinGet...");
+        installWingetPackage(wingetBin, "Gyan.FFmpeg");
+        pair = resolveFfmpegExecutables();
+      }
+    } else if (process.platform === "darwin") {
+      const brewBin = findBrewExecutable();
+      if (brewBin) {
+        log("FFmpeg/FFprobe not found. Automatically installing FFmpeg via Homebrew...");
+        spawnSync(brewBin, ["install", "ffmpeg"], {
+          cwd: projectRoot,
+          env: process.env,
+          stdio: "inherit",
+          shell: false,
+          timeout: 300_000,
+        });
+        pair = resolveFfmpegExecutables();
+      }
+    }
+  }
+
   const missing = [];
-  if (!commandWorks(ffmpegCommand)) missing.push("ffmpeg");
-  if (!commandWorks(ffprobeCommand)) missing.push("ffprobe");
+  if (!pair.ffmpeg) missing.push("ffmpeg");
+  if (!pair.ffprobe) missing.push("ffprobe");
   if (missing.length) {
     log(`Missing ${missing.join(" and ")} in PATH. MP4 rendering requires both ffmpeg and ffprobe.`);
     log(`Install both: ${installHint("ffmpeg")}`);
     log("After installing, reopen the terminal and confirm `ffmpeg -version` and `ffprobe -version` both work.");
+  } else {
+    log(`FFmpeg and FFprobe are ready (${pair.ffmpeg}).`);
   }
+  return pair;
 }
 
 function portFromConfig() {
@@ -645,7 +696,7 @@ async function main() {
 
   ensureLocalConfig();
   const gitBin = ensureGitInstalled();
-  checkExternalTools();
+  ensureFfmpegInstalled();
 
   const launcherPath = path.join(projectRoot, "scripts", "start-storyai.js");
   const beforeLauncherHash = sha256(fs.readFileSync(launcherPath));

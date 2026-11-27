@@ -22,19 +22,37 @@ const exec = promisify(execFile);
 function resolveLocalBinary(binaryName: string, configured?: string): string {
   const trimmed = configured?.trim();
   if (trimmed) return trimmed;
+  const isWin = process.platform === "win32";
+  const home = homedir();
+  const localAppData = process.env.LOCALAPPDATA?.trim() || path.join(home, "AppData", "Local");
+  const programFiles = process.env.ProgramFiles?.trim() || "C:\\Program Files";
   const searchDirs = [
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-    path.join(homedir(), ".local", "bin"),
+    ...(isWin
+      ? [
+        path.join(localAppData, "Microsoft", "WinGet", "Links"),
+        "C:\\ffmpeg\\bin",
+        path.join(programFiles, "ffmpeg", "bin"),
+        path.join(home, "scoop", "shims"),
+        "C:\\ProgramData\\chocolatey\\bin",
+      ]
+      : [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        path.join(home, ".local", "bin"),
+      ]),
     ...(process.env.PATH || "").split(path.delimiter).filter(Boolean),
   ];
+  const suffixes = isWin ? [".exe", ".cmd", ""] : [""];
+  const accessMode = isWin ? constants.F_OK : constants.X_OK;
   for (const dir of searchDirs) {
-    const candidate = path.join(dir, binaryName);
-    try {
-      accessSync(candidate, constants.X_OK);
-      return candidate;
-    } catch {
-      // Check next search directory
+    for (const suffix of suffixes) {
+      const candidate = path.join(dir, `${binaryName}${suffix}`);
+      try {
+        accessSync(candidate, accessMode);
+        return candidate;
+      } catch {
+        // Check next search directory
+      }
     }
   }
   return binaryName;
@@ -46,14 +64,18 @@ export const autoEditFfmpeg = () =>
 export const autoEditFfprobe = () => {
   const configured = process.env.STORYAI_FFPROBE_PATH?.trim();
   if (configured) return configured;
+  const isWin = process.platform === "win32";
+  const accessMode = isWin ? constants.F_OK : constants.X_OK;
   const customFfmpeg = (process.env.STORYAI_FFMPEG_PATH || process.env.VIBE_FFMPEG_PATH)?.trim();
   if (customFfmpeg) {
-    const sibling = path.join(path.dirname(customFfmpeg), "ffprobe");
-    try {
-      accessSync(sibling, constants.X_OK);
-      return sibling;
-    } catch {
-      // Fall through to standard macOS/PATH search
+    for (const name of isWin ? ["ffprobe.exe", "ffprobe"] : ["ffprobe"]) {
+      const sibling = path.join(path.dirname(customFfmpeg), name);
+      try {
+        accessSync(sibling, accessMode);
+        return sibling;
+      } catch {
+        // Fall through to standard search
+      }
     }
   }
   return resolveLocalBinary("ffprobe");
@@ -70,13 +92,20 @@ export type ContactSheetEvidence = {
 };
 
 async function findExecutable(candidates: string[]): Promise<string | undefined> {
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    try {
-      await access(candidate, constants.X_OK);
-      return candidate;
-    } catch {
-      // Check next candidate
+  const isWin = process.platform === "win32";
+  const accessMode = isWin ? constants.F_OK : constants.X_OK;
+  for (const rawCandidate of candidates) {
+    if (!rawCandidate) continue;
+    const expanded = isWin && !/\.[a-z0-9]+$/iu.test(rawCandidate)
+      ? [rawCandidate, `${rawCandidate}.exe`, `${rawCandidate}.cmd`]
+      : [rawCandidate];
+    for (const candidate of expanded) {
+      try {
+        await access(candidate, accessMode);
+        return candidate;
+      } catch {
+        // Check next candidate
+      }
     }
   }
   return undefined;

@@ -23,20 +23,35 @@ export function resolveMediaBinary(name: string, envCandidates: Array<string | u
     const trimmed = raw?.trim();
     if (trimmed) return trimmed;
   }
+  const isWin = process.platform === "win32";
+  const home = homedir();
+  const localAppData = process.env.LOCALAPPDATA?.trim() || path.join(home, "AppData", "Local");
+  const programFiles = process.env.ProgramFiles?.trim() || "C:\\Program Files";
   const pathDirs = process.env.PATH?.split(path.delimiter).filter(Boolean) || [];
   const searchDirs = [
     ...extraDirs.filter(Boolean),
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-    path.join(homedir(), ".local/bin"),
+    ...(isWin
+      ? [
+        path.join(localAppData, "Microsoft", "WinGet", "Links"),
+        "C:\\ffmpeg\\bin",
+        path.join(programFiles, "ffmpeg", "bin"),
+        path.join(home, "scoop", "shims"),
+        "C:\\ProgramData\\chocolatey\\bin",
+      ]
+      : [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        path.join(home, ".local/bin"),
+      ]),
     ...pathDirs,
   ];
-  const suffixes = process.platform === "win32" ? [".exe", ""] : [""];
+  const suffixes = isWin ? [".exe", ".cmd", ""] : [""];
+  const accessMode = isWin ? constants.F_OK : constants.X_OK;
   for (const dir of searchDirs) {
     for (const suffix of suffixes) {
       const candidate = path.join(dir, `${name}${suffix}`);
       try {
-        accessSync(candidate, constants.X_OK);
+        accessSync(candidate, accessMode);
         return candidate;
       } catch { /* Continue searching standard locations. */ }
     }

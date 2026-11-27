@@ -75,6 +75,89 @@ function resolveGitExecutable() {
   return "";
 }
 
+function testMediaExecutable(candidate) {
+  if (!candidate) return false;
+  if (path.isAbsolute(candidate) && !fs.existsSync(candidate)) return false;
+  const result = spawnSync(candidate, ["-version"], {
+    stdio: "ignore",
+    shell: false,
+    windowsHide: true,
+    timeout: 8_000,
+  });
+  return result.status === 0;
+}
+
+function findWinGetPackageBinaries(packagesDir, binaryName, depth = 0) {
+  if (depth > 3 || !fs.existsSync(packagesDir)) return [];
+  const results = [];
+  let entries = [];
+  try {
+    entries = fs.readdirSync(packagesDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (depth === 0 && !/^(?:Gyan|BtbN)\.FFmpeg/i.test(entry.name)) continue;
+    const fullDir = path.join(packagesDir, entry.name);
+    const binCandidate = path.join(fullDir, "bin", binaryName);
+    if (fs.existsSync(binCandidate)) results.push(binCandidate);
+    const directCandidate = path.join(fullDir, binaryName);
+    if (fs.existsSync(directCandidate)) results.push(directCandidate);
+    if (depth < 3) results.push(...findWinGetPackageBinaries(fullDir, binaryName, depth + 1));
+  }
+  return results;
+}
+
+function resolveSingleMediaBinary(toolName, envOverride) {
+  const exeName = isWindows ? `${toolName}.exe` : toolName;
+  const candidates = [];
+  if (envOverride?.trim()) candidates.push(envOverride.trim());
+  if (isWindows) {
+    const localAppData = process.env.LOCALAPPDATA?.trim() || path.join(os.homedir(), "AppData", "Local");
+    const programFiles = process.env.ProgramFiles?.trim() || "C:\\Program Files";
+    const winGetPackages = path.join(localAppData, "Microsoft", "WinGet", "Packages");
+    candidates.push(
+      exeName,
+      path.join(localAppData, "Microsoft", "WinGet", "Links", exeName),
+      ...findWinGetPackageBinaries(winGetPackages, exeName),
+      path.join("C:\\ffmpeg", "bin", exeName),
+      path.join(programFiles, "ffmpeg", "bin", exeName),
+      path.join(os.homedir(), "scoop", "shims", exeName),
+      path.join("C:\\ProgramData", "chocolatey", "bin", exeName),
+    );
+  } else if (process.platform === "darwin") {
+    candidates.push(`/opt/homebrew/bin/${toolName}`, `/usr/local/bin/${toolName}`, toolName);
+  } else {
+    candidates.push(toolName, `/usr/bin/${toolName}`, `/usr/local/bin/${toolName}`);
+  }
+
+  for (const candidate of candidates) {
+    if (testMediaExecutable(candidate)) {
+      if (path.isAbsolute(candidate)) prependToPath(path.dirname(candidate));
+      return candidate;
+    }
+  }
+  return "";
+}
+
+function resolveFfmpegExecutables() {
+  const ffmpeg = resolveSingleMediaBinary("ffmpeg", process.env.STORYAI_FFMPEG_PATH || process.env.VIBE_FFMPEG_PATH);
+  let ffprobeOverride = process.env.STORYAI_FFPROBE_PATH || process.env.VIBE_FFPROBE_PATH;
+  if (!ffprobeOverride && ffmpeg && path.isAbsolute(ffmpeg)) {
+    const sibling = path.join(path.dirname(ffmpeg), isWindows ? "ffprobe.exe" : "ffprobe");
+    if (fs.existsSync(sibling)) ffprobeOverride = sibling;
+  }
+  const ffprobe = resolveSingleMediaBinary("ffprobe", ffprobeOverride);
+  if (ffmpeg && path.isAbsolute(ffmpeg) && !process.env.STORYAI_FFMPEG_PATH) {
+    process.env.STORYAI_FFMPEG_PATH = ffmpeg;
+  }
+  if (ffprobe && path.isAbsolute(ffprobe) && !process.env.STORYAI_FFPROBE_PATH) {
+    process.env.STORYAI_FFPROBE_PATH = ffprobe;
+  }
+  return { ffmpeg, ffprobe };
+}
+
 function parseUploadPackBranchSha(text, branch = "main") {
   const escapedBranch = branch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = new RegExp(`(?:^[0-9a-f]{4})*([0-9a-f]{40})[ \\t]+refs\\/heads\\/${escapedBranch}(?:$|[ \\t\\0])`, "i");
@@ -375,6 +458,7 @@ function syncExtractedArchiveToProject(stagingDir, projectRoot, previousManifest
 
 module.exports = {
   resolveGitExecutable,
+  resolveFfmpegExecutables,
   parseUploadPackBranchSha,
   fetchRemoteBranchSha,
   extractTarGzBuffer,

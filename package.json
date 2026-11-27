@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "PORT=${PORT:-3012} next dev -p ${PORT:-3012}",
+    "dev": "next dev -p 3012",
     "build": "next build --webpack",
     "start": "node scripts/start-storyai.js",
-    "start:server": "PORT=${PORT:-3012} node scripts/start-next-server.js",
+    "start:server": "node scripts/start-next-server.js",
     "start:supervised": "PORT=${PORT:-3012} ./scripts/start-supervised.sh",
     "mcp": "node scripts/storyai-mcp.mjs",
     "setup:plugins": "node scripts/ensure-antigravity-video-plugins.cjs",

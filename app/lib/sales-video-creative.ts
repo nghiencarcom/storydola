@@ -17,7 +17,13 @@ import { salesVideoProductReferenceLock, salesVideoProductScriptInstruction, sal
 
 const exec = promisify(execFile);
 const ffmpeg = () => process.env.STORYAI_FFMPEG_PATH || process.env.VIBE_FFMPEG_PATH || "ffmpeg";
-const ffprobe = () => process.env.STORYAI_FFPROBE_PATH || path.join(path.dirname(ffmpeg()), "ffprobe");
+const ffprobe = () => {
+  if (process.env.STORYAI_FFPROBE_PATH?.trim()) return process.env.STORYAI_FFPROBE_PATH.trim();
+  const f = ffmpeg();
+  const dir = path.dirname(f);
+  if (!dir || dir === ".") return "ffprobe";
+  return path.join(dir, process.platform === "win32" ? "ffprobe.exe" : "ffprobe");
+};
 const videoFormat = ["-format_whitelist", "mov"];
 const audioFormats = ["-format_whitelist", "mp3,wav,mov,aac,ogg,flac"];
 

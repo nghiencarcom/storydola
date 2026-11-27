@@ -8,7 +8,9 @@ const {
   parseUploadPackBranchSha,
   extractTarGzBuffer,
   syncExtractedArchiveToProject,
+  resolveFfmpegExecutables,
 } = require("../scripts/github-tarball.cjs");
+const { ensureAntigravityVideoPlugins } = require("../scripts/ensure-antigravity-video-plugins.cjs");
 
 function writeOctal(buf, offset, length, value) {
   const oct = value.toString(8).padStart(length - 1, "0");
@@ -191,6 +193,100 @@ async function main() {
       assert.equal(fs.readFileSync(path.join(zipDir, ".env"), "utf8"), "SEEDANCE_CREDENTIALS_ENCRYPTION_KEY=keep-my-key\n");
       assert.equal(fs.readFileSync(path.join(zipDir, "data", "projects.json"), "utf8"), '{"user":1}\n');
       assert.equal(runGit(zipDir, ["rev-parse", "--abbrev-ref", "HEAD"]), "main");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }
+
+  // 5. resolveFfmpegExecutables finds ffmpeg.exe & ffprobe.exe inside simulated WinGet Packages dir
+  {
+    const vm = require("node:vm");
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "storyai-winget-ffmpeg-"));
+    try {
+      const binDir = path.join(
+        tmpDir,
+        "AppData",
+        "Local",
+        "Microsoft",
+        "WinGet",
+        "Packages",
+        "Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe",
+        "ffmpeg-7.1-full_build",
+        "bin",
+      );
+      fs.mkdirSync(binDir, { recursive: true });
+      const ffmpegExe = path.join(binDir, "ffmpeg.exe");
+      const ffprobeExe = path.join(binDir, "ffprobe.exe");
+      fs.writeFileSync(ffmpegExe, "", "utf8");
+      fs.writeFileSync(ffprobeExe, "", "utf8");
+
+      const code = fs.readFileSync(path.join(__dirname, "..", "scripts", "github-tarball.cjs"), "utf8");
+      const moduleObj = { exports: {} };
+      const fakeProcess = {
+        ...process,
+        platform: "win32",
+        env: {
+          ...process.env,
+          PATH: "",
+          LOCALAPPDATA: path.join(tmpDir, "AppData", "Local"),
+          ProgramFiles: path.join(tmpDir, "Program Files"),
+          STORYAI_FFMPEG_PATH: "",
+          STORYAI_FFPROBE_PATH: "",
+          VIBE_FFMPEG_PATH: "",
+          VIBE_FFPROBE_PATH: "",
+        },
+      };
+      vm.runInNewContext(code, {
+        module: moduleObj,
+        exports: moduleObj.exports,
+        console,
+        process: fakeProcess,
+        Buffer,
+        AbortSignal,
+        fetch,
+        __dirname: path.join(__dirname, "..", "scripts"),
+        __filename: path.join(__dirname, "..", "scripts", "github-tarball.cjs"),
+        require: (id) => {
+          if (id === "node:child_process") {
+            return {
+              spawnSync: (cmd) => ({ status: cmd === ffmpegExe || cmd === ffprobeExe ? 0 : 1 }),
+            };
+          }
+          if (id === "node:os") {
+            return { ...os, homedir: () => tmpDir };
+          }
+          return require(id);
+        },
+      });
+      assert.equal(typeof resolveFfmpegExecutables, "function");
+      const found = moduleObj.exports.resolveFfmpegExecutables();
+      assert.equal(found.ffmpeg, ffmpegExe);
+      assert.equal(found.ffprobe, ffprobeExe);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }
+
+  // 6. ensureAntigravityVideoPlugins installs whisper-auto-edit & threejs-gsap-fx (with gsap-motion-annotations) cleanly
+  {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "storyai-plugins-test-"));
+    try {
+      const pluginsDir = path.join(tmpDir, "plugins");
+      const logs = [];
+      // Pre-seed hyperframes & remotion markers so this offline unit test exercises local bundles cleanly
+      for (const [pluginName, skillName] of [["hyperframes", "hyperframes"], ["remotion", "remotion-best-practices"]]) {
+        const dir = path.join(pluginsDir, pluginName, "skills", skillName);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(pluginsDir, pluginName, "plugin.json"), '{"name":"' + pluginName + '"}', "utf8");
+        fs.writeFileSync(path.join(dir, "SKILL.md"), "# test", "utf8");
+      }
+      const outcome = await ensureAntigravityVideoPlugins({ pluginsDir, logger: (m) => logs.push(m) });
+      assert.equal(outcome.ok, true);
+      assert.ok(fs.existsSync(path.join(pluginsDir, "whisper-auto-edit", "plugin.json")));
+      assert.ok(fs.existsSync(path.join(pluginsDir, "whisper-auto-edit", "skills", "whisper-auto-edit", "SKILL.md")));
+      assert.ok(fs.existsSync(path.join(pluginsDir, "threejs-gsap-fx", "plugin.json")));
+      assert.ok(fs.existsSync(path.join(pluginsDir, "threejs-gsap-fx", "skills", "threejs-video-fx", "SKILL.md")));
+      assert.ok(fs.existsSync(path.join(pluginsDir, "threejs-gsap-fx", "skills", "gsap-motion-annotations", "SKILL.md")));
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

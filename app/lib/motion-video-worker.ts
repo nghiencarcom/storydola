@@ -790,6 +790,35 @@ async function probeAudioDurationMs(filePath: string): Promise<number> {
 }
 
 async function synthesizeMacosLocalSayWav(text: string, language: "vi" | "en", outWavPath: string): Promise<boolean> {
+  if (process.platform === "win32") {
+    const rawWinWavPath = `${outWavPath}.win.wav`;
+    try {
+      await exec(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Rate = 1; $s.SetOutputToWaveFile($env:STORYAI_TTS_OUT); $s.Speak($env:STORYAI_TTS_TEXT); $s.Dispose()",
+        ],
+        {
+          timeout: 30_000,
+          windowsHide: true,
+          env: { ...process.env, STORYAI_TTS_TEXT: text, STORYAI_TTS_OUT: rawWinWavPath },
+        },
+      );
+      await exec(
+        autoEditFfmpeg(),
+        ["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", rawWinWavPath, "-ac", "2", "-ar", "48000", "-c:a", "pcm_s16le", outWavPath],
+        { timeout: 25_000 },
+      );
+      return true;
+    } catch {
+      return false;
+    } finally {
+      await rm(rawWinWavPath, { force: true }).catch(() => undefined);
+    }
+  }
   if (process.platform !== "darwin") return false;
   const aiffPath = `${outWavPath}.aiff`;
   try {
