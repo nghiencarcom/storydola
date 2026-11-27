@@ -806,10 +806,9 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
       <section className="card auto-edit-intake-card">
         <div className="card-heading">
           <div>
-            <span className="eyebrow">Whisper · Remotion · HyperFrames · Three.js · Local Zero-Copy</span>
-            <h1>Auto Edit Video thông minh (12 Chủ đề)</h1>
+            <h1>Auto Edit Video</h1>
             <p className="auto-edit-lead">
-              Chọn trực tiếp video trên ổ cứng máy tính <strong>không giới hạn dung lượng (0 giây copy)</strong> hoặc dán link mạng xã hội, kết hợp kho <strong>12 Template đa chủ đề</strong>, <strong>59 SFX</strong>, hiệu ứng 3D/Khoanh vùng Pro FX và chuẩn hoá giọng đọc <strong>0 đến -3 dB</strong>.
+              Chọn video, mẫu dựng và tuỳ chỉnh để bắt đầu.
             </p>
           </div>
         </div>
@@ -822,7 +821,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
               aria-selected={sourceMode === "local"}
               onClick={() => setSourceMode("local")}
             >
-              Chọn video trực tiếp trên máy (Local · Không giới hạn GB)
+              Video trên máy
             </button>
             <button
               type="button"
@@ -830,7 +829,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
               aria-selected={sourceMode === "url"}
               onClick={() => setSourceMode("url")}
             >
-              Dán link YouTube / TikTok / Facebook
+              Link video
             </button>
           </div>
 
@@ -840,7 +839,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
               {sourceMode === "url" ? (
                 <>
                   <div className="auto-edit-dropzone-header">
-                    <strong><Icon name="link" size={17} /> 1. Link video công khai cần Auto Edit</strong>
+                    <strong><Icon name="link" size={17} /> 1. Link video công khai</strong>
                   </div>
                   <small>Hỗ trợ YouTube, YouTube Shorts, TikTok, Facebook Reels, Instagram, Douyin.</small>
                   <input
@@ -854,7 +853,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
               ) : (
                 <>
                   <div className="auto-edit-dropzone-header">
-                    <strong><Icon name="scene" size={17} /> 1. Chọn Video trên máy (1–20 clip · Không giới hạn GB)</strong>
+                    <strong><Icon name="scene" size={17} /> 1. Video trên máy (1–20 clip)</strong>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                       {isLocalRuntime && (
                         <button
@@ -865,11 +864,11 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                           title="Mở Finder/Explorer chọn trực tiếp file gốc trên máy tính — 0 giây copy, không giới hạn dung lượng"
                         >
                           <Icon name="folder" size={15} />
-                          {pickingLocal === "video" ? "Đang mở hộp thoại..." : "Chọn trên máy (0s Copy)"}
+                          {pickingLocal === "video" ? "Đang mở hộp thoại..." : "Chọn trên máy"}
                         </button>
                       )}
                       <label className="secondary-button auto-edit-pick-btn" title="Kéo thả hoặc chọn qua trình duyệt (không giới hạn GB)">
-                        <Icon name="upload" size={15} /> Kéo thả / Trình duyệt
+                        <Icon name="upload" size={15} /> Chọn qua trình duyệt
                         <input
                           type="file"
                           accept="video/mp4,video/quicktime,video/webm,video/x-matroska,.mp4,.mov,.webm,.mkv,.m4v"
@@ -883,12 +882,10 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                       </label>
                     </div>
                   </div>
-                  <small>
-                    Chạy trực tiếp trên máy bạn: gắn thẳng đường dẫn file gốc (MP4, MOV, MKV, WebM) không cần upload lại, kể cả file quay màn hình / 4K nặng hàng chục GB.
-                  </small>
+                  <small>Hỗ trợ MP4, MOV, MKV và WebM.</small>
 
                   {isLocalRuntime && (
-                    <div style={{ display: "flex", gap: 6 }}>
+                    <div className="auto-edit-path-row">
                       <input
                         type="text"
                         value={manualLocalPath}
@@ -947,7 +944,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                       ))}
                     </ul>
                   ) : (
-                    <div className="auto-edit-empty-drop">Chưa chọn tệp video nào (Bấm &ldquo;Chọn trên máy (0s Copy)&rdquo; để đọc thẳng từ ổ cứng)</div>
+                    <div className="auto-edit-empty-drop">Chưa chọn video</div>
                   )}
                 </>
               )}
@@ -956,7 +953,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
             {/* Product / Illustration Images dropbox */}
             <div className="auto-edit-dropzone">
               <div className="auto-edit-dropzone-header">
-                <strong><Icon name="image" size={17} /> 2. Ảnh sản phẩm / Minh hoạ (Tuỳ chọn, tối đa 20 ảnh)</strong>
+                <strong><Icon name="image" size={17} /> 2. Ảnh minh hoạ (tuỳ chọn, tối đa 20 ảnh)</strong>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   {isLocalRuntime && (
                     <button
@@ -969,7 +966,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                     </button>
                   )}
                   <label className="secondary-button auto-edit-pick-btn">
-                    <Icon name="plus" size={15} /> Kéo thả ảnh
+                    <Icon name="plus" size={15} /> Chọn qua trình duyệt
                     <input
                       type="file"
                       accept="image/png,image/jpeg,image/webp"
@@ -983,7 +980,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                   </label>
                 </div>
               </div>
-              <small>Đặt nhãn ngắn gọn cho từng ảnh để Code Agent tự khớp đúng giây người nói nhắc tới.</small>
+              <small>Thêm mô tả để ảnh xuất hiện đúng nội dung.</small>
 
               {localImages.length > 0 || imageItems.length > 0 ? (
                 <ul className="auto-edit-asset-list">
@@ -1033,7 +1030,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                   ))}
                 </ul>
               ) : (
-                <div className="auto-edit-empty-drop">Chưa thêm ảnh minh hoạ (Agent vẫn tự động cắt dựng + phụ đề + khoanh vùng Pro FX)</div>
+                <div className="auto-edit-empty-drop">Chưa thêm ảnh minh hoạ</div>
               )}
             </div>
           </div>
@@ -1042,8 +1039,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
           <div className="auto-edit-templates-section">
             <div className="auto-edit-templates-head">
               <div>
-                <strong>3. Chọn Template Chủ đề Video ({AUTO_EDIT_PRESETS.length} mẫu chuyên biệt)</strong>
-                <small>Khi chọn Template, hệ thống tự động tối ưu nhịp cắt khoảng lặng, tỷ lệ khung, kiểu phụ đề, hiệu ứng Pro FX và SFX theo đúng thể loại.</small>
+                <strong>3. Chọn mẫu dựng ({AUTO_EDIT_PRESETS.length} mẫu)</strong>
               </div>
               <div className="auto-edit-cat-pills" role="tablist" aria-label="Nhóm chủ đề Template">
                 {AUTO_EDIT_PRESET_CATEGORIES.map((cat) => (
@@ -1091,7 +1087,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
               <input name="productName" type="text" placeholder="VD: Kem chống nắng kiềm dầu SkinAqua..." />
             </label>
             <label className="form-field">
-              <span>Tỷ lệ Video Output (Đầu ra)</span>
+              <span>Tỷ lệ video</span>
               <div className="auto-edit-ratio-pills" role="radiogroup" aria-label="Tỷ lệ Video Output">
                 {(["9:16", "16:9", "1:1"] as const).map((ratio) => (
                   <button
@@ -1106,7 +1102,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
               </div>
             </label>
             <label className="form-field">
-              <span>Phông nền / Khung sân khấu Video</span>
+              <span>Phông nền video</span>
               <select value={verticalFit} onChange={(e) => setVerticalFit(e.target.value as AutoEditVerticalFit)}>
                 <option value="auto">Tự động (Nền mờ nếu clip ngang xuất 9:16)</option>
                 <option value="aurora-3d">🌌 Sân khấu 3D Aurora + Three.js Particles</option>
@@ -1137,7 +1133,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
               />
             </label>
             <label className="form-field">
-              <span>Chuẩn hoá đỉnh giọng đọc ({voiceTargetPeakDb.toFixed(1)} dB · Chuẩn 0 đến -3 dB)</span>
+              <span>Đỉnh giọng đọc ({voiceTargetPeakDb.toFixed(1)} dB)</span>
               <input
                 type="range"
                 min={-3.0}
@@ -1148,7 +1144,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
               />
             </label>
             <label className="form-field">
-              <span>Điểm nổi bật / Giá / Ưu đãi cần chèn lên thẻ HyperFrames</span>
+              <span>Điểm nổi bật / Giá / Ưu đãi</span>
               <textarea
                 name="productHighlights"
                 rows={2}
@@ -1156,7 +1152,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
               />
             </label>
             <label className="form-field">
-              <span>Chỉ dẫn thêm cho Code Agent CLI</span>
+              <span>Chỉ dẫn thêm</span>
               <textarea
                 name="direction"
                 rows={2}
@@ -1166,7 +1162,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
           </div>
 
           <details className="remake-long-section">
-            <summary>Tuỳ chọn nâng cao (Safe-Zone & Transcript thủ công nếu không dùng Whisper)</summary>
+            <summary>Tuỳ chọn nâng cao</summary>
             <div className="auto-edit-advanced-inner">
               <label className="auto-edit-checkbox">
                 <input
@@ -1174,11 +1170,11 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                   checked={autoSfx}
                   onChange={(e) => setAutoSfx(e.target.checked)}
                 />
-                <span>Tự động chèn hiệu ứng âm thanh từ kho 59 SFX (Whoosh, Pop, Sparkle, Ding, Click...)</span>
+                <span>Tự động chèn hiệu ứng âm thanh</span>
               </label>
               {autoSfx && (
                 <label className="form-field">
-                  <span>Độ lớn hiệu ứng SFX ({sfxVolumeDb} dB · Rõ nét dưới giọng đọc 0 đến -3 dB)</span>
+                  <span>Âm lượng hiệu ứng ({sfxVolumeDb} dB)</span>
                   <input
                     type="range"
                     min={-22}
@@ -1195,7 +1191,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                   checked={motionBlur}
                   onChange={(e) => setMotionBlur(e.target.checked)}
                 />
-                <span>Bật Cinematic Motion Blur cho chuyển động thẻ & chữ (Chuẩn Pro Video FX)</span>
+                <span>Làm mờ chuyển động cho thẻ và chữ</span>
               </label>
               <label className="auto-edit-checkbox">
                 <input
@@ -1203,10 +1199,10 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                   checked={safeZoneGuard}
                   onChange={(e) => setSafeZoneGuard(e.target.checked)}
                 />
-                <span>Bật bảo vệ vùng an toàn TikTok / Reels / Shorts (Tránh đè chữ vào giỏ hàng & nút tim)</span>
+                <span>Bảo vệ vùng an toàn TikTok / Reels / Shorts</span>
               </label>
               <label className="form-field">
-                <span>Lời thoại / Kịch bản gốc (Bỏ trống để Whisper tự động nhận diện từng từ)</span>
+                <span>Lời thoại gốc (để trống để tự nhận diện)</span>
                 <textarea
                   name="manualTranscript"
                   rows={3}
@@ -1388,7 +1384,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                 {/* Column 1: Descript-style Transcript Cut Editor */}
                 <div className="auto-edit-col auto-edit-transcript-col">
                   <div className="auto-edit-col-head">
-                    <h3>1. Cắt dựng theo Lời thoại & Phân đoạn</h3>
+                    <h3>1. Cắt dựng theo lời thoại</h3>
                     <small>Bấm &ldquo;Giữ / Cắt&rdquo; để khôi phục hoặc loại bỏ tức thì trên bản xem trước.</small>
                   </div>
 
@@ -1446,7 +1442,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                 {/* Column 2: Live Remotion <Player> */}
                 <div className="auto-edit-col auto-edit-player-col">
                   <div className="auto-edit-col-head">
-                    <h3>2. Xem trước trực tiếp (Remotion Player)</h3>
+                    <h3>2. Xem trước</h3>
                     <div className="auto-edit-player-toggles">
                       <select
                         value={draftEdl.captionStyle}
@@ -1548,8 +1544,8 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                 {/* Column 3: AI Co-pilot Chat + HyperFrames Overlays Inspector */}
                 <div className="auto-edit-col auto-edit-inspector-col">
                   <div className="auto-edit-copilot-box">
-                    <h3><Icon name="spark" size={16} /> 3. Tinh chỉnh với Code Agent CLI</h3>
-                    <p>Yêu cầu Agent cắt nhanh hơn, đổi câu Hook, thêm giá bán hoặc viết hiệu ứng CSS HyperFrames mới.</p>
+                    <h3><Icon name="spark" size={16} /> 3. Tinh chỉnh với AI</h3>
+                    <p>Nhập yêu cầu chỉnh sửa bản dựng.</p>
                     <textarea
                       rows={3}
                       value={copilotPrompt}
@@ -1568,7 +1564,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
 
                   <div className="auto-edit-overlays-box">
                     <div className="auto-edit-overlays-header" style={{ flexWrap: "wrap", gap: 6 }}>
-                      <h4>Đồ hoạ Pro FX & HyperFrames ({draftEdl.overlays.length})</h4>
+                      <h4>Đồ hoạ ({draftEdl.overlays.length})</h4>
                       <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
                         <button type="button" className="auto-edit-mini-btn" onClick={() => addProductOverlayCard("product_card", "stage-3d")}>
                           + Thẻ 3D
