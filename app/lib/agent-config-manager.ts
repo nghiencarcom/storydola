@@ -43,14 +43,114 @@ function jsonAgentEntry(agent: Exclude<CodingAgent, "codex">, nodePath: string, 
   return { command: nodePath, args: [scriptPath], env, timeoutSeconds: 1_800 };
 }
 
+function decodeConfigBuffer(buf: Buffer): string {
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) {
+    return buf.subarray(2).toString("utf16le");
+  }
+  if (buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff) {
+    return new TextDecoder("utf-16be").decode(buf.subarray(2));
+  }
+  return buf.toString("utf8").replace(/^\uFEFF/, "");
+}
+
+function skipWhitespaceAndComments(input: string, start: number): number {
+  let i = start;
+  while (i < input.length) {
+    const ch = input[i];
+    if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
+      i += 1;
+      continue;
+    }
+    if (ch === "/" && input[i + 1] === "/") {
+      i += 2;
+      while (i < input.length && input[i] !== "\n" && input[i] !== "\r") i += 1;
+      continue;
+    }
+    if (ch === "/" && input[i + 1] === "*") {
+      const closeIndex = input.indexOf("*/", i + 2);
+      if (closeIndex < 0) return i;
+      i = closeIndex + 2;
+      continue;
+    }
+    break;
+  }
+  return i;
+}
+
+function stripJsonCommentsAndTrailingCommas(input: string): string {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+    if (inString) {
+      out += ch;
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === "\"") {
+      inString = true;
+      out += ch;
+      continue;
+    }
+    if (ch === "/" && input[i + 1] === "/") {
+      i += 2;
+      while (i < input.length && input[i] !== "\n" && input[i] !== "\r") i += 1;
+      if (i < input.length) out += input[i];
+      continue;
+    }
+    if (ch === "/" && input[i + 1] === "*") {
+      const closeIndex = input.indexOf("*/", i + 2);
+      if (closeIndex < 0) return input;
+      out += " ";
+      i = closeIndex + 1;
+      continue;
+    }
+    if (ch === ",") {
+      const nextIndex = skipWhitespaceAndComments(input, i + 1);
+      if (nextIndex < input.length && (input[nextIndex] === "}" || input[nextIndex] === "]")) {
+        continue;
+      }
+    }
+    out += ch;
+  }
+
+  return out;
+}
+
+function parseJsonConfigText(content: string): unknown {
+  try {
+    return JSON.parse(content);
+  } catch {
+    return JSON.parse(stripJsonCommentsAndTrailingCommas(content));
+  }
+}
+
 async function readExistingJson(filePath: string) {
   try {
-    const content = await readFile(filePath, "utf8");
+    const rawBuffer = await readFile(filePath);
+    const hasNonUtf8Bom = rawBuffer.length >= 2
+      && ((rawBuffer[0] === 0xff && rawBuffer[1] === 0xfe) || (rawBuffer[0] === 0xfe && rawBuffer[1] === 0xff));
+    const decoded = decodeConfigBuffer(rawBuffer);
+    const comparisonText = hasNonUtf8Bom ? (rawBuffer.toString("utf8") || "utf16-bom") : decoded;
+
+    if (decoded.trim() === "") {
+      return { content: rawBuffer.length > 0 ? comparisonText : "", value: {} };
+    }
+
     try {
-      const value = JSON.parse(content.replace(/^\uFEFF/, "")) as unknown;
+      const value = parseJsonConfigText(decoded);
       if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("AGENT_CONFIG_INVALID_JSON");
       mergeJsonServer(value, {});
-      return { content, value };
+      return { content: comparisonText, value };
     } catch {
       throw new Error("AGENT_CONFIG_INVALID_JSON");
     }
@@ -171,7 +271,8 @@ export async function installCodingAgentConfig(input: {
   try { existing = await readExistingJson(configPath); }
   catch (cause) {
     if (!input.repairInvalidConfig || !(cause instanceof Error) || cause.message !== "AGENT_CONFIG_INVALID_JSON") throw cause;
-    existing = { content: await readFile(configPath, "utf8"), value: {} };
+    const rawBuffer = await readFile(configPath);
+    existing = { content: decodeConfigBuffer(rawBuffer) || rawBuffer.toString("utf8") || "invalid", value: {} };
   }
   const { content, value } = existing;
   const nextValue = mergeJsonServer(value, jsonAgentEntry(agent, nodePath, scriptPath, baseUrl, token));

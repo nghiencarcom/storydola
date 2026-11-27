@@ -20,7 +20,7 @@ type AgentAccessPayload = {
 type AgentConfigStatus = { installed: boolean; needsUpdate?: boolean; configPath: string; error?: "INVALID_JSON" | "INVALID_TOML" | "CONFIG_ACCESS_FAILED" };
 type CodingAgentEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 type CodingAgentModel = { id: string; label: string; reasoningEffortLevels?: CodingAgentEffort[]; defaultReasoningEffort?: CodingAgentEffort; speedTiers?: "fast"[] };
-type CodingAgentCliStatus = { id: CodingAgentId; label: string; available: boolean; models: CodingAgentModel[] };
+type CodingAgentCliStatus = { id: CodingAgentId; label: string; available: boolean; mcpTargetAvailable?: boolean; models: CodingAgentModel[] };
 type CodingAgentPreference = { agent: CodingAgentId; model: string; quality: "auto" | CodingAgentEffort; speed: "standard" | "fast" };
 const codingAgents: { id: CodingAgentId; label: string; configName: string }[] = [
   { id: "codex", label: "Codex", configName: "~/.codex/config.toml" },
@@ -237,7 +237,7 @@ export function SettingsView() {
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.message || "Không cài được cấu hình Code Agent.");
       await refreshAgentAccess();
-      setAgentAccessNotice({ tone: "success", text: `${codingAgents.find((item) => item.id === agent)?.label || agent} đã được kết nối trên máy này. Khởi động lại CLI để tải StoryAI MCP.${tokenCreated ? " Token mới đã được tạo tự động." : ""}` });
+      setAgentAccessNotice({ tone: "success", text: `${codingAgents.find((item) => item.id === agent)?.label || agent} đã được kết nối trên máy này. ${agent === "antigravity" ? "Khởi động lại Antigravity (hoặc tải lại MCP Servers) để nhận StoryAI MCP." : "Khởi động lại CLI để tải StoryAI MCP."}${tokenCreated ? " Token mới đã được tạo tự động." : ""}` });
     } catch (cause) {
       if (tokenCreated) await refreshAgentAccess();
       setAgentAccessNotice({ tone: "error", text: cause instanceof Error ? cause.message : "Không cài được cấu hình Code Agent." });
@@ -306,17 +306,24 @@ export function SettingsView() {
           {codingAgents.map((agent) => {
             const status = agentConfigStatuses[agent.id];
             const needsFix = ["INVALID_JSON", "INVALID_TOML"].includes(status?.error || "");
-            const cliAvailable = codingAgentCliStatuses.find((item) => item.id === agent.id)?.available ?? false;
-            const cliMissing = !agentAccessLoading && codingAgentCliStatuses.length > 0 && !cliAvailable;
-            const statusLabel = agentAccessLoading ? "Đang kiểm tra" : needsFix ? "Cần sửa cấu hình" : cliMissing ? "CLI chưa cài" : status?.needsUpdate ? "Cần cập nhật" : status?.installed ? "Đã cài" : "Chưa kết nối";
+            const cliEntry = codingAgentCliStatuses.find((item) => item.id === agent.id);
+            const mcpTargetAvailable = Boolean(cliEntry?.available || cliEntry?.mcpTargetAvailable || status?.installed || needsFix);
+            const cliMissing = !agentAccessLoading && codingAgentCliStatuses.length > 0 && !mcpTargetAvailable;
+            const agyInstallCmd = agentAccessStatus?.platform === "win32"
+              ? "irm https://antigravity.google/cli/install.ps1 | iex"
+              : "curl -fsSL https://antigravity.google/cli/install.sh | bash";
+            const statusLabel = agentAccessLoading ? "Đang kiểm tra" : needsFix ? "Cần sửa cấu hình" : cliMissing ? (agent.id === "antigravity" ? "Chưa cài app/CLI" : "CLI chưa cài") : status?.needsUpdate ? "Cần cập nhật" : status?.installed ? "Đã cài" : "Chưa kết nối";
             const statusClass = needsFix || (!cliMissing && status?.needsUpdate) ? "needs-fix" : status?.installed && !cliMissing ? "connected" : "disconnected";
             return <article className="agent-connect-card" key={agent.id}>
               <div className="agent-connect-card-heading"><strong>{agent.label}</strong><span className={statusClass}>{statusLabel}</span></div>
-              <small>{status?.error === "CONFIG_ACCESS_FAILED" ? "Không đọc được file cấu hình. Kiểm tra quyền truy cập của tài khoản chạy StoryAI." : needsFix ? "File cấu hình bị lỗi. Nhấn bên dưới để sao lưu và tạo lại cấu hình." : cliMissing ? "Cài CLI này trên máy chạy StoryAI rồi tải lại trạng thái." : status?.needsUpdate ? "Cấu hình MCP cũ hoặc token kết nối cần được cập nhật." : status?.installed ? "Đã tìm thấy cấu hình StoryAI MCP trong CLI." : "Cài StoryAI MCP vào CLI này để truy cập dự án và công cụ StoryAI."}</small>
+              <small>{status?.error === "CONFIG_ACCESS_FAILED" ? "Không đọc được file cấu hình. Kiểm tra quyền truy cập của tài khoản chạy StoryAI." : needsFix ? "File cấu hình bị lỗi. Nhấn bên dưới để sao lưu và tạo lại cấu hình." : cliMissing ? (agent.id === "antigravity" ? "Cài ứng dụng hoặc CLI Antigravity trên máy chạy StoryAI rồi tải lại trạng thái." : "Cài CLI này trên máy chạy StoryAI rồi tải lại trạng thái.") : status?.needsUpdate ? "Cấu hình MCP cũ hoặc token kết nối cần được cập nhật." : status?.installed ? (agent.id === "antigravity" ? "Đã tìm thấy cấu hình StoryAI MCP trong Antigravity." : "Đã tìm thấy cấu hình StoryAI MCP trong CLI.") : (agent.id === "antigravity" ? "Cài StoryAI MCP vào Antigravity để truy cập dự án và công cụ StoryAI." : "Cài StoryAI MCP vào CLI này để truy cập dự án và công cụ StoryAI.")}</small>
+              {agent.id === "antigravity" && !agentAccessLoading && codingAgentCliStatuses.length > 0 && !cliEntry?.available && (
+                <small>Chưa cài <code>agy</code> CLI (cần nếu chọn Antigravity làm CLI chạy ngầm): <code>{agyInstallCmd}</code></small>
+              )}
               <code className="agent-config-path">{status?.configPath || agent.configName}</code>
               <button className={status?.installed && !status?.needsUpdate ? "secondary-button compact" : "primary-button compact"} type="button"
-                onClick={() => void installAgent(agent.id)} disabled={!agentAccessStatus?.encryptionReady || agentAccessLoading || agentAccessBusy || status?.error === "CONFIG_ACCESS_FAILED" || cliMissing}>
-                {needsFix ? "Sao lưu và sửa cấu hình" : cliMissing ? "Cài CLI trước" : !agentAccessStatus?.configured ? "Tạo token & kết nối" : status?.installed && !status?.needsUpdate ? "Cập nhật cấu hình" : status?.needsUpdate ? "Kết nối lại" : "Kết nối"}
+                onClick={() => void installAgent(agent.id)} disabled={!agentAccessStatus?.encryptionReady || agentAccessLoading || agentAccessBusy || status?.error === "CONFIG_ACCESS_FAILED" || (!needsFix && cliMissing)}>
+                {needsFix ? "Sao lưu và sửa cấu hình" : cliMissing ? (agent.id === "antigravity" ? "Cài Antigravity trước" : "Cài CLI trước") : !agentAccessStatus?.configured ? "Tạo token & kết nối" : status?.installed && !status?.needsUpdate ? "Cập nhật cấu hình" : status?.needsUpdate ? "Kết nối lại" : "Kết nối"}
               </button>
             </article>;
           })}

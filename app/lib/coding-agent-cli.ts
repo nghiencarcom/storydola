@@ -8,7 +8,13 @@ import { runAntigravityImages } from "./antigravity-acp";
 import { codingAgentModelPresets, type CodingAgentEffort, type CodingAgentId, type CodingAgentModelOption, type CodingAgentSpeed } from "./coding-agent-models";
 
 export type CodingAgent = CodingAgentId;
-export type CodingAgentCliStatus = { id: CodingAgent; label: string; available: boolean; models: CodingAgentModelOption[] };
+export type CodingAgentCliStatus = {
+  id: CodingAgent;
+  label: string;
+  available: boolean;
+  mcpTargetAvailable?: boolean;
+  models: CodingAgentModelOption[];
+};
 type AgentCommand = { executable: string; requiresShell: boolean };
 const execFileAsync = promisify(execFile);
 
@@ -45,10 +51,19 @@ function commandSearchPaths(agent: CodingAgent) {
       ...(npmPrefix ? [npmPrefix] : []),
     ]
     : [path.join(home, ".local", "bin"), path.join(home, ".npm-global", "bin"), "/opt/homebrew/bin", "/usr/local/bin", "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS"];
+  const appData = process.env.APPDATA?.trim() || path.join(home, "AppData", "Roaming");
   const agentSpecificPaths = agent === "antigravity"
     ? process.platform === "win32"
-      ? [path.join(localAppData, "agy", "bin"), path.join(programFiles, "Google", "antigravity-cli"), path.join(home, ".gemini", "bin")]
-      : [path.join(home, ".gemini", "bin")]
+      ? [
+        path.join(localAppData, "agy", "bin"),
+        path.join(localAppData, "Programs", "agy", "bin"),
+        path.join(localAppData, "Google", "Antigravity", "bin"),
+        path.join(appData, "agy", "bin"),
+        path.join(programFiles, "Google", "antigravity-cli"),
+        path.join(home, ".gemini", "bin"),
+        path.join(home, ".antigravity", "bin"),
+      ]
+      : [path.join(home, ".gemini", "bin"), path.join(home, ".antigravity", "bin")]
     : [];
   const directories = [...knownPaths, ...agentSpecificPaths, ...pathEntries];
   const seen = new Set<string>();
@@ -82,14 +97,61 @@ async function resolveAgentCommand(agent: CodingAgent): Promise<AgentCommand | u
   return undefined;
 }
 
+async function hasMcpTargetInstalled(agent: CodingAgent, hasCli: boolean): Promise<boolean> {
+  if (hasCli) return true;
+  if (agent !== "antigravity") return false;
+  const home = homedir();
+  const localAppData = process.env.LOCALAPPDATA?.trim() || path.join(home, "AppData", "Local");
+  const programFiles = process.env.ProgramFiles?.trim() || "C:\\Program Files";
+  const candidates = [
+    path.join(home, ".gemini", "antigravity"),
+    path.join(home, ".gemini", "antigravity-ide"),
+    path.join(home, ".gemini", "config", "mcp_config.json"),
+    ...(process.platform === "darwin"
+      ? [
+        "/Applications/Antigravity.app",
+        path.join(home, "Applications", "Antigravity.app"),
+        "/Applications/Antigravity IDE.app",
+        path.join(home, "Applications", "Antigravity IDE.app"),
+      ]
+      : process.platform === "win32"
+        ? [
+          path.join(localAppData, "Programs", "Antigravity", "Antigravity.exe"),
+          path.join(localAppData, "Programs", "Antigravity IDE", "Antigravity IDE.exe"),
+          path.join(localAppData, "Programs", "antigravity-ide", "Antigravity IDE.exe"),
+          path.join(localAppData, "Google", "Antigravity", "Antigravity.exe"),
+          path.join(localAppData, "Antigravity", "Antigravity.exe"),
+          path.join(programFiles, "Antigravity", "Antigravity.exe"),
+          path.join(programFiles, "Google", "Antigravity", "Antigravity.exe"),
+          path.join(programFiles, "Antigravity IDE", "Antigravity IDE.exe"),
+        ]
+        : [
+          "/usr/bin/antigravity",
+          "/usr/bin/antigravity-ide",
+          "/opt/Antigravity/antigravity",
+        ]),
+  ];
+  for (const candidate of candidates) {
+    try {
+      await access(candidate, constants.F_OK);
+      return true;
+    } catch {
+      // Continue checking remaining Antigravity Desktop / IDE locations.
+    }
+  }
+  return false;
+}
+
 export async function getCodingAgentCliStatuses({ includeModels = true }: { includeModels?: boolean } = {}): Promise<CodingAgentCliStatus[]> {
   const agents: CodingAgent[] = ["codex", "claude", "antigravity"];
   return Promise.all(agents.map(async (id) => {
     const command = await resolveAgentCommand(id);
+    const available = Boolean(command);
     return {
       id,
       label: AGENT_LABELS[id],
-      available: Boolean(command),
+      available,
+      mcpTargetAvailable: await hasMcpTargetInstalled(id, available),
       models: command && includeModels ? await getCodingAgentModels(id, command) : [],
     };
   }));
