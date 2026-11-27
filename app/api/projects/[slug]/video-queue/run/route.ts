@@ -7,7 +7,7 @@ import { chunkForScene, previousSceneContinuityReference, readProjectScenes } fr
 import { getProjectOrThrow, makeActivity, markRenderStale, now, readChunkOutput, saveChunkOutput, updateData } from "../../../../../lib/server-store";
 import { deleteHiggsfieldSessionToken, getHiggsfieldSessionToken } from "../../../../../lib/higgsfield-session-store";
 import { deleteProviderSessionToken, getProviderSessionToken } from "../../../../../lib/provider-session-store";
-import { canResumeVideoQueueJob, claimVideoQueueJob, isVideoQueueJobActive, releaseVideoQueueJob } from "../../../../../lib/video-queue-runtime";
+import { canResumeVideoQueueJob, claimVideoQueueJob, getVideoQueueJobSignal, isVideoQueueJobActive, releaseVideoQueueJob } from "../../../../../lib/video-queue-runtime";
 
 export const runtime = "nodejs";
 
@@ -21,9 +21,9 @@ function emptyQueue(): VideoQueueState {
 
 function queueSummary(queue: VideoQueueState) {
   return queue.jobs.reduce((summary, job) => {
-    summary[job.status] += 1;
+    summary[job.status] = (summary[job.status] || 0) + 1;
     return summary;
-  }, { queued: 0, running: 0, completed: 0, failed: 0, paused: 0 } as Record<string, number>);
+  }, { queued: 0, running: 0, completed: 0, failed: 0, paused: 0, cancelled: 0 } as Record<string, number>);
 }
 
 function nextQueueStatus(queue: VideoQueueState) {
@@ -91,6 +91,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
 
   const job = started.job;
   const project = started.project;
+  const signal = getVideoQueueJobSignal(job.id);
   const userId = request.headers.get("x-storyai-user-id")?.trim() || "";
   try {
     const scenes = await readProjectScenes(project);
@@ -133,6 +134,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       providerAuthToken,
       higgsfieldAuthToken,
       higgsfieldJobId: job.higgsfieldJobId,
+      signal,
       onHiggsfieldCreateStarted: async () => {
         const checkpointed = await updateData((data) => {
           const current = getProjectOrThrow(data, slug);
@@ -213,6 +215,13 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
         if (!checkpointed) throw new Error("VIDEO_QUEUE_JOB_NOT_FOUND");
       },
     });
+    if (signal?.aborted) {
+      const currentSnapshot = await updateData((data) => {
+        const current = getProjectOrThrow(data, slug);
+        return current.videoQueue || emptyQueue();
+      });
+      return NextResponse.json({ ok: true, processed: false, cancelled: true, jobId: job.id, queue: currentSnapshot, summary: queueSummary(currentSnapshot) });
+    }
     const payload = asRecord(await readChunkOutput(chunk));
     const rawScenes = payload && Array.isArray(payload.scenes) ? payload.scenes : [];
     const targetIndex = rawScenes.findIndex((value) => {
@@ -255,7 +264,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       const queue = current.videoQueue || emptyQueue();
       const affectedChunk = current.chunks.find((item) => item.id === job.chunkId);
       const currentJob = queue.jobs.find((item) => item.id === job.id);
-      if (currentJob) {
+      if (currentJob && currentJob.status !== "cancelled") {
         currentJob.status = "completed";
         currentJob.finishedAt = now();
         currentJob.updatedAt = now();
@@ -281,6 +290,13 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     if (usesGateway && userId) await deleteProviderSessionToken(userId, job.id).catch(() => undefined);
     return NextResponse.json({ ok: true, processed: true, jobId: job.id, media, outputPath, queue: updated.queue, summary: queueSummary(updated.queue), limit: updated.queue.concurrency });
   } catch (cause) {
+    if (signal?.aborted) {
+      const currentSnapshot = await updateData((data) => {
+        const current = getProjectOrThrow(data, slug);
+        return current.videoQueue || emptyQueue();
+      });
+      return NextResponse.json({ ok: true, processed: false, cancelled: true, jobId: job.id, queue: currentSnapshot, summary: queueSummary(currentSnapshot) });
+    }
     const code = cause instanceof Error ? cause.message : "Video queue job failed";
     const message = code;
     const seedanceError = cause instanceof SeedanceGenerationError ? cause : undefined;

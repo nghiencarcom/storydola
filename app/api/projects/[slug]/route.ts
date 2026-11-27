@@ -23,7 +23,8 @@ export async function GET(_request: Request, context: { params: Promise<{ slug: 
 
 export async function PATCH(request: Request, context: { params: Promise<{ slug: string }> }) {
   const { slug } = await context.params;
-  const body = (await request.json().catch(() => ({}))) as UpdateProjectInput;
+  const rawBody = (await request.json().catch(() => ({}))) as UpdateProjectInput & { silent?: boolean };
+  const { silent, ...body } = rawBody;
   try {
     const project = await updateData((data) => {
       const index = data.projects.findIndex((item) => item.slug === slug);
@@ -92,7 +93,9 @@ export async function PATCH(request: Request, context: { params: Promise<{ slug:
         });
       }
       data.projects[index] = updated;
-      data.activities.unshift(makeActivity({ projectSlug: slug, kind: "project", title: "Project đã được cập nhật", detail: "Cấu hình và nguồn đầu vào đã được lưu.", status: "success" }));
+      if (silent !== true) {
+        data.activities.unshift(makeActivity({ projectSlug: slug, kind: "project", title: "Project đã được cập nhật", detail: "Cấu hình và nguồn đầu vào đã được lưu.", status: "success" }));
+      }
       return updated;
     });
     return NextResponse.json({ project });

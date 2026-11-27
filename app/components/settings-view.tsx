@@ -121,7 +121,7 @@ export function SettingsView() {
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.message || "Không thể lưu lựa chọn Code Agent.");
       setCodingAgentPreference(payload.preference as CodingAgentPreference);
-      setCodingPreferenceNotice({ tone: "success", text: "Đã lưu Code Agent, model, chất lượng và speed cho các job UGC." });
+      setCodingPreferenceNotice({ tone: "success", text: "Đã lưu Code Agent, model, chất lượng và speed mặc định cho toàn bộ tác vụ AI." });
     } catch (cause) {
       setCodingPreferenceNotice({ tone: "error", text: cause instanceof Error ? cause.message : "Không thể lưu lựa chọn Code Agent." });
     } finally {
@@ -323,7 +323,7 @@ export function SettingsView() {
         </div>
         <form className="agent-ugc-preference" onSubmit={(event) => void saveCodingAgentPreference(event)}>
           <div className="agent-ugc-preference-heading">
-            <div><strong>Code Agent soạn nội dung UGC</strong><small>CLI, model, chất lượng suy luận và speed được lưu trong tài khoản, rồi tự dùng cho mọi template bán hàng.</small></div>
+            <div><strong>Code Agent CLI mặc định</strong><small>CLI, model, chất lượng suy luận và speed được lưu trong tài khoản, dùng chung cho tạo title &amp; thumbnail, phân tích kịch bản, tách/dịch thoại và các template bán hàng.</small></div>
             {codingAgentPreference && <span>Đã lưu</span>}
           </div>
           <div className="agent-ugc-preference-fields">
@@ -375,7 +375,7 @@ export function SettingsView() {
           </div>
           <div className="agent-ugc-preference-footer">
             {codingPreferenceNotice && <div className={`seedance-account-notice ${codingPreferenceNotice.tone}`} role="status">{codingPreferenceNotice.text}</div>}
-            <button type="submit" className="primary-button compact" disabled={!selectedCliAgent?.available || codingPreferenceBusy || Boolean(codingModelSelectValue === "__custom" && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$/u.test(selectedCodingModel.trim()))}>{codingPreferenceBusy ? "Đang lưu…" : "Lưu cấu hình soạn UGC"}</button>
+            <button type="submit" className="primary-button compact" disabled={!selectedCliAgent?.available || codingPreferenceBusy || Boolean(codingModelSelectValue === "__custom" && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$/u.test(selectedCodingModel.trim()))}>{codingPreferenceBusy ? "Đang lưu…" : "Lưu cấu hình Code Agent"}</button>
           </div>
         </form>
         {agentAccessLoading && <p role="status">Đang đọc trạng thái token và cấu hình CLI…</p>}

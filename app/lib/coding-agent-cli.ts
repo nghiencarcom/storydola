@@ -351,6 +351,7 @@ export async function generateWithCodingAgent(agent: CodingAgent, prompt: string
       ...imagePaths.flatMap((imagePath) => ["--image", imagePath]),
     ] : [];
     const claudePrompt = "Use the complete StoryAI task supplied through stdin as your instruction. Return only the requested JSON object, without markdown or commentary.";
+    const antigravityEffortArgs = quality !== "auto" && quality !== "ultra" ? ["--effort", quality] : [];
     const args = agent === "codex"
       ? ["exec", ...imageArgs, ...modelArgs, ...(quality !== "auto" ? ["--config", `model_reasoning_effort=${quality}`] : []), ...(speed === "fast" ? ["--config", "service_tier=fast"] : []), "--json", "--sandbox", "read-only", "--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--color", "never", ...(promptOnlyJson ? [] : ["--output-schema", outputSchemaPath]), "--cd", workDir, "-"]
       : agent === "claude"
@@ -358,8 +359,8 @@ export async function generateWithCodingAgent(agent: CodingAgent, prompt: string
           ? ["--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--mcp-config", mcpConfig, "--permission-mode", "plan"]
           : ["--safe-mode", "--output-format", "json"]), ...modelArgs, ...(quality !== "auto" ? ["--effort", quality] : []), ...(promptOnlyJson ? [] : ["--json-schema", JSON.stringify({ type: "object" })]), "--max-turns", "1", "--tools", "", "--disallowedTools", "mcp__*", "--no-session-persistence", ...(claudeImages ? [] : ["--", claudePrompt])]
         : command.requiresShell
-          ? ["--sandbox", ...modelArgs, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", "15m"]
-          : ["--sandbox", ...modelArgs, "-p", taskInstruction, "--print-timeout", "15m"];
+          ? ["--sandbox", "--disable-slash-commands", ...modelArgs, ...antigravityEffortArgs, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", "15m"]
+          : ["--sandbox", "--disable-slash-commands", ...modelArgs, ...antigravityEffortArgs, "-p", taskInstruction, "--print-timeout", "15m"];
     const timeoutMs = 15 * 60_000;
     const stdinText = claudeImages
       ? `${JSON.stringify({ type: "user", message: { role: "user", content: [

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { buildChunkPrompt, STORY_PRESETS, type StoryPresetId } from "../../lib/story-presets";
-import { generateWithScriptProvider, getProviderConfig, resolveConfiguredCodingAgent } from "../../lib/script-provider";
+import { generateWithScriptProvider, getCodeAgentProviderSummary, resolveConfiguredCodingAgent } from "../../lib/script-provider";
 import type { ContinuityContext } from "../../lib/project-types";
 
 export const runtime = "nodejs";
@@ -29,10 +29,12 @@ type ScriptRequest = {
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as ScriptRequest;
   const preset = STORY_PRESETS[body.presetId || "ai-story"] || STORY_PRESETS["ai-story"];
-  const config = getProviderConfig();
   const userId = request.headers.get("x-storyai-user-id")?.trim() || undefined;
-  const fallbackAgent = !config.keyConfigured ? await resolveConfiguredCodingAgent(userId) : undefined;
-  if (!config.keyConfigured && !fallbackAgent) return NextResponse.json({ ok: false, code: "SCRIPT_LLM_NOT_CONFIGURED", message: "Chưa cấu hình OPENAI_API_KEY ở server hoặc kết nối Code Agent CLI trong Cài đặt. Không đặt API key trong trình duyệt.", preset: preset.id, provider: { baseUrl: config.baseUrl, model: config.primaryModel, fallbackModels: config.fallbackModels, reasoningEffort: config.reasoningEffort, serviceTier: config.serviceTier } }, { status: 503 });
+  const agent = await resolveConfiguredCodingAgent(userId);
+  if (!agent) {
+    const provider = await getCodeAgentProviderSummary(userId);
+    return NextResponse.json({ ok: false, code: "SCRIPT_LLM_NOT_CONFIGURED", message: "Chưa kết nối Code Agent CLI (Codex / Claude Code / Antigravity) trong Cài đặt.", preset: preset.id, provider: { baseUrl: provider.baseUrl, model: provider.primaryModel, fallbackModels: provider.fallbackModels, reasoningEffort: provider.reasoningEffort, serviceTier: provider.serviceTier } }, { status: 503 });
+  }
 
   const sceneStart = body.sceneStart ?? 1;
   const sceneEnd = body.sceneEnd ?? sceneStart + 19;
@@ -58,7 +60,7 @@ export async function POST(request: Request) {
   });
   try {
     const output = await generateWithScriptProvider(prompt, { userId });
-    return NextResponse.json({ ok: true, preset: preset.id, provider: { baseUrl: config.baseUrl, model: output.model }, ...output });
+    return NextResponse.json({ ok: true, preset: preset.id, provider: { baseUrl: "local-cli", model: output.model }, ...output });
   } catch (cause) {
     const code = cause instanceof Error ? cause.name : "SCRIPT_LLM_FAILED";
     return NextResponse.json({ ok: false, code, message: cause instanceof Error ? cause.message : "Script provider failed" }, { status: code === "SCRIPT_LLM_NOT_CONFIGURED" ? 503 : 502 });

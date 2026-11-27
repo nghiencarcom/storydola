@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { isFlowImageModel, isMuseImageModel, resolveMediaGenerationSettings } from "../../../../lib/media-generation-settings";
 import { isFlowStoryOnlyPreset } from "../../../../lib/story-presets";
 import { readMaiVideoAuthCookie } from "../../../../lib/maivideo-auth-shared";
-import { createSceneMediaJob, startSceneMediaQueue } from "../../../../lib/scene-media-queue";
+import { cancelSceneMediaJobs, createSceneMediaJob, startSceneMediaQueue } from "../../../../lib/scene-media-queue";
 import { getSeedanceApiKey } from "../../../../lib/seedance-accounts";
 import { providerSessionEncryptionReady, saveProviderSessionTokens } from "../../../../lib/provider-session-store";
 import { higgsfieldSessionEncryptionReady, saveHiggsfieldSessionTokens } from "../../../../lib/higgsfield-session-store";
@@ -27,7 +27,7 @@ function activeJob(project: StoryProject, sceneId: string) {
 
 function trimJobs(jobs: SceneMediaJob[]) {
   const active = jobs.filter((job) => job.status === "queued" || job.status === "running");
-  const finished = jobs.filter((job) => job.status === "completed" || job.status === "failed").slice(-120);
+  const finished = jobs.filter((job) => job.status === "completed" || job.status === "failed" || job.status === "cancelled").slice(-120);
   return [...finished, ...active].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
@@ -164,6 +164,12 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     queued = await updateDataForUser(userId, (workspace) => {
     const current = workspace.projects.find((item) => item.slug === slug);
     if (!current) throw new Error("PROJECT_NOT_FOUND");
+    if (persistMediaGeneration && Object.keys(explicitSettings).length) {
+      current.mediaGeneration = resolveMediaGenerationSettings({
+        ...current.mediaGeneration,
+        ...explicitSettings,
+      });
+    }
     current.sceneMediaJobs ||= [];
     const created: SceneMediaJob[] = [];
     for (const scene of requestedScenes) {
@@ -267,5 +273,38 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
 
   startSceneMediaQueue(userId, slug);
   return NextResponse.json({ ok: true, jobs: queued.map(publicJob), queued: queued.filter((job) => job.status === "queued").length, replacedLegacyVideoJobs }, { status: 202 });
+}
+
+export async function DELETE(request: Request, context: { params: Promise<{ slug: string }> }) {
+  const userId = userIdFromHeaders(await headers());
+  if (!userId) return NextResponse.json({ message: "Chưa đăng nhập." }, { status: 401 });
+  const { slug } = await context.params;
+  const body = await request.json().catch(() => ({})) as { sceneIds?: unknown; jobIds?: unknown; kind?: unknown };
+  const rawKind = body.kind === undefined || body.kind === null ? "" : String(body.kind).trim();
+  if (rawKind && rawKind !== "image" && rawKind !== "video") {
+    return NextResponse.json({ message: "Loại media cần huỷ không hợp lệ." }, { status: 400 });
+  }
+  const kind = rawKind === "image" || rawKind === "video" ? rawKind : undefined;
+  const sceneIds = Array.isArray(body.sceneIds)
+    ? [...new Set(body.sceneIds.map((id) => String(id || "").trim()).filter(Boolean))].slice(0, 500)
+    : undefined;
+  const jobIds = Array.isArray(body.jobIds)
+    ? [...new Set(body.jobIds.map((id) => String(id || "").trim()).filter(Boolean))].slice(0, 500)
+    : undefined;
+
+  try {
+    const result = await cancelSceneMediaJobs(userId, slug, { sceneIds, jobIds, kind });
+    return NextResponse.json({
+      ok: true,
+      cancelledCount: result.cancelledJobs.length,
+      cancelledSceneIds: result.cancelledSceneIds,
+      jobs: result.cancelledJobs.map(publicJob),
+    }, { headers: { "Cache-Control": "no-store" } });
+  } catch (cause) {
+    if (cause instanceof Error && cause.message === "PROJECT_NOT_FOUND") {
+      return NextResponse.json({ message: "Không tìm thấy project." }, { status: 404 });
+    }
+    throw cause;
+  }
 }
 

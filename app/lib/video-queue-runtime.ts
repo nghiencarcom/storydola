@@ -2,27 +2,42 @@ import type { VideoGenerationJob, VideoQueueState } from "./project-types";
 
 type VideoQueueRuntimeGlobal = typeof globalThis & {
   __storyAIVideoQueueActiveJobs?: Set<string>;
+  __storyAIVideoQueueActiveControllers?: Map<string, AbortController>;
 };
 
-function activeJobs() {
+function activeControllers() {
   const runtime = globalThis as VideoQueueRuntimeGlobal;
-  runtime.__storyAIVideoQueueActiveJobs ||= new Set<string>();
-  return runtime.__storyAIVideoQueueActiveJobs;
+  runtime.__storyAIVideoQueueActiveControllers ||= new Map<string, AbortController>();
+  return runtime.__storyAIVideoQueueActiveControllers;
 }
 
 export function claimVideoQueueJob(jobId: string) {
-  const active = activeJobs();
-  if (active.has(jobId)) return false;
-  active.add(jobId);
+  const controllers = activeControllers();
+  const legacySet = (globalThis as VideoQueueRuntimeGlobal).__storyAIVideoQueueActiveJobs;
+  if (controllers.has(jobId) || legacySet?.has(jobId)) return false;
+  controllers.set(jobId, new AbortController());
   return true;
 }
 
 export function isVideoQueueJobActive(jobId: string) {
-  return activeJobs().has(jobId);
+  const legacySet = (globalThis as VideoQueueRuntimeGlobal).__storyAIVideoQueueActiveJobs;
+  return activeControllers().has(jobId) || Boolean(legacySet?.has(jobId));
+}
+
+export function getVideoQueueJobSignal(jobId: string): AbortSignal | undefined {
+  return activeControllers().get(jobId)?.signal;
+}
+
+export function abortVideoQueueJob(jobId: string, reason?: unknown) {
+  const controller = activeControllers().get(jobId);
+  if (controller && !controller.signal.aborted) {
+    controller.abort(reason);
+  }
 }
 
 export function releaseVideoQueueJob(jobId: string) {
-  activeJobs().delete(jobId);
+  activeControllers().delete(jobId);
+  (globalThis as VideoQueueRuntimeGlobal).__storyAIVideoQueueActiveJobs?.delete(jobId);
 }
 
 /**

@@ -189,7 +189,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
         : message === "SCRIPT_STUDIO_MODE_CHANGED"
           ? "Project đã chuyển khỏi chế độ thủ công; hãy tải lại trước khi tiếp tục."
           : message === "SCRIPT_LLM_NOT_CONFIGURED"
-          ? "Chưa cấu hình Script LLM hoặc kết nối Code Agent CLI trong Cài đặt để phân tích kịch bản."
+          ? "Chưa kết nối Code Agent CLI (Codex / Claude Code / Antigravity) trong Cài đặt để phân tích kịch bản."
           : message;
       return NextResponse.json({ code: message, message: userMessage }, { status });
     }

@@ -52,7 +52,7 @@ export async function GET(_request: Request, context: { params: Promise<{ slug: 
       const activeMediaJob = sceneMediaJobs.find((job) => job.status === "queued" || job.status === "running");
       const storedMediaJob = activeMediaJob && !isSceneMediaJobSupersededBySavedVideo(activeMediaJob, scene.media, project.sceneMediaJobs || [])
         ? activeMediaJob
-        : sceneMediaJobs.find((job) => job.status === "completed" || job.status === "failed");
+        : sceneMediaJobs.find((job) => job.status === "completed" || job.status === "failed" || job.status === "cancelled");
       const mediaJob = storedMediaJob ? {
         id: storedMediaJob.id,
         sceneId: storedMediaJob.sceneId,

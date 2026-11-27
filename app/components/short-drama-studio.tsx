@@ -169,7 +169,7 @@ export function ShortDramaStudio({ project, sourceDirty }: { project: StoryProje
         <button className="secondary-button compact" type="button" onClick={() => setExpanded((value) => !value)}>{expanded ? "Thu gọn" : "Mở studio"}</button>
       </div>
       {expanded && <>
-        <div className="short-drama-privacy"><Icon name="alert" size={15} /><span>Kịch bản đã lưu sẽ được gửi tới Script LLM để phân tích.</span></div>
+        <div className="short-drama-privacy"><Icon name="alert" size={15} /><span>Kịch bản đã lưu sẽ được gửi tới Code Agent CLI để phân tích.</span></div>
         <div className="short-drama-toolbar">
           <span>{project.sourceText.trim() ? `${project.sourceText.length.toLocaleString("vi-VN")} ký tự · ${project.durationMinutes} phút mục tiêu` : "Chưa có kịch bản"}</span>
           <button className="primary-button" type="button" onClick={() => void analyzeScript()} disabled={analyzing || sourceDirty || !project.sourceText.trim()}>

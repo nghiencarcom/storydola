@@ -3,8 +3,9 @@ import { NextResponse } from "next/server";
 import { isValidProjectChunkSize } from "../../../lib/project-types";
 import { dramaPlanSourceText, normalizeDramaPlan } from "../../../lib/drama-plan";
 import { voiceLanguagePromptLabel } from "../../../lib/omnivoice";
-import { generateWithScriptProvider, getProviderConfig } from "../../../lib/script-provider";
-import { generateWithCodingAgent, type CodingAgent } from "../../../lib/coding-agent-cli";
+import { generateWithScriptProvider, resolveConfiguredCodingAgent } from "../../../lib/script-provider";
+import { generateWithCodingAgent, getCodingAgentCliStatuses, type CodingAgent } from "../../../lib/coding-agent-cli";
+import { getCodingAgentPreference } from "../../../lib/coding-agent-preferences";
 import { getCurrentUserId } from "../../../lib/auth-server";
 import type { DramaProjectPlan } from "../../../lib/project-types";
 import { imageStylePrompt, visualStylePrompt } from "../../../lib/visual-styles";
@@ -319,11 +320,13 @@ export async function POST(request: Request) {
   const brief = typeof body.brief === "string" ? body.brief.trim() : "";
   if (!projectTitle) return NextResponse.json({ ok: false, message: "Tên project là bắt buộc." }, { status: 400 });
   if (brief.length < 20 || brief.length > 10000) return NextResponse.json({ ok: false, message: "Ý tưởng cần từ 20 đến 10.000 ký tự." }, { status: 400 });
-  const writerAgent = body.writerAgent === "codex" || body.writerAgent === "claude" || body.writerAgent === "antigravity"
-    ? body.writerAgent as CodingAgent
-    : body.writerAgent === "api" ? "api" : "codex";
-  const config = getProviderConfig();
-  if (writerAgent === "api" && !config.keyConfigured) return NextResponse.json({ ok: false, code: "SCRIPT_LLM_NOT_CONFIGURED", message: "Chưa cấu hình OPENAI_API_KEY ở server." }, { status: 503 });
+  if (body.writerAgent === "api") {
+    return NextResponse.json({ ok: false, code: "SCRIPT_API_DISABLED", message: "Đã tắt Script LLM API; chỉ sử dụng Code Agent CLI (Codex, Claude Code hoặc Antigravity)." }, { status: 400 });
+  }
+  if (body.writerAgent !== undefined && body.writerAgent !== "codex" && body.writerAgent !== "claude" && body.writerAgent !== "antigravity") {
+    return NextResponse.json({ ok: false, message: "Chỉ hỗ trợ Code Agent CLI (Codex, Claude Code hoặc Antigravity)." }, { status: 400 });
+  }
+  const requestedAgent = body.writerAgent as CodingAgent | undefined;
 
   const requestedDuration = Number(body.durationMinutes);
   const durationMinutes = Number.isFinite(requestedDuration) ? Math.min(240, Math.max(1, requestedDuration)) : 60;
@@ -350,12 +353,31 @@ export async function POST(request: Request) {
   }
   const runningJob = [...dramaSourceJobs().values()].find((job) => job.userId === userId && job.status === "running");
   if (runningJob) return NextResponse.json({ ok: false, code: "DRAMA_SOURCE_BUSY", message: "Đang chờ coding agent viết kịch bản cho tài khoản này. Hãy đợi kết quả hiện tại." }, { status: 409 });
+  const savedPreference = await getCodingAgentPreference(userId).catch(() => undefined);
+  let targetAgent;
+  if (requestedAgent) {
+    const statuses = await getCodingAgentCliStatuses({ includeModels: false }).catch(() => []);
+    if (!statuses.some((item) => item.id === requestedAgent && item.available)) {
+      return NextResponse.json({ ok: false, code: "SCRIPT_LLM_NOT_CONFIGURED", message: "Chưa tìm thấy CLI đã chọn trên máy đang chạy StoryAI. Hãy cài đặt và kết nối trong Cài đặt." }, { status: 503 });
+    }
+    targetAgent = savedPreference?.agent === requestedAgent
+      ? savedPreference
+      : { agent: requestedAgent, model: "", quality: "auto" as const, speed: "standard" as const };
+  } else {
+    targetAgent = await resolveConfiguredCodingAgent(userId);
+  }
+  if (!targetAgent) {
+    return NextResponse.json({ ok: false, code: "SCRIPT_LLM_NOT_CONFIGURED", message: "Chưa kết nối Code Agent CLI (Codex / Claude Code / Antigravity) trong Cài đặt." }, { status: 503 });
+  }
+  const writerAgent = targetAgent.agent;
   const promptInput = { projectTitle, brief, durationMinutes, chunkSize, episodeCount, languageLabel, contentGenre, secondaryGenres, storySetting, settingNotes, visualStyle, imageStyle, aspectRatio };
-  const generateScript: ScriptGenerator = writerAgent === "api"
-    ? (prompt) => generateWithScriptProvider(prompt, { allowCodingAgentFallback: false })
-    : (prompt) => generateWithCodingAgent(writerAgent, prompt);
+  const generateScript: ScriptGenerator = (prompt) => generateWithCodingAgent(writerAgent, prompt, {
+    model: targetAgent.model,
+    quality: targetAgent.quality,
+    speed: targetAgent.speed,
+  });
   const job = createDramaSourceJob(userId);
-  void generateDramaSourceResult(promptInput, (stage) => updateDramaSourceJob(job.id, userId, { stage: `${writerAgent === "api" ? "AI API" : writerAgent === "codex" ? "Codex" : writerAgent === "claude" ? "Claude Code" : "Antigravity"} · ${stage}` }), generateScript)
+  void generateDramaSourceResult(promptInput, (stage) => updateDramaSourceJob(job.id, userId, { stage: `${writerAgent === "codex" ? "Codex" : writerAgent === "claude" ? "Claude Code" : "Antigravity"} · ${stage}` }), generateScript)
     .then((result) => updateDramaSourceJob(job.id, userId, { status: "completed", stage: "Hoàn tất", result }))
     .catch((cause) => {
       const message = cause instanceof Error ? cause.message : "Không tạo được kế hoạch Phim AI.";

@@ -170,12 +170,12 @@ export type ContinuityQaReport = {
   createdAt: string;
 };
 
-export type VideoGenerationJobStatus = "queued" | "running" | "completed" | "failed" | "paused";
+export type VideoGenerationJobStatus = "queued" | "running" | "completed" | "failed" | "paused" | "cancelled";
 
 export type VideoGenerationFailureStage = "seedance_create" | "seedance_poll" | "seedance_download" | "seedance_checkpoint" | "higgsfield_create" | "higgsfield_poll" | "higgsfield_checkpoint" | "flow_create" | "flow_poll" | "flow_download" | "flow_checkpoint";
 export type VideoGenerationRetryStrategy = "same_task" | "new_task";
 
-export type SceneMediaJobStatus = "queued" | "running" | "completed" | "failed";
+export type SceneMediaJobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
 /** Persisted background task for one scene image or video generation. */
 export type SceneMediaJob = {
@@ -384,11 +384,25 @@ export type VideoTitleOption = {
   angle?: string;
 };
 
+export type ThumbnailImageAsset = {
+  localPath: string;
+  baseLocalPath?: string;
+  withOverlay?: boolean;
+  provider?: string;
+  model?: string;
+  quality?: string;
+  aspectRatio?: string;
+  referenceCharacterIds?: string[];
+  referenceLocationId?: string;
+  generatedAt: string;
+};
+
 export type ThumbnailPromptOption = {
   concept: string;
   prompt: string;
   overlayText: string;
   layoutNote?: string;
+  image?: ThumbnailImageAsset;
 };
 
 export type VideoPublishingSet = {

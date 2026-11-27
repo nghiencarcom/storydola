@@ -574,23 +574,45 @@ export async function prepareRemakeMedia(
   const height = video.aspectRatio === "16:9" ? 216 : 360;
   const rowsPerSheet = 3;
   const columnsPerSheet = 4;
-  const sheets = [];
+  const sheetOffsets: number[] = [];
   for (let offset = 0; offset < windows.length; offset += rowsPerSheet) {
-    if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
-    const rows = await Promise.all(windows.slice(offset, offset + rowsPerSheet).map((window) =>
-      sampleFrames(source, video.videoIndex, window, width, height, signal)));
-    const cells = await Promise.all(rows.flatMap((row, y) => row.slice(0, columnsPerSheet).map(async ({ data }, x) => ({
-      input: await sharp(data).resize(width, height, { fit: "contain", background: "#111111" }).jpeg().toBuffer(),
-      left: x * width, top: y * height,
-    }))));
-    const imagePath = path.join(work, `frames-${sheets.length + 1}.jpg`);
-    await sharp({ create: { width: columnsPerSheet * width, height: rows.length * height, channels: 3, background: "#111111" } })
-      .composite(cells).jpeg({ quality: 88 }).toFile(imagePath);
-    sheets.push({ imagePath, rows: rows.map((row, index) => ({
-      scene: offset + index + 1, framesAt: row.map(({ time }) => time),
-    })) });
+    sheetOffsets.push(offset);
   }
-  const { cues: audioCues, silentTrack } = await analyzeAudioWindows(source, video.audio, windows, video.seconds, signal);
+  const sheets: Array<{ imagePath: string; rows: Array<{ scene: number; framesAt: number[] }> }> = new Array(sheetOffsets.length);
+  const sheetConcurrency = Math.min(4, Math.max(1, sheetOffsets.length));
+  let nextSheetPos = 0;
+
+  async function buildSheets() {
+    await Promise.all(Array.from({ length: sheetConcurrency }, async () => {
+      while (nextSheetPos < sheetOffsets.length) {
+        const sheetIndex = nextSheetPos++;
+        const offset = sheetOffsets[sheetIndex];
+        if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
+        const rows = await Promise.all(windows.slice(offset, offset + rowsPerSheet).map((window) =>
+          sampleFrames(source, video.videoIndex, window, width, height, signal)));
+        const cells = await Promise.all(rows.flatMap((row, y) => row.slice(0, columnsPerSheet).map(async ({ data }, x) => ({
+          input: await sharp(data).resize(width, height, { fit: "contain", background: "#111111" }).jpeg().toBuffer(),
+          left: x * width, top: y * height,
+        }))));
+        const imagePath = path.join(work, `frames-${sheetIndex + 1}.jpg`);
+        await sharp({ create: { width: columnsPerSheet * width, height: rows.length * height, channels: 3, background: "#111111" } })
+          .composite(cells).jpeg({ quality: 88 }).toFile(imagePath);
+        sheets[sheetIndex] = {
+          imagePath,
+          rows: rows.map((row, index) => ({
+            scene: offset + index + 1,
+            framesAt: row.map(({ time }) => time),
+          })),
+        };
+      }
+    }));
+  }
+
+  const [, audioResult] = await Promise.all([
+    buildSheets(),
+    analyzeAudioWindows(source, video.audio, windows, video.seconds, signal),
+  ]);
+  const { cues: audioCues, silentTrack } = audioResult;
   const transcript = await getTranscript(input, source, platform, work, video, audioCues, windows, silentTrack, signal);
   return { windows, sheets, aspectRatio: video.aspectRatio, transcript, audioCues };
 }

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUserId } from "../../../../../lib/auth-server";
-import { generateWithCodingAgent } from "../../../../../lib/coding-agent-cli";
+import { generateWithCodingAgent, getCodingAgentCliStatuses } from "../../../../../lib/coding-agent-cli";
+import { getCodingAgentPreference } from "../../../../../lib/coding-agent-preferences";
 import { buildDramaChunkSourceText } from "../../../../../lib/drama-plan";
 import { validateEpisode } from "../../../../../lib/episode-script-validation";
 import { createEpisodeScriptTemplate } from "../../../../../lib/project-script-templates";
@@ -30,6 +31,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ slu
   if (activeUsers.has(userId)) {
     return NextResponse.json({ message: "Agent đang viết một tập. Hãy đợi kết quả." }, { status: 409 });
   }
+  const [statuses, savedPref] = await Promise.all([
+    getCodingAgentCliStatuses({ includeModels: false }).catch(() => []),
+    getCodingAgentPreference(userId).catch(() => undefined),
+  ]);
+  if (!statuses.some((item) => item.id === agent && item.available)) {
+    return NextResponse.json({ message: "Chưa tìm thấy Code Agent CLI đã chọn trên máy đang chạy StoryAI. Hãy kiểm tra trong Cài đặt." }, { status: 503 });
+  }
 
   const target = project.chunks[index];
   const timelineStart = Number.isFinite(body.timelineStart) && body.timelineStart >= 0
@@ -58,7 +66,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ slu
 
   activeUsers.add(userId);
   try {
-    const { result } = await generateWithCodingAgent(agent, prompt, { promptOnlyJson: true });
+    const prefOptions = savedPref && savedPref.agent === agent
+      ? { model: savedPref.model, quality: savedPref.quality, speed: savedPref.speed }
+      : {};
+    const { result } = await generateWithCodingAgent(agent, prompt, { promptOnlyJson: true, ...prefOptions });
     const { episode, message } = validateEpisode(result, true);
     if (!episode || episode.chunkId !== target.id || episode.sceneStart !== target.sceneStart || episode.sceneEnd !== target.sceneEnd) {
       return NextResponse.json({ message: message || "Agent trả sai tập hoặc phạm vi cảnh. Hãy thử viết lại." }, { status: 422 });

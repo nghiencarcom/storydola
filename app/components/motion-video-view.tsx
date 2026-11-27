@@ -1588,21 +1588,12 @@ export function MotionVideoView({ initialJobId = "" }: { initialJobId?: string }
               </div>
             </div>
 
-            <div className="field">
-              <span>Thời lượng mục tiêu (15s – 30 phút)</span>
-              <div className="motion-video-duration-chips">
-                {DURATION_QUICK_PRESETS.map((opt) => (
-                  <button
-                    key={opt.sec}
-                    type="button"
-                    className={`auto-edit-cat-pill ${Number(targetDurationSec) === opt.sec ? "is-active" : ""}`}
-                    onClick={() => setTargetDurationSec(String(opt.sec))}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-              <input
+            <div className="field motion-video-duration-field">
+              <label htmlFor="motion-video-duration">Thời lượng mục tiêu (15 giây – 30 phút)</label>
+              <div className="motion-video-duration-controls">
+                <div className="motion-video-duration-input">
+                  <input
+                id="motion-video-duration"
                 type="number"
                 min={15}
                 max={1800}
@@ -1611,8 +1602,23 @@ export function MotionVideoView({ initialJobId = "" }: { initialJobId?: string }
                 required
                 value={targetDurationSec}
                 onChange={(e) => setTargetDurationSec(e.target.value)}
-                style={{ marginTop: 6 }}
-              />
+                  />
+                  <span aria-hidden="true">giây</span>
+                </div>
+              <div className="motion-video-duration-chips">
+                {DURATION_QUICK_PRESETS.map((opt) => (
+                  <button
+                    key={opt.sec}
+                    type="button"
+                    className={`auto-edit-cat-pill ${Number(targetDurationSec) === opt.sec ? "is-active" : ""}`}
+                    aria-pressed={Number(targetDurationSec) === opt.sec}
+                    onClick={() => setTargetDurationSec(String(opt.sec))}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              </div>
               <small>{formatDurationSummary(targetDurationSec)}</small>
             </div>
 

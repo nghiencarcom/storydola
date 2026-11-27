@@ -131,7 +131,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     return NextResponse.json({ ok: true, model, targetLanguage, scene: { ...scene, ...updatedTarget } });
   } catch (cause) {
     const code = cause instanceof Error ? cause.message : "DIALOGUE_TRANSLATION_FAILED";
-    if (code === "SCRIPT_LLM_NOT_CONFIGURED") return NextResponse.json({ message: "Chưa cấu hình Script LLM hoặc Code Agent CLI để dịch lời thoại." }, { status: 503 });
+    if (code === "SCRIPT_LLM_NOT_CONFIGURED") return NextResponse.json({ message: "Chưa kết nối Code Agent CLI (Codex / Claude Code / Antigravity) để dịch lời thoại." }, { status: 503 });
     return NextResponse.json({ message: cause instanceof Error ? cause.message : "Không thể dịch lời thoại cảnh này." }, { status: 502 });
   }
 }

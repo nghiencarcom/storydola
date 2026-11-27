@@ -66,6 +66,7 @@ async function main() {
   const dialoguePacing = load("dialogue-pacing", {
     "./dialogue-segments": load("dialogue-segments", { "./entity-name": entityName }),
   });
+  process.env.STORYAI_REMAKE_BATCH_CONCURRENCY = "1";
   queue = load("video-remake-worker", {
     "./ai-drama-video-prompt-guidance": aiDramaGuidance,
     "./content-genres": contentGenres,
@@ -118,6 +119,7 @@ async function main() {
       } };
     } },
   });
+  delete process.env.STORYAI_REMAKE_BATCH_CONCURRENCY;
   jobId = await queue.addRemakeJob("test-user", {
     url: "https://example.test/video.mp4", language: "vi", direction: "", transcript: "",
     remakeMode: "faithful", dialoguePolicy: "auto", visualStyle: "", imageStyle: "", contentGenre: "", storySetting: "",
@@ -259,6 +261,7 @@ async function main() {
       } };
     } },
   });
+  delete process.env.STORYAI_REMAKE_BATCH_CONCURRENCY;
   const shortJobId = await repairQueue.addRemakeJob("test-user-2", {
     url: "https://example.test/short.mp4", language: "vi", direction: "", transcript: "",
     remakeMode: "creative", dialoguePolicy: "auto", visualStyle: "", imageStyle: "", contentGenre: "", storySetting: "",
@@ -346,6 +349,7 @@ async function main() {
       } };
     } },
   });
+  delete process.env.STORYAI_REMAKE_BATCH_CONCURRENCY;
   const funnyJobId = await funnyQueue.addRemakeJob("test-user-3", {
     url: "https://example.test/funny.mp4", language: "vi", direction: "", transcript: "",
     remakeMode: "faithful", dialoguePolicy: "auto", visualStyle: "", imageStyle: "", contentGenre: "", storySetting: "",
@@ -483,6 +487,7 @@ async function main() {
       };
     } },
   });
+  delete process.env.STORYAI_REMAKE_BATCH_CONCURRENCY;
 
   const edgeUser = "docker-pid1-user";
   const edgeJobId = await edgeQueue.addRemakeJob(edgeUser, {
@@ -795,6 +800,131 @@ async function main() {
   assert.doesNotMatch(analyzeErrJob.error, /Không đọc được tệp video/);
   assert.doesNotMatch(analyzeErrJob.error, /https:\/\//);
   assert.match(analyzeErrJob.error, /CLI auth expired/);
+
+  // Verify 4-way parallel batch sharding on 80 sheets (240 windows): 6 sheets/batch -> 14 batches,
+  // tiered quality ("auto" overview vs "low" batches), visual bridge lead-in sheet, and chronological assembly.
+  delete globalThis.storyAiRemake;
+  const eightyWindows = remake.makeRemakeWindows(1200, 5); // 240 windows = 20 min
+  const eightySheets = Array.from({ length: 80 }, (_, idx) => ({
+    imagePath: `s80-sheet-${idx + 1}`,
+    rows: eightyWindows.slice(idx * 3, idx * 3 + 3).map(({ sourceStart }, r) => ({
+      scene: idx * 3 + r + 1,
+      framesAt: [sourceStart + 0.5],
+    })),
+  }));
+  let parallelCallCount = 0;
+  let activeBatches = 0;
+  let peakBatchParallel = 0;
+  let fourEnteredResolve;
+  const fourEntered = new Promise((resolve) => { fourEnteredResolve = resolve; });
+  let releaseBatch0;
+  const batch0Gate = new Promise((resolve) => { releaseBatch0 = resolve; });
+  const batchCalls = [];
+  const parallelBatchWorker = load("video-remake-worker", {
+    "./ai-drama-video-prompt-guidance": aiDramaGuidance,
+    "./content-genres": contentGenres,
+    "./visual-styles": visualStyles,
+    "./visual-prompt-safety": visualPromptSafety,
+    "./video-prompt-policy": videoPromptPolicy,
+    "./dialogue-pacing": dialoguePacing,
+    "./data-directory": { dataPath: (...parts) => path.join(root, "parallel-batch-data", ...parts) },
+    "./video-remake": remake,
+    "./entity-name": entityName,
+    "./video-remake-media": {
+      prepareRemakeMedia: async () => ({
+        windows: eightyWindows,
+        sheets: eightySheets,
+        aspectRatio: "16:9",
+        transcript: { kind: "silent", text: "" },
+        audioCues: [],
+      }),
+    },
+    "./coding-agent-cli": {
+      generateWithCodingAgent: async (_agent, prompt, { quality, imagePaths }) => {
+        parallelCallCount += 1;
+        if (parallelCallCount === 1) {
+          batchCalls.push({ kind: "overview", quality, images: Array.from(imagePaths) });
+          return {
+            result: {
+              ...plan,
+              dialoguePolicy: "silent_sfx",
+              contentGenre: "action",
+              characters: [{ name: "Barnaby", description: "Sóc", imagePrompt: "Squirrel on plain clean white studio background" }],
+              locations: [{ name: "Canyon", description: "Mỏm đá", imagePrompt: "Sandstone ledge, empty" }],
+              beats: Array.from({ length: 14 }, (_, i) => `Hồi ${i + 1}`),
+            },
+          };
+        }
+        activeBatches += 1;
+        peakBatchParallel = Math.max(peakBatchParallel, activeBatches);
+        if (activeBatches === 4) fourEnteredResolve();
+        const rangeMatch = prompt.match(/chỉ tạo scenes cho ĐÚNG khoảng nguồn (\d+) đến (\d+)|Chỉ dùng các khoảng nguồn (\d+) đến (\d+)/u);
+        const startWin = Number(rangeMatch[1] || rangeMatch[3]);
+        const endWin = Number(rangeMatch[2] || rangeMatch[4]);
+        batchCalls.push({ kind: "batch", startWin, endWin, quality, images: Array.from(imagePaths), prompt });
+        if (startWin === 1) {
+          await fourEntered;
+          // Ensure batch 1 finishes before batch 0 to exercise out-of-order checkpoint merge.
+          await batch0Gate;
+        } else if (startWin === 19) {
+          await fourEntered;
+          releaseBatch0();
+        }
+        activeBatches -= 1;
+        return {
+          result: {
+            scenes: Array.from({ length: endWin - startWin + 1 }, (_, offset) => ({
+              sourceWindows: 1,
+              sourceVisuals: "Hình",
+              sourceStory: "Truyện",
+              sourceRole: "Beat",
+              purpose: "Mục đích",
+              action: `Pha ${startWin + offset}`,
+              characters: ["Barnaby"],
+              location: "Canyon",
+              dialogueMode: "visual_led",
+              actingBeat: "Barnaby leaps across stones.",
+              blocking: "Center ledge.",
+              shotSize: "Medium Shot",
+              cameraMovement: "02 Tracking Forward + Gentle Pan",
+              eyelineAction: "Forward.",
+              sfx: "0.5s sand thump.",
+              vfx: "none",
+              continuityIn: `Nối ${startWin + offset}`,
+              continuityOut: `Kết ${startWin + offset}`,
+              imagePrompt: "Barnaby crouches on Canyon ledge, 16:9 Stylized 3D.",
+              videoPrompt: `PRIMARY CAMERA COMBO: 02 Tracking Forward + Gentle Pan. 0.0-5.0s: Barnaby vaults cleanly across stone ${startWin + offset} without speaking.`,
+              dialogue: [],
+            })),
+          },
+        };
+      },
+    },
+  });
+  const fastJobId = await parallelBatchWorker.addRemakeJob("fast-user", {
+    url: "https://example.test/fast20m.mp4", language: "en", direction: "", transcript: "",
+    remakeMode: "creative", dialoguePolicy: "auto", visualStyle: "", imageStyle: "", contentGenre: "", storySetting: "",
+  }, { agent: "antigravity", model: "gemini-4-carbon-medium", quality: "auto", speed: "standard" });
+  await parallelBatchWorker.runRemakeQueue();
+  const fastJob = await parallelBatchWorker.getRemakeJob("fast-user", fastJobId);
+  assert.equal(fastJob.status, "ready", fastJob.error);
+  assert.equal(peakBatchParallel, 4);
+  const overviewCall = batchCalls.find((c) => c.kind === "overview");
+  assert.equal(overviewCall.quality, "auto");
+  assert.equal(overviewCall.images.length, 12);
+  const workerBatchCalls = batchCalls.filter((c) => c.kind === "batch");
+  assert.equal(workerBatchCalls.length, 14);
+  assert.ok(workerBatchCalls.every((c) => c.quality === "low"));
+  const batch1Call = workerBatchCalls.find((c) => c.startWin === 19);
+  assert.equal(batch1Call.images.length, 7);
+  assert.equal(batch1Call.images[0], "s80-sheet-6");
+  assert.match(batch1Call.prompt, /CẦU NỐI ĐẦU LÔ SONG SONG/);
+  assert.equal(fastJob.result.draft.scenes.length, 240);
+  assert.equal(fastJob.result.draft.scenes[0].action, "Pha 1");
+  assert.equal(fastJob.result.draft.scenes[18].action, "Pha 19");
+  assert.equal(fastJob.result.draft.scenes[239].action, "Pha 240");
+  const fastProjectSlug = await projectModule.createRemakeProject("fast-user", fastJob);
+  assert.ok(fastProjectSlug.startsWith("remake-"));
 
   console.log("Passed 10-minute queue, PID/bootId lock recovery, case-sensitive character matching, sfx/vfx & full draft repair, upload cleanup, job cancellation and episode range handoff.");
 }

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getProviderConfig } from "../../lib/script-provider";
+import { getCodeAgentProviderSummary } from "../../lib/script-provider";
 import { makeActivity, readData, updateData } from "../../lib/server-store";
 import type { WorkspacePayload } from "../../lib/project-types";
 import { getCurrentUserId } from "../../lib/auth-server";
@@ -50,11 +50,11 @@ export async function GET() {
       startSceneMediaQueue(userId, project.slug);
     }
   }
-  const config = getProviderConfig();
+  const provider = await getCodeAgentProviderSummary(userId);
   const payload: WorkspacePayload = {
     projects: data.projects,
     activities: data.activities.slice(0, 80),
-    provider: { baseUrl: config.baseUrl, primaryModel: config.primaryModel, fallbackModels: config.fallbackModels, reasoningEffort: config.reasoningEffort, serviceTier: config.serviceTier, standard: config.standard, keyConfigured: config.keyConfigured },
+    provider,
   };
   return NextResponse.json(payload, { headers: { "Cache-Control": "no-store" } });
 }

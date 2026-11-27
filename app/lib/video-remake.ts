@@ -43,8 +43,8 @@ export const remakePlanSchema = z.object({
   imageStyle: z.string().trim().max(80).optional(),
   contentGenre: z.string().trim().max(80).optional(),
   storySetting: z.string().trim().max(80).optional(),
-  characters: z.array(remakeEntitySchema).min(1).max(20),
-  locations: z.array(remakeEntitySchema).min(1).max(30),
+  characters: z.array(remakeEntitySchema).min(1).max(28),
+  locations: z.array(remakeEntitySchema).min(1).max(36),
 });
 
 export const remakePlanGenerationSchema = remakePlanSchema.extend({

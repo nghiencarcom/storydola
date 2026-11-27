@@ -686,6 +686,14 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   const [logoUploading, setLogoUploading] = useState(false);
   const [renderSettings, setRenderSettings] = useState<RenderSettings>(() => projectRenderSettings(project, project.render?.settings));
   const [videoQueueRunning, setVideoQueueRunning] = useState(false);
+  const [cancellingVideoSceneIds, setCancellingVideoSceneIds] = useState<Record<string, boolean>>({});
+  const [batchCancellingVideos, setBatchCancellingVideos] = useState(false);
+  const [thumbnailOverlayEnabled, setThumbnailOverlayEnabled] = useState(true);
+  const [generatingThumbnailKeys, setGeneratingThumbnailKeys] = useState<Record<string, boolean>>({});
+  const [generatingAllThumbnails, setGeneratingAllThumbnails] = useState(false);
+  const [expandedThumbnailPrompts, setExpandedThumbnailPrompts] = useState<Record<string, boolean>>({});
+  const [thumbnailCharacterOverrides, setThumbnailCharacterOverrides] = useState<Record<string, string[]>>({});
+  const [thumbnailPreview, setThumbnailPreview] = useState<{ url: string; title: string; subtitle: string } | null>(null);
   const characterImageInputRef = useRef<HTMLInputElement>(null);
   const locationImageInputRef = useRef<HTMLInputElement>(null);
   const videoQueueStopRef = useRef(false);
@@ -693,6 +701,13 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   const scenesLoadInFlightRef = useRef(false);
   const scenesMutationEpochRef = useRef(0);
   const episodeScriptLoadTokenRef = useRef(0);
+  const batchMediaPersistTimerRef = useRef<number | undefined>(undefined);
+
+  useEffect(() => () => {
+    if (batchMediaPersistTimerRef.current !== undefined) {
+      window.clearTimeout(batchMediaPersistTimerRef.current);
+    }
+  }, []);
 
   useEffect(() => {
     const search = new URLSearchParams(window.location.search);
@@ -1104,7 +1119,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
     if (!response.ok || !payload.ok) throw new Error(payload.message || `Không thể hoàn thiện thoại cho ${sceneNumberLabel(scene)}.`);
     const updatedScene = payload.scene as ScenePreview;
     setScenes((current) => current.map((item) => item.id === updatedScene.id ? { ...item, ...updatedScene } : item));
-    return { scene: updatedScene, model: String(payload.model || "Script LLM") };
+    return { scene: updatedScene, model: String(payload.model || "Code Agent CLI") };
   }
 
   async function extractSceneDialogue(scene: ScenePreview) {
@@ -1826,16 +1841,26 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
     }
   }
 
-  async function controlVideoQueue(action: "pause" | "resume" | "retry_failed") {
+  async function controlVideoQueue(action: "pause" | "resume" | "retry_failed" | "cancel") {
     if (!project?.slug) return;
-    if (action !== "pause" && (scriptBlocksIndependentTasks || ttsRunning || batchMediaBusy || generatingSceneId)) return;
-    if (action === "pause") videoQueueStopRef.current = true;
+    if (action !== "pause" && action !== "cancel" && (scriptBlocksIndependentTasks || ttsRunning || batchMediaBusy || generatingSceneId)) return;
+    if (action === "pause" || action === "cancel") videoQueueStopRef.current = true;
     try {
       const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/video-queue/control`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || !payload.ok) throw new Error(payload.message || "Không thể cập nhật queue.");
       await refresh();
-      setRunMessage({ tone: "success", text: action === "pause" ? "Đã yêu cầu dừng queue sau khi các job đang chạy hoàn tất." : action === "resume" ? "Đã tiếp tục queue video AI." : "Đã đưa các job lỗi về queue để retry." });
+      if (action === "cancel") await loadScenes({ silent: true });
+      setRunMessage({
+        tone: "success",
+        text: action === "cancel"
+          ? "Đã huỷ tạo video trong queue."
+          : action === "pause"
+            ? "Đã yêu cầu dừng queue sau khi các job đang chạy hoàn tất."
+            : action === "resume"
+              ? "Đã tiếp tục queue video AI."
+              : "Đã đưa các job lỗi về queue để retry.",
+      });
     } catch (cause) {
       setSceneError(cause instanceof Error ? cause.message : "Không thể cập nhật queue.");
     }
@@ -1975,6 +2000,182 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
       setPublishingError("");
     } catch {
       setPublishingError("Trình duyệt không cấp quyền sao chép. Hãy chọn và sao chép nội dung trực tiếp.");
+    }
+  }
+
+  async function cancelSceneVideoJobs(sceneIds: string[], isBatch = false) {
+    const targets = [...new Set(sceneIds.map((id) => id.trim()).filter(Boolean))];
+    if (!project?.slug || !targets.length) return;
+    if (isBatch ? batchCancellingVideos : targets.some((id) => cancellingVideoSceneIds[id])) return;
+
+    if (isBatch) setBatchCancellingVideos(true);
+    setCancellingVideoSceneIds((current) => {
+      const next = { ...current };
+      for (const id of targets) next[id] = true;
+      return next;
+    });
+    setSceneError("");
+    try {
+      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/scene-media-jobs`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sceneIds: targets, kind: "video" }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) throw new Error(payload.message || "Không thể huỷ tạo video.");
+      const cancelledJobs = Array.isArray(payload.jobs) ? payload.jobs as SceneMediaJobPreview[] : [];
+      const cancelledByScene = new Map(cancelledJobs.map((job) => [job.sceneId, job]));
+      scenesMutationEpochRef.current += 1;
+      setScenes((current) => current.map((scene) => {
+        const cancelledJob = cancelledByScene.get(scene.id);
+        if (cancelledJob) return { ...scene, mediaJob: cancelledJob };
+        if (targets.includes(scene.id) && scene.mediaJob?.kind === "video" && (scene.mediaJob.status === "queued" || scene.mediaJob.status === "running")) {
+          return { ...scene, mediaJob: { ...scene.mediaJob, status: "cancelled" } };
+        }
+        return scene;
+      }));
+      const cancelledCount = Number(payload.cancelledCount) || 0;
+      if (cancelledCount === 0) {
+        await loadScenes({ silent: true });
+        setRunMessage({ tone: "success", text: "Không còn tác vụ tạo video nào đang chạy để huỷ." });
+      } else {
+        await refresh();
+        const firstScene = scenes.find((item) => item.id === targets[0]);
+        setRunMessage({
+          tone: "success",
+          text: `Đã huỷ tạo video cho ${cancelledCount === 1 && firstScene ? sceneNumberLabel(firstScene) : `${cancelledCount} cảnh`}.`,
+        });
+      }
+    } catch (cause) {
+      setSceneError(cause instanceof Error ? cause.message : "Không thể huỷ tạo video.");
+    } finally {
+      if (isBatch) setBatchCancellingVideos(false);
+      setCancellingVideoSceneIds((current) => {
+        const next = { ...current };
+        for (const id of targets) delete next[id];
+        return next;
+      });
+    }
+  }
+
+  function thumbnailImageUrl(
+    slug: string,
+    scope: string,
+    index: number,
+    variant: "final" | "base" = "final",
+    cacheKey = "",
+    download = false,
+  ) {
+    const params = new URLSearchParams({
+      scope,
+      index: String(index),
+      variant,
+      ...(download ? { download: "1" } : {}),
+      ...(cacheKey ? { v: cacheKey } : {}),
+    });
+    return `/api/projects/${encodeURIComponent(slug)}/publishing-package/thumbnail?${params.toString()}`;
+  }
+
+  function configuredThumbnailImageSettings(): MediaGenerationSettings {
+    const selectedImageModel = mediaCatalog?.imageModels.find((item) => item.id === batchMediaSettings.imageModel);
+    const detailLevels = imageDetailLevelsForModel(selectedImageModel);
+    return {
+      ...batchMediaSettings,
+      imageQuality: selectedImageModel?.qualities.length && !selectedImageModel.qualities.includes(batchMediaSettings.imageQuality)
+        ? selectedImageModel.qualities[0]
+        : batchMediaSettings.imageQuality,
+      imageDetailLevel: detailLevels.length && !detailLevels.includes(batchMediaSettings.imageDetailLevel)
+        ? detailLevels[0]
+        : batchMediaSettings.imageDetailLevel,
+    };
+  }
+
+  async function requestThumbnailGeneration(
+    index: number,
+    scope = publishingScope,
+    referenceCharacterIds?: string[],
+  ) {
+    if (!project?.slug) throw new Error("Không tìm thấy project.");
+    const key = `${scope}:${index}`;
+    setGeneratingThumbnailKeys((current) => ({ ...current, [key]: true }));
+    try {
+      const response = await fetch(`/api/projects/${encodeURIComponent(project.slug)}/publishing-package/thumbnail`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scope,
+          index,
+          includeOverlayText: thumbnailOverlayEnabled,
+          ...(referenceCharacterIds ? { referenceCharacterIds } : {}),
+          mediaGeneration: configuredThumbnailImageSettings(),
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) throw new Error(payload.message || `Không thể tạo ảnh thumbnail #${index + 1}.`);
+      return payload as { thumbnail?: VideoPublishingSet["thumbnails"][number] };
+    } finally {
+      setGeneratingThumbnailKeys((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+    }
+  }
+
+  async function generateThumbnailImage(index: number, scope = publishingScope) {
+    const key = `${scope}:${index}`;
+    if (!project?.slug || publishingBusy || generatingAllThumbnails || generatingThumbnailKeys[key]) return;
+    setPublishingError("");
+    setPublishingNotice("");
+    const thumb = selectedPublishingPackage?.thumbnails?.[index];
+    const selectedIds = thumb && thumbnailEligibleCharacters.length
+      ? selectedThumbnailCharacterIds(key, thumb)
+      : undefined;
+    try {
+      const result = await requestThumbnailGeneration(index, scope, selectedIds);
+      await refresh();
+      const imageMeta = result.thumbnail?.image;
+      const refCount = (imageMeta?.referenceCharacterIds?.length || 0) + (imageMeta?.referenceLocationId ? 1 : 0);
+      const modelLabel = imageModelDisplayName(imageMeta?.model || batchMediaSettings.imageModel);
+      setPublishingNotice(
+        `Đã tạo ảnh thumbnail #${index + 1} bằng ${modelLabel} (${imageMeta?.aspectRatio || project.aspectRatio}${refCount ? ` · ${refCount} ảnh tham chiếu` : ""}${imageMeta?.withOverlay ? " · có chữ overlay" : " · ảnh sạch"}).`,
+      );
+    } catch (cause) {
+      setPublishingError(cause instanceof Error ? cause.message : `Không thể tạo ảnh thumbnail #${index + 1}.`);
+    }
+  }
+
+  async function generateAllThumbnailImages() {
+    if (!project?.slug || !selectedPublishingPackage?.thumbnails?.length || publishingBusy || generatingAllThumbnails) return;
+    setGeneratingAllThumbnails(true);
+    setPublishingError("");
+    setPublishingNotice("");
+    const scope = publishingScope;
+    const thumbnails = selectedPublishingPackage.thumbnails;
+    const total = thumbnails.length;
+    const failures: string[] = [];
+    let completed = 0;
+    try {
+      for (let index = 0; index < total; index += 1) {
+        const key = `${scope}:${index}`;
+        const selectedIds = thumbnailEligibleCharacters.length
+          ? selectedThumbnailCharacterIds(key, thumbnails[index])
+          : undefined;
+        try {
+          await requestThumbnailGeneration(index, scope, selectedIds);
+          completed += 1;
+          await refresh();
+        } catch (cause) {
+          failures.push(`#${index + 1}: ${cause instanceof Error ? cause.message : "lỗi tạo ảnh"}`);
+        }
+      }
+      if (failures.length) {
+        setPublishingError(`Đã tạo ${completed}/${total} ảnh thumbnail. ${failures.slice(0, 2).join(" · ")}`);
+      } else {
+        setPublishingNotice(`Đã tạo xong toàn bộ ${completed} ảnh thumbnail.`);
+      }
+    } finally {
+      setGeneratingAllThumbnails(false);
     }
   }
 
@@ -2245,6 +2446,20 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
     if (isVideoOffPeakRequired(next.videoModel, videoModel?.label)) next.videoOffPeak = true;
     else if (videoModel?.supportsOffPeak === false) next.videoOffPeak = false;
     setBatchMediaSettings(next);
+    if (project?.slug) {
+      const targetSlug = project.slug;
+      if (batchMediaPersistTimerRef.current !== undefined) {
+        window.clearTimeout(batchMediaPersistTimerRef.current);
+      }
+      batchMediaPersistTimerRef.current = window.setTimeout(() => {
+        batchMediaPersistTimerRef.current = undefined;
+        void fetch(`/api/projects/${encodeURIComponent(targetSlug)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mediaGeneration: next, silent: true }),
+        }).catch(() => undefined);
+      }, 400);
+    }
   }
 
   function updateQuickImageModel(imageModel: string) {
@@ -3199,6 +3414,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   const filteredImageTargets = (batchRegenerateImages ? filteredScenes : filteredScenes.filter((scene) => sceneNeedsImage(scene, project))).filter((scene) => !sceneHasActiveMediaJob(scene));
   const filteredVideoTargets = (batchRegenerateVideos ? filteredScenes : filteredScenes.filter(sceneNeedsAiVideo)).filter((scene) => !sceneHasActiveMediaJob(scene));
   const filteredVideoRegenerationTargets = filteredScenes.filter(sceneHasExistingAiVideo).filter((scene) => !sceneHasActiveMediaJob(scene));
+  const filteredActiveVideoJobs = filteredScenes.filter((scene) => scene.mediaJob?.kind === "video" && (scene.mediaJob.status === "queued" || scene.mediaJob.status === "running"));
   const activeSceneMediaJobCount = scenes.filter(sceneHasActiveMediaJob).length;
   const batchOverLimitCount = batchMediaSettings.videoDurationMode === "scene"
     ? filteredScenes.filter((scene) => Math.ceil(sceneDurationSeconds(scene, project.sceneDurationSec)) > batchVideoMaxDuration).length
@@ -3313,9 +3529,9 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   const selectedLocationMaiVideoImage = maiVideoLibraryImages.find((image) => image.id === selectedLocationMaiVideoImageId);
   const videoQueue = project.videoQueue;
   const videoQueueSummary = videoQueue?.jobs.reduce((summary, job) => {
-    summary[job.status] += 1;
+    summary[job.status] = (summary[job.status] || 0) + 1;
     return summary;
-  }, { queued: 0, running: 0, completed: 0, failed: 0, paused: 0 }) || { queued: 0, running: 0, completed: 0, failed: 0, paused: 0 };
+  }, { queued: 0, running: 0, completed: 0, failed: 0, paused: 0, cancelled: 0 } as Record<"queued" | "running" | "completed" | "failed" | "paused" | "cancelled", number>) || { queued: 0, running: 0, completed: 0, failed: 0, paused: 0, cancelled: 0 };
   const failedVideoJobs = videoQueue?.jobs.filter((job) => job.status === "failed") || [];
   const videoQueueCanRun = videoQueueSummary.queued > 0 || (videoQueue?.status === "running" && !videoQueueRunning);
 
@@ -3346,6 +3562,93 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   const publishingTargetReady = publishingScope === "series"
     ? allEpisodeScriptsReady
     : Boolean(project.chunks.find((chunk) => chunk.id === publishingScope)?.outputPath);
+
+  const publishingScopeScenes = useMemo(
+    () => publishingScope === "series" ? scenes : scenes.filter((scene) => scene.chunkId === publishingScope),
+    [publishingScope, scenes],
+  );
+
+  const thumbnailEligibleCharacters = useMemo(() => {
+    const eligible = characterProfiles.filter((character) => Boolean(character.referenceImagePath));
+    const scores: Record<string, number> = {};
+    for (const scene of publishingScopeScenes) {
+      for (const id of sceneCharacterIds(scene)) {
+        scores[id] = (scores[id] || 0) + 2;
+      }
+      for (const segment of sceneDialogueSegments(scene, characterProfiles)) {
+        if (segment.speakerCharacterId) {
+          scores[segment.speakerCharacterId] = (scores[segment.speakerCharacterId] || 0) + 1;
+        }
+      }
+    }
+    const headline = ` ${normalizeEntityName(`${project.title || ""} ${project.dramaPlan?.logline || ""}`)} `;
+    for (const character of eligible) {
+      const normalized = normalizeEntityName(character.name);
+      if (normalized && headline.includes(` ${normalized} `)) {
+        scores[character.id] = (scores[character.id] || 0) + 3;
+      }
+    }
+    const orderIndex = new Map(eligible.map((character, index) => [character.id, index]));
+    return [...eligible].sort((left, right) => {
+      const diff = (scores[right.id] || 0) - (scores[left.id] || 0);
+      if (diff !== 0) return diff;
+      return (orderIndex.get(left.id) ?? 0) - (orderIndex.get(right.id) ?? 0);
+    });
+  }, [characterProfiles, project.dramaPlan?.logline, project.title, publishingScopeScenes]);
+
+  function defaultThumbnailCharacterIds(thumbnail: VideoPublishingSet["thumbnails"][number]) {
+    if (!batchMediaSettings.imageUseCharacterReferences) return [];
+    const text = ` ${normalizeEntityName([thumbnail.concept, thumbnail.prompt, thumbnail.layoutNote].filter(Boolean).join(" "))} `;
+    const matched: Array<{ id: string; position: number }> = [];
+    for (const character of thumbnailEligibleCharacters) {
+      const normalizedName = normalizeEntityName(character.name);
+      if (!normalizedName) continue;
+      const position = text.indexOf(` ${normalizedName} `);
+      if (position >= 0) matched.push({ id: character.id, position });
+    }
+    matched.sort((a, b) => a.position - b.position);
+    const ids = matched.map((item) => item.id);
+    const minBackfillThreshold = Math.min(2, thumbnailEligibleCharacters.length);
+    const targetImportant = Math.min(3, thumbnailEligibleCharacters.length);
+    if (ids.length < minBackfillThreshold && ids.length < targetImportant) {
+      for (const character of thumbnailEligibleCharacters) {
+        if (ids.length >= targetImportant) break;
+        if (!ids.includes(character.id)) ids.push(character.id);
+      }
+    }
+    return ids.slice(0, 6);
+  }
+
+  function focusConfiguredImageModelSettings() {
+    if (project?.presetId === "ai-drama") setDramaTab("scenes");
+    window.setTimeout(() => {
+      const target = document.getElementById("project-image-model-settings");
+      if (!target) return;
+      if (target instanceof HTMLDetailsElement) target.open = true;
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      target.querySelector<HTMLSelectElement>("select")?.focus({ preventScroll: true });
+    }, 60);
+  }
+
+  function selectedThumbnailCharacterIds(thumbKey: string, thumbnail: VideoPublishingSet["thumbnails"][number]) {
+    const eligibleSet = new Set(thumbnailEligibleCharacters.map((character) => character.id));
+    if (Object.prototype.hasOwnProperty.call(thumbnailCharacterOverrides, thumbKey)) {
+      return thumbnailCharacterOverrides[thumbKey].filter((id) => eligibleSet.has(id));
+    }
+    if (thumbnail.image?.referenceCharacterIds?.length) {
+      const saved = thumbnail.image.referenceCharacterIds.filter((id) => eligibleSet.has(id));
+      if (saved.length) return saved;
+    }
+    return defaultThumbnailCharacterIds(thumbnail);
+  }
+
+  function toggleThumbnailReferenceCharacter(thumbKey: string, thumbnail: VideoPublishingSet["thumbnails"][number], characterId: string) {
+    const current = selectedThumbnailCharacterIds(thumbKey, thumbnail);
+    const next = current.includes(characterId)
+      ? current.filter((id) => id !== characterId)
+      : [...current, characterId];
+    setThumbnailCharacterOverrides((prev) => ({ ...prev, [thumbKey]: next }));
+  }
 
   function moveSelectedScene(direction: -1 | 1) {
     const nextScene = filteredScenes[selectedFilteredIndex + direction];
@@ -3529,7 +3832,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
         </section>}
 
         {dramaTab === "scenes" && <section className="ai-drama-panel" aria-labelledby="ai-drama-scenes-title">
-          <div className="ai-drama-model-quick-settings" aria-label="Cấu hình hệ thống và model tạo media">
+          <div id="project-image-model-settings" className="ai-drama-model-quick-settings" aria-label="Cấu hình hệ thống và model tạo media">
             <div className="ai-drama-model-quick-system" aria-label="Hệ thống tạo ảnh"><span>Hệ thống ảnh</span><strong>{batchMuseImageSelected ? "Muse.ai" : batchFlowImageSelected ? "Flow" : "MaiVideo"}</strong></div>
             <label><span>Model ảnh</span><select aria-label="Model ảnh Phim AI" value={batchMediaSettings.imageModel} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateQuickImageModel(event.target.value)}>{batchImageModelOptions.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}</select></label>
             {!batchMuseImageSelected && !batchFlowImageSelected && <label><span>Độ phân giải ảnh</span><select aria-label="Độ phân giải ảnh Phim AI" value={batchMediaSettings.imageQuality} disabled={batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || Boolean(generatingSceneId)} onChange={(event) => updateBatchMediaSettings({ imageQuality: event.target.value })}>{batchImageQualities.map((quality) => <option key={quality} value={quality}>{quality}</option>)}</select></label>}
@@ -3565,6 +3868,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
               <button className="secondary-button compact" type="button" onClick={() => void generateFilteredSceneImages()} disabled={!filteredImageTargets.length || batchMediaBusy || sceneMediaSettingsSaving || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning || Boolean(dialogueTtsBatchProgress) || Boolean(generatingSceneId)}>{batchMediaBusy && generatingSceneMediaKind === "image" ? batchMediaProgress || "Đang tạo ảnh…" : `Tạo ảnh · ${filteredImageTargets.length}`}</button>
               <button className="primary-button compact" type="button" onClick={() => void generateFilteredSceneVideos()} disabled={!filteredVideoTargets.length || batchSeedanceHiddenSelected || batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || scriptBlocksIndependentTasks || ttsRunning || Boolean(dialogueTtsBatchProgress) || Boolean(generatingSceneId)}>{batchMediaBusy && generatingSceneMediaKind === "video" ? batchMediaProgress || "Đang tạo video…" : `Tạo video · ${filteredVideoTargets.length}`}</button>
               <button className="secondary-button compact" type="button" title="Tạo lại video AI đã có trong phạm vi cảnh hiện tại; video cũ được thay khi job mới hoàn tất." onClick={() => void generateFilteredSceneVideos(filteredVideoRegenerationTargets, true)} disabled={!filteredVideoRegenerationTargets.length || batchSeedanceHiddenSelected || batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || scriptBlocksIndependentTasks || ttsRunning || Boolean(dialogueTtsBatchProgress) || Boolean(generatingSceneId)}>{batchMediaBusy && generatingSceneMediaKind === "video" ? batchMediaProgress || "Đang tạo lại video…" : `Tạo lại video · ${filteredVideoRegenerationTargets.length}`}</button>
+              {filteredActiveVideoJobs.length > 0 && <button className="secondary-button compact cancel-action-button" type="button" onClick={() => void cancelSceneVideoJobs(filteredActiveVideoJobs.map((scene) => scene.id), true)} disabled={batchCancellingVideos}><Icon name="close" size={13} />{batchCancellingVideos ? "Đang huỷ…" : `Huỷ tạo video · ${filteredActiveVideoJobs.length}`}</button>}
               {project.presetId === "ai-drama" && <button className="secondary-button compact" type="button" onClick={() => void generateFilteredDialogueTts()} disabled={!filteredDialogueTtsVoiceTargets.length || Boolean(dialogueTtsBatchProgress) || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress) || ttsRunning || renderRunning || dialogueSavingSceneId !== "" || isRunning || Boolean(runningScriptChunkId) || Boolean(generatingSceneId) || batchMediaBusy || videoQueueRunning} title={filteredDialogueTtsVoiceTargets.length ? `Tạo voice ${voiceLanguageLabel(dialogueTranslationLanguage)} cho ${filteredDialogueTtsVoiceTargets.length} cảnh đã dịch` : filteredDialogueScenesNeedingTranslation.length ? `Dịch thoại sang ${voiceLanguageLabel(dialogueTranslationLanguage)} trước` : filteredDialogueScenesMissingVoice.length ? "Gán voice cho nhân vật trước" : "Các cảnh trong phạm vi hiện tại đã có voice hoặc chưa có lời thoại"}>{dialogueTtsBatchProgress ? `Đang tạo voice ${voiceLanguageLabel(dialogueTranslationLanguage)} ${dialogueTtsBatchProgress}…` : `Tạo voice ${voiceLanguageLabel(dialogueTranslationLanguage)} · ${filteredDialogueTtsVoiceTargets.length}`}</button>}
               <button className="text-button" type="button" onClick={() => { setSceneSearch(""); setSceneChunkFilter("all"); setSceneReviewFilter("all"); setSceneAiReviewFilter("all"); setSceneMediaFilter("all"); }}>Xóa lọc</button>
             </div>
@@ -3674,6 +3978,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                   </div>
                   <div className="ai-drama-scene-table-cell ai-drama-video-prompt-cell" role="cell">
                     <strong>{sceneVideoPrompt || "Chưa có prompt video"}</strong>
+                    {mediaJobActive && scene.mediaJob?.kind === "video" && <small className="scene-media-job-status" role="status">{mediaJobLabel}</small>}
                     {scene.mediaJob?.status === "failed" && scene.mediaJob.kind === "video" && <small className="scene-media-job-status error" role="status">{canRecoverProviderJob ? providerJobRecoveryMessage : mediaJobLabel}</small>}
                     <div className="ai-drama-video-dialogue-summary">
                       <b>Lời thoại gửi kèm API · {dialogueSegments.length} lượt</b>
@@ -3745,7 +4050,9 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                     <div className="ai-drama-video-reference-row" onClick={(event) => event.stopPropagation()}>
                       {renderDramaSceneReferencePicker(scene, "video")}
                       <div className="ai-drama-scene-media-actions">
-                        <button type="button" className="primary-button compact" title={sceneGeneratingKind === "video" ? "Đang xếp job tạo video…" : mediaJobActive && scene.mediaJob?.kind === "video" ? mediaJobLabel : hasReadyVideo ? "Tạo lại video đã hoàn thành" : "Tạo video"} onClick={() => void generateSceneVideo(scene)} disabled={batchSeedanceHiddenSelected || mediaBusy || batchMediaBusy || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning || Boolean(dialogueTtsBatchProgress) || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress)}><Icon name="play" size={13} />{sceneGeneratingKind === "video" ? " Đang xếp…" : mediaJobActive && scene.mediaJob?.kind === "video" ? scene.mediaJob.status === "queued" ? " Đang chờ…" : "Đang tạo…" : hasReadyVideo ? " Tạo lại" : " Tạo video"}</button>
+                        {mediaJobActive && scene.mediaJob?.kind === "video" && sceneGeneratingKind !== "video"
+                          ? <button type="button" className="secondary-button compact cancel-action-button" title="Huỷ tác vụ tạo video đang chạy cho cảnh này" onClick={() => void cancelSceneVideoJobs([scene.id])} disabled={Boolean(cancellingVideoSceneIds[scene.id]) || batchCancellingVideos}><Icon name="close" size={13} />{cancellingVideoSceneIds[scene.id] ? " Đang huỷ…" : " Huỷ tạo video"}</button>
+                          : <button type="button" className="primary-button compact" title={sceneGeneratingKind === "video" ? "Đang xếp job tạo video…" : mediaJobActive && scene.mediaJob?.kind === "video" ? mediaJobLabel : hasReadyVideo ? "Tạo lại video đã hoàn thành" : "Tạo video"} onClick={() => void generateSceneVideo(scene)} disabled={batchSeedanceHiddenSelected || mediaBusy || batchMediaBusy || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning || Boolean(dialogueTtsBatchProgress) || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress)}><Icon name="play" size={13} />{sceneGeneratingKind === "video" ? " Đang xếp…" : mediaJobActive && scene.mediaJob?.kind === "video" ? scene.mediaJob.status === "queued" ? " Đang chờ…" : "Đang tạo…" : hasReadyVideo ? " Tạo lại" : " Tạo video"}</button>}
                         <button type="button" className="secondary-button compact" title={missingTranslation ? `Dịch thoại sang ${voiceLanguageLabel(dialogueTranslationLanguage)} trước` : `Tạo voice ${voiceLanguageLabel(dialogueTranslationLanguage)} cho cảnh`} onClick={() => void generateSceneTts(scene, Boolean(dialogueSegments.length && readyTranslatedLineCount === dialogueSegments.length), dialogueTranslationLanguage)} disabled={!dialogueSegments.length || missingTranslation || missingLineVoice || ttsRunning || renderRunning || scriptBlocksIndependentTasks || batchMediaBusy || videoQueueRunning || Boolean(generatingSceneId) || Boolean(dialogueTtsBatchProgress) || dialogueSavingSceneId === scene.id || Boolean(dialogueTranslationSceneId) || Boolean(dialogueTranslationBatchProgress)}>
                           {ttsRunning && ttsSceneId === scene.id ? "Đang tạo voice…" : readyTranslatedLineCount === dialogueSegments.length && dialogueSegments.length ? "Tạo lại voice" : "Tạo voice"}
                         </button>
@@ -3760,6 +4067,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                     {needsDialogueExtraction && <button className="secondary-button compact" type="button" onClick={() => void extractSceneDialogue(scene)} disabled={Boolean(dialogueExtractingSceneId) || Boolean(dialogueExtractBatchProgress) || ttsRunning || renderRunning || isRunning || Boolean(runningScriptChunkId)}>{dialogueExtractingSceneId === scene.id ? "AI đang hoàn thiện…" : "AI tách thoại & bổ sung chi tiết"}</button>}
                     <button className="secondary-button compact" type="button" onClick={() => void generateSceneImage(scene)} disabled={mediaBusy || batchMediaBusy || sceneMediaSettingsSaving || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning}>{mediaBusy && scene.mediaJob?.kind === "image" ? scene.mediaJob.status === "queued" ? "Đang chờ ảnh…" : "Đang tạo ảnh…" : sceneGeneratingKind === "image" ? "Đang xếp ảnh…" : "Tạo ảnh"}</button>
                     <button className="primary-button compact" type="button" onClick={() => void generateSceneVideo(scene)} disabled={batchSeedanceHiddenSelected || mediaBusy || batchMediaBusy || sceneMediaSettingsSaving || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning}>{mediaBusy && scene.mediaJob?.kind === "video" ? scene.mediaJob.status === "queued" ? "Đang chờ video…" : "Đang tạo video…" : sceneGeneratingKind === "video" ? "Đang xếp video…" : hasReadyVideo ? "Tạo lại video" : "Tạo video"}</button>
+                    {mediaJobActive && scene.mediaJob?.kind === "video" && <button className="secondary-button compact cancel-action-button" type="button" onClick={() => void cancelSceneVideoJobs([scene.id])} disabled={Boolean(cancellingVideoSceneIds[scene.id]) || batchCancellingVideos}><Icon name="close" size={13} />{cancellingVideoSceneIds[scene.id] ? "Đang huỷ…" : "Huỷ tạo video"}</button>}
                   </div>
                   <section className="ai-drama-prompt-editor" aria-label={`Prompt tạo media cho ${sceneNumberLabel(scene)}`}>
                     <div className="ai-drama-prompt-editor-heading"><strong>Prompt chi tiết cho cảnh</strong><span>Ảnh · video · {sceneDuration} giây</span></div>
@@ -3879,7 +4187,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
         <div className="meta-chip"><Icon name="users" size={16} /><span>{project.voiceName || "OmniVoice mặc định"} · hồ sơ {voiceLanguageLabel(project.voiceLanguage || project.language)}</span></div>
       </section>
 
-      <section className="hero-grid" id="source"><div className="progress-card panel-card"><div className="card-heading"><div><div className="section-kicker">TIẾN ĐỘ</div><h2>Tiến độ sản xuất</h2></div><StatusPill tone={project.completedScenes >= project.totalScenes ? "green" : "orange"}>{progress}%</StatusPill></div><div className="progress-main"><div className="progress-ring" style={{ background: `conic-gradient(#766ce8 0 ${progress}%, #efeff8 ${progress}% 100%)` }}><div className="ring-inner"><strong>{progress}<span>%</span></strong><small>hoàn tất</small></div></div><div className="progress-copy"><div className="progress-title">{project.completedScenes} <span>/ {project.totalScenes} cảnh</span></div><div className="progress-bar large"><span style={{ width: `${progress}%` }} /></div><div className="progress-foot"><span><span className="green-check"><Icon name="check" size={13} /></span>{project.completedChunks} / {project.totalChunks} gói đã xong</span><span>AI cần sửa: {project.aiReviewCount || sceneStats.ai_needs_changes} · Người dùng cần xử lý: {project.reviewCount}</span></div></div></div></div><div className="source-card panel-card"><div className="card-heading"><div><div className="section-kicker">NGUỒN</div><h2>{project.scriptMode === "manual" ? "Kịch bản đầu vào" : "Nguồn đầu vào"}</h2></div><span className="source-badge">{project.language.toUpperCase()}</span></div><label className="input-label">Video URL</label><div className="url-input-wrap"><Icon name="link" size={16} /><input value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} aria-label="Video URL" /><button onClick={saveSource}><Icon name="save" size={15} /></button></div><label className="input-label compact-label">{project.scriptMode === "manual" ? "Kịch bản thủ công" : "Transcript / brief"}</label><textarea className="source-textarea" value={sourceText} onChange={(event) => setSourceText(event.target.value)} placeholder={project.scriptMode === "manual" ? "Nhập kịch bản…" : "Nhập transcript hoặc brief…"} /><div className="source-foot"><span><span className="source-status-dot" />{project.sourceStatus === "ready" ? project.scriptMode === "manual" ? "Kịch bản đã lưu" : "Transcript đã sẵn sàng" : project.continuityContext ? `Continuity đã khóa đến ${project.continuityContext.chunkId}` : "Continuity sẽ được tạo sau chunk đầu tiên"}</span><button onClick={saveSource}>{sourceUrl.trim() && !sourceText.trim() && project.scriptMode !== "manual" ? "Lưu & lấy transcript" : project.scriptMode === "manual" ? "Lưu kịch bản" : "Lưu nguồn"} <Icon name="arrow" size={13} /></button></div><div className="provider-note"><span className="provider-mark">O</span><span>{project.scriptMode === "manual" ? "Script Studio · phân tích tùy chọn" : "Script LLM ·"} <strong>{project.scriptMode === "manual" ? project.scriptModel : project.scriptProvider || "OpenAI Responses API"}</strong></span></div></div></section>
+      <section className="hero-grid" id="source"><div className="progress-card panel-card"><div className="card-heading"><div><div className="section-kicker">TIẾN ĐỘ</div><h2>Tiến độ sản xuất</h2></div><StatusPill tone={project.completedScenes >= project.totalScenes ? "green" : "orange"}>{progress}%</StatusPill></div><div className="progress-main"><div className="progress-ring" style={{ background: `conic-gradient(#766ce8 0 ${progress}%, #efeff8 ${progress}% 100%)` }}><div className="ring-inner"><strong>{progress}<span>%</span></strong><small>hoàn tất</small></div></div><div className="progress-copy"><div className="progress-title">{project.completedScenes} <span>/ {project.totalScenes} cảnh</span></div><div className="progress-bar large"><span style={{ width: `${progress}%` }} /></div><div className="progress-foot"><span><span className="green-check"><Icon name="check" size={13} /></span>{project.completedChunks} / {project.totalChunks} gói đã xong</span><span>AI cần sửa: {project.aiReviewCount || sceneStats.ai_needs_changes} · Người dùng cần xử lý: {project.reviewCount}</span></div></div></div></div><div className="source-card panel-card"><div className="card-heading"><div><div className="section-kicker">NGUỒN</div><h2>{project.scriptMode === "manual" ? "Kịch bản đầu vào" : "Nguồn đầu vào"}</h2></div><span className="source-badge">{project.language.toUpperCase()}</span></div><label className="input-label">Video URL</label><div className="url-input-wrap"><Icon name="link" size={16} /><input value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} aria-label="Video URL" /><button onClick={saveSource}><Icon name="save" size={15} /></button></div><label className="input-label compact-label">{project.scriptMode === "manual" ? "Kịch bản thủ công" : "Transcript / brief"}</label><textarea className="source-textarea" value={sourceText} onChange={(event) => setSourceText(event.target.value)} placeholder={project.scriptMode === "manual" ? "Nhập kịch bản…" : "Nhập transcript hoặc brief…"} /><div className="source-foot"><span><span className="source-status-dot" />{project.sourceStatus === "ready" ? project.scriptMode === "manual" ? "Kịch bản đã lưu" : "Transcript đã sẵn sàng" : project.continuityContext ? `Continuity đã khóa đến ${project.continuityContext.chunkId}` : "Continuity sẽ được tạo sau chunk đầu tiên"}</span><button onClick={saveSource}>{sourceUrl.trim() && !sourceText.trim() && project.scriptMode !== "manual" ? "Lưu & lấy transcript" : project.scriptMode === "manual" ? "Lưu kịch bản" : "Lưu nguồn"} <Icon name="arrow" size={13} /></button></div><div className="provider-note"><span className="provider-mark">C</span><span>{project.scriptMode === "manual" ? "Script Studio · phân tích tùy chọn" : "Code Agent ·"} <strong>{project.scriptMode === "manual" ? (project.scriptModel === "gpt-6-luna" ? "Code Agent CLI" : project.scriptModel) : !project.scriptProvider || project.scriptProvider === "OpenAI Responses API" ? "Code Agent CLI" : project.scriptProvider}</strong></span></div></div></section>
 
       {project.presetId !== "ai-drama" && runMessage && <div className={`run-message ${runMessage.tone}`}><span><Icon name={runMessage.tone === "success" ? "check" : "alert"} size={13} /></span>{runMessage.text}</div>}
 
@@ -3897,7 +4205,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
           <div><small>Bối cảnh thời đại</small><strong>{storySettingLabel(project.storySetting)}{project.settingNotes ? ` · ${project.settingNotes}` : ""}</strong></div>
           <div><small>Phong cách hình ảnh</small><strong>{project.imageStyle}</strong></div>
           <div><small>Nguồn media</small><strong>{mediaSourceLabel(project.mediaSource)}</strong></div>
-          <div><small>Kịch bản</small><strong>{project.scriptMode === "manual" ? "Thủ công" : `AI · ${project.scriptModel}`}</strong></div>
+          <div><small>Kịch bản</small><strong>{project.scriptMode === "manual" ? "Thủ công" : project.scriptModel === "gpt-6-luna" ? "Code Agent CLI" : `Code Agent · ${project.scriptModel}`}</strong></div>
         </div>
         <Link href={`/projects/${project.slug}/settings`} className="config-edit"><Icon name="sliders" size={14} />Mở cài đặt</Link>
       </details>
@@ -4149,10 +4457,13 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                 <button className="primary-button compact" type="button" onClick={() => void generateFilteredSceneVideos()} disabled={!filteredVideoTargets.length || batchSeedanceHiddenSelected || batchMediaBusy || videoQueueRunning || sceneMediaSettingsSaving || scriptBlocksIndependentTasks || ttsRunning || Boolean(generatingSceneId)}>
                   <Icon name="play" size={13} />{batchMediaBusy && generatingSceneMediaKind === "video" ? batchMediaProgress || "Đang xếp video…" : `Tạo video hàng loạt · ${filteredVideoTargets.length}`}
                 </button>
+                {filteredActiveVideoJobs.length > 0 && <button className="secondary-button compact cancel-action-button" type="button" onClick={() => void cancelSceneVideoJobs(filteredActiveVideoJobs.map((scene) => scene.id), true)} disabled={batchCancellingVideos}>
+                  <Icon name="close" size={13} />{batchCancellingVideos ? "Đang huỷ…" : `Huỷ tạo video · ${filteredActiveVideoJobs.length}`}
+                </button>}
                 {batchMediaBusy && batchMediaProgress && <span className="batch-media-progress" role="status">{batchMediaProgress}</span>}
               </div>
             </div>
-            <details className="batch-media-panel panel-card">
+            <details id="project-image-model-settings" className="batch-media-panel panel-card">
               <summary><span><strong>Model & tuỳ chỉnh</strong><small>{imageModelDisplayName(batchMediaSettings.imageModel)}{!batchMuseImageSelected && !batchFlowImageSelected ? ` · ${batchMediaSettings.imageQuality}${batchImageDetailLevels.length ? ` · ${IMAGE_DETAIL_LEVEL_LABELS[batchMediaSettings.imageDetailLevel]}` : ""}` : ""} / {batchSeedanceHiddenSelected ? "Seedance trực tiếp · tạm ẩn" : `${videoProviderDisplayName(batchMediaSettings.videoProvider)} · ${videoModelDisplayName(batchMediaSettings.videoModel, batchMediaSettings.videoProvider)}`}{batchMuseSelected ? " · profile mặc định" : !batchSeedanceHiddenSelected ? ` · ${batchMediaSettings.videoQuality}` : ""} · {batchMediaSettings.videoDurationMode === "scene" ? "theo cảnh" : `${batchMediaSettings.videoDurationSec}s`} · khung hình {project.aspectRatio}</small></span><span className="batch-media-summary-count">Mở cài đặt</span></summary>
               
               <div className="batch-media-frame-note" role="note"><span>Khung hình dự án</span><strong>{project.aspectRatio}</strong><small>Tự áp dụng cho ảnh và video; đổi tại Cài đặt dự án.</small></div>
@@ -4282,6 +4593,9 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                 <button className="primary-button" type="button" onClick={() => void generateSceneVideo(selectedScene)} disabled={batchSeedanceHiddenSelected || Boolean(generatingSceneKinds[selectedScene.id]) || selectedScene.mediaJob?.status === "queued" || selectedScene.mediaJob?.status === "running" || sceneMediaSettingsSaving || batchMediaBusy || videoQueueRunning || ttsRunning || scriptBlocksIndependentTasks}>
                   <Icon name="play" size={15} />{selectedScene.mediaJob?.kind === "video" && selectedScene.mediaJob.status === "queued" ? "Video đang chờ…" : selectedScene.mediaJob?.kind === "video" && selectedScene.mediaJob.status === "running" ? "Đang tạo video…" : generatingSceneKinds[selectedScene.id] === "video" ? "Đang xếp video…" : selectedMedia?.kind === "video" ? "Tạo lại video AI" : "Tạo video AI"}
                 </button>
+                {selectedScene.mediaJob?.kind === "video" && (selectedScene.mediaJob.status === "queued" || selectedScene.mediaJob.status === "running") && <button className="secondary-button compact cancel-action-button" type="button" onClick={() => void cancelSceneVideoJobs([selectedScene.id])} disabled={Boolean(cancellingVideoSceneIds[selectedScene.id]) || batchCancellingVideos}>
+                  <Icon name="close" size={14} />{cancellingVideoSceneIds[selectedScene.id] ? "Đang huỷ…" : "Huỷ tạo video"}
+                </button>}
                 {selectedMedia?.sourceUrl && <a className="secondary-button compact" href={selectedMedia.sourceUrl} target="_blank" rel="noreferrer">Mở nguồn</a>}
                 <div className="scene-nav-actions"><button className="secondary-button compact" type="button" onClick={() => moveSelectedScene(-1)} disabled={selectedFilteredIndex <= 0} aria-label="Cảnh trước">← Trước</button><span>{selectedFilteredIndex + 1} / {filteredScenes.length}</span><button className="secondary-button compact" type="button" onClick={() => moveSelectedScene(1)} disabled={selectedFilteredIndex < 0 || selectedFilteredIndex >= filteredScenes.length - 1} aria-label="Cảnh sau">Sau →</button></div>
               </div>
@@ -4447,14 +4761,124 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
               </article>)}</div>
             </section>
             <section className="publishing-result-group">
-              <h4>Prompt thumbnail</h4>
-              <div className="publishing-thumbnail-list">{selectedPublishingPackage.thumbnails.map((thumbnail, index) => <details className="publishing-thumbnail-option" key={`${index}-${thumbnail.concept}`}>
-                <summary><span><strong>{thumbnail.concept}</strong><small>Chữ overlay: {thumbnail.overlayText}</small></span><span className="publishing-prompt-toggle">Mở prompt</span></summary>
-                <div className="publishing-prompt-copy"><p>{thumbnail.prompt}</p>{thumbnail.layoutNote && <small>{thumbnail.layoutNote}</small>}<button className="secondary-button compact" type="button" onClick={() => void copyPublishingText(`${thumbnail.prompt}\n\nOverlay text: ${thumbnail.overlayText}${thumbnail.layoutNote ? `\nLayout: ${thumbnail.layoutNote}` : ""}`, "prompt thumbnail")}><Icon name="copy" size={13} />Sao chép prompt</button></div>
-              </details>)}</div>
+              <div className="publishing-thumbnail-group-head">
+                <h4>Prompt thumbnail</h4>
+                <div className="publishing-thumbnail-group-tools">
+                  <label className="publishing-overlay-toggle" title="Tự ghép chữ overlay theo đúng vị trí và màu tương phản lên ảnh thumbnail">
+                    <input type="checkbox" checked={thumbnailOverlayEnabled} disabled={generatingAllThumbnails || Object.keys(generatingThumbnailKeys).length > 0} onChange={(event) => setThumbnailOverlayEnabled(event.target.checked)} />
+                    <span>Kèm chữ overlay</span>
+                  </label>
+                  <button className="secondary-button compact" type="button" onClick={() => void generateAllThumbnailImages()} disabled={publishingBusy || generatingAllThumbnails || Object.keys(generatingThumbnailKeys).length > 0 || !selectedPublishingPackage.thumbnails.length}>
+                    <Icon name={generatingAllThumbnails ? "clock" : "spark"} size={13} />{generatingAllThumbnails ? "Đang tạo tất cả…" : `Tạo tất cả ảnh (${selectedPublishingPackage.thumbnails.length})`}
+                  </button>
+                </div>
+              </div>
+              <div className="publishing-thumbnail-model-bar" role="note">
+                <span className="publishing-thumbnail-model-badge">
+                  Model tạo ảnh: <strong>{batchMuseImageSelected ? "Muse.ai" : batchFlowImageSelected ? "Flow" : "MaiVideo"} · {selectedBatchImageModel?.label || imageModelDisplayName(batchMediaSettings.imageModel)}</strong>
+                  {!batchMuseImageSelected && !batchFlowImageSelected ? ` · ${batchImageQualities.includes(batchMediaSettings.imageQuality) ? batchMediaSettings.imageQuality : batchImageQualities[0] || batchMediaSettings.imageQuality}${batchImageDetailLevels.length ? ` · ${IMAGE_DETAIL_LEVEL_LABELS[batchImageDetailLevels.includes(batchMediaSettings.imageDetailLevel) ? batchMediaSettings.imageDetailLevel : batchImageDetailLevels[0]]}` : ""}` : ""}
+                  {` · ${project.aspectRatio}`}
+                </span>
+                <button type="button" className="text-button publishing-model-jump" onClick={focusConfiguredImageModelSettings}>
+                  Đổi model ở trên ↑
+                </button>
+              </div>
+              <div className="publishing-thumbnail-list">{selectedPublishingPackage.thumbnails.map((thumbnail, index) => {
+                const thumbKey = `${publishingScope}:${index}`;
+                const isGeneratingThumb = Boolean(generatingThumbnailKeys[thumbKey]);
+                const isPromptOpen = Boolean(expandedThumbnailPrompts[thumbKey]);
+                const imageUrl = thumbnail.image?.localPath
+                  ? thumbnailImageUrl(project.slug, publishingScope, index, "final", thumbnail.image.generatedAt)
+                  : "";
+                const baseDownloadUrl = thumbnail.image?.baseLocalPath
+                  ? thumbnailImageUrl(project.slug, publishingScope, index, "base", thumbnail.image.generatedAt, true)
+                  : "";
+                const finalDownloadUrl = thumbnail.image?.localPath
+                  ? thumbnailImageUrl(project.slug, publishingScope, index, "final", thumbnail.image.generatedAt, true)
+                  : "";
+                const refCount = (thumbnail.image?.referenceCharacterIds?.length || 0) + (thumbnail.image?.referenceLocationId ? 1 : 0);
+                const selectedRefCharIds = selectedThumbnailCharacterIds(thumbKey, thumbnail);
+                return <article className="publishing-thumbnail-option" key={`${index}-${thumbnail.concept}`}>
+                  <div className="publishing-thumbnail-head">
+                    <div className="publishing-thumbnail-copy">
+                      <strong>{thumbnail.concept}</strong>
+                      <small>Chữ overlay: {thumbnail.overlayText}</small>
+                    </div>
+                    <div className="publishing-thumbnail-actions">
+                      <button
+                        type="button"
+                        className="text-button publishing-prompt-toggle"
+                        aria-expanded={isPromptOpen}
+                        onClick={() => setExpandedThumbnailPrompts((current) => ({ ...current, [thumbKey]: !current[thumbKey] }))}
+                      >
+                        {isPromptOpen ? "Ẩn prompt" : "Mở prompt"}
+                      </button>
+                      <button
+                        type="button"
+                        className={imageUrl ? "secondary-button compact" : "primary-button compact"}
+                        disabled={publishingBusy || generatingAllThumbnails || isGeneratingThumb}
+                        title={`Tạo ảnh thumbnail ${project.aspectRatio} với ${selectedRefCharIds.length} ảnh nhân vật tham chiếu`}
+                        onClick={() => void generateThumbnailImage(index)}
+                      >
+                        <Icon name={isGeneratingThumb ? "clock" : "spark"} size={13} />{isGeneratingThumb ? "Đang tạo ảnh…" : imageUrl ? "Tạo lại ảnh" : "Tạo ảnh"}
+                      </button>
+                    </div>
+                  </div>
+                  {thumbnailEligibleCharacters.length > 0 ? <div className="publishing-thumbnail-refs">
+                    <span className="publishing-thumbnail-refs-label">Nhân vật tham chiếu ({selectedRefCharIds.length}):</span>
+                    <div className="publishing-thumbnail-ref-list">
+                      {thumbnailEligibleCharacters.map((character) => {
+                        const active = selectedRefCharIds.includes(character.id);
+                        return <button
+                          key={character.id}
+                          type="button"
+                          className={`publishing-thumbnail-ref-chip${active ? " selected" : ""}`}
+                          aria-pressed={active}
+                          disabled={publishingBusy || generatingAllThumbnails || isGeneratingThumb}
+                          title={active ? `Bỏ ảnh tham chiếu ${character.name}` : `Thêm ảnh tham chiếu ${character.name}`}
+                          onClick={() => toggleThumbnailReferenceCharacter(thumbKey, thumbnail, character.id)}
+                        >
+                          <img src={`/api/projects/${encodeURIComponent(project.slug)}/characters/${encodeURIComponent(character.id)}/image`} alt="" loading="lazy" />
+                          <span>{character.name}</span>
+                        </button>;
+                      })}
+                    </div>
+                  </div> : characterProfiles.length > 0 && <div className="publishing-thumbnail-refs">
+                    <small className="publishing-thumbnail-refs-empty">Tạo ảnh hồ sơ nhân vật trước để tự động giữ đúng diện mạo nhân vật trên thumbnail.</small>
+                  </div>}
+                  {imageUrl && <div className="publishing-thumbnail-preview">
+                    <button
+                      type="button"
+                      className="publishing-thumbnail-preview-button"
+                      onClick={() => setThumbnailPreview({ url: imageUrl, title: thumbnail.concept, subtitle: `${publishingScope === "series" ? "Video toàn dự án" : publishingScope} · ${thumbnail.overlayText}` })}
+                      aria-label={`Xem lớn ảnh thumbnail ${index + 1}`}
+                    >
+                      <img src={imageUrl} alt={thumbnail.concept} loading="lazy" decoding="async" />
+                    </button>
+                    <div className="publishing-thumbnail-meta">
+                      <div className="publishing-thumbnail-badges">
+                        <span>{thumbnail.image?.aspectRatio || project.aspectRatio}</span>
+                        {thumbnail.image?.model && <span>{thumbnail.image.model}</span>}
+                        {refCount > 0 && <span>{refCount} ảnh tham chiếu</span>}
+                        <span>{thumbnail.image?.withOverlay ? "Có chữ overlay" : "Ảnh không chữ"}</span>
+                      </div>
+                      <div className="publishing-thumbnail-links">
+                        <a href={imageUrl} target="_blank" rel="noreferrer">Mở ảnh ↗</a>
+                        <a href={finalDownloadUrl} download={`${project.slug}-${publishingScope}-thumbnail-${index + 1}.png`}>Tải ảnh</a>
+                        {thumbnail.image?.withOverlay && baseDownloadUrl && <a href={baseDownloadUrl} download={`${project.slug}-${publishingScope}-thumbnail-${index + 1}-clean.png`}>Tải ảnh không chữ</a>}
+                      </div>
+                    </div>
+                  </div>}
+                  {isPromptOpen && <div className="publishing-prompt-copy">
+                    <p>{thumbnail.prompt}</p>
+                    {thumbnail.layoutNote && <small>{thumbnail.layoutNote}</small>}
+                    <button className="secondary-button compact" type="button" onClick={() => void copyPublishingText(`${thumbnail.prompt}\n\nOverlay text: ${thumbnail.overlayText}${thumbnail.layoutNote ? `\nLayout: ${thumbnail.layoutNote}` : ""}`, "prompt thumbnail")}><Icon name="copy" size={13} />Sao chép prompt</button>
+                  </div>}
+                </article>;
+              })}</div>
             </section>
           </div>
-        </div> : <div className="publishing-package-empty"><Icon name="file" size={17} /><span>Chưa có gợi ý cho phạm vi này. Tạo từ GPT khi xuất JSON hoặc bấm nút để sinh bằng Code Agent / Script LLM.</span></div>}
+        </div> : <div className="publishing-package-empty"><Icon name="file" size={17} /><span>Chưa có gợi ý cho phạm vi này. Tạo từ GPT khi xuất JSON hoặc bấm nút để sinh bằng Code Agent CLI.</span></div>}
       </section>}
 
       <section className="production-tools" id="export">
@@ -4466,7 +4890,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
         <article className="production-tool-card panel-card">
           <div className="production-tool-heading"><div><div className="section-kicker">MAIVIDEO QUEUE</div><h2>Batch video AI</h2></div><span className={`tool-status ${videoQueue?.status === "completed" ? "good" : videoQueue?.status === "failed" ? "warning" : videoQueue?.status === "paused" ? "warning" : "neutral"}`}>{videoQueue ? `${videoQueueSummary.queued} chờ` : "Chưa xếp hàng"}</span></div>
           <p>{videoQueue ? `${videoQueueSummary.completed} xong · ${videoQueueSummary.failed} lỗi · ${videoQueueSummary.running} đang chạy` : "Tạo video AI cho các cảnh còn thiếu."}</p>
-          <div className="production-tool-actions"><button className="secondary-button compact" type="button" onClick={() => void queueVideoJobs(true)} disabled={!scenes.length || batchSeedanceHiddenSelected || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning || batchMediaBusy || Boolean(generatingSceneId)}><Icon name="layers" size={14} />Xếp hàng AI còn thiếu</button><button className="primary-button compact" type="button" onClick={() => void runVideoQueue()} disabled={videoQueueRunning || !videoQueueCanRun || scriptBlocksIndependentTasks || ttsRunning || batchMediaBusy || Boolean(generatingSceneId)}><Icon name="play" size={14} />{videoQueueRunning ? "Đang chạy queue…" : videoQueue?.status === "running" && !videoQueueSummary.queued ? "Khôi phục queue" : "Chạy queue"}</button>{videoQueueRunning && <button className="text-button" type="button" onClick={() => void controlVideoQueue("pause")}>Dừng sau job hiện tại</button>}{videoQueue?.status === "paused" && <button className="text-button" type="button" onClick={() => void controlVideoQueue("resume")} disabled={scriptBlocksIndependentTasks || ttsRunning || batchMediaBusy || Boolean(generatingSceneId)}>Tiếp tục</button>}{videoQueueSummary.failed > 0 && <button className="text-button" type="button" onClick={() => void controlVideoQueue("retry_failed")} disabled={scriptBlocksIndependentTasks || ttsRunning || batchMediaBusy || Boolean(generatingSceneId)}>Retry lỗi</button>}</div>
+          <div className="production-tool-actions"><button className="secondary-button compact" type="button" onClick={() => void queueVideoJobs(true)} disabled={!scenes.length || batchSeedanceHiddenSelected || videoQueueRunning || scriptBlocksIndependentTasks || ttsRunning || batchMediaBusy || Boolean(generatingSceneId)}><Icon name="layers" size={14} />Xếp hàng AI còn thiếu</button><button className="primary-button compact" type="button" onClick={() => void runVideoQueue()} disabled={videoQueueRunning || !videoQueueCanRun || scriptBlocksIndependentTasks || ttsRunning || batchMediaBusy || Boolean(generatingSceneId)}><Icon name="play" size={14} />{videoQueueRunning ? "Đang chạy queue…" : videoQueue?.status === "running" && !videoQueueSummary.queued ? "Khôi phục queue" : "Chạy queue"}</button>{videoQueueRunning && <button className="text-button" type="button" onClick={() => void controlVideoQueue("pause")}>Dừng sau job hiện tại</button>}{(videoQueueRunning || videoQueueSummary.queued > 0 || videoQueueSummary.running > 0 || videoQueueSummary.paused > 0) && <button className="secondary-button compact cancel-action-button" type="button" onClick={() => void controlVideoQueue("cancel")}><Icon name="close" size={13} />Huỷ tạo video</button>}{videoQueue?.status === "paused" && <button className="text-button" type="button" onClick={() => void controlVideoQueue("resume")} disabled={scriptBlocksIndependentTasks || ttsRunning || batchMediaBusy || Boolean(generatingSceneId)}>Tiếp tục</button>}{videoQueueSummary.failed > 0 && <button className="text-button" type="button" onClick={() => void controlVideoQueue("retry_failed")} disabled={scriptBlocksIndependentTasks || ttsRunning || batchMediaBusy || Boolean(generatingSceneId)}>Retry lỗi</button>}</div>
           {failedVideoJobs.length > 0 && <div className="video-queue-errors" aria-label="Chi tiết job video lỗi">
             {failedVideoJobs.slice(0, 3).map((job) => <div className="video-queue-error" key={job.id}>
               <strong>{job.sceneId} · {videoFailureStageLabel(job.failureStage, job.provider)}</strong>
@@ -4560,6 +4984,13 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
           <button className="ai-drama-image-lightbox-close" type="button" autoFocus onClick={() => setSceneImagePreview(null)} aria-label="Đóng ảnh">×</button>
           <img src={sceneImagePreviewUrl} alt={`Ảnh cảnh ${sceneNumberLabel(sceneImagePreview)}`} />
           <figcaption>{sceneNumberLabel(sceneImagePreview)} · {sceneImagePreview.chunkId}</figcaption>
+        </figure>
+      </div>}
+      {thumbnailPreview && <div className="ai-drama-image-lightbox" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setThumbnailPreview(null); }} onKeyDown={(event) => { if (event.key === "Escape") setThumbnailPreview(null); }}>
+        <figure className="ai-drama-image-lightbox-content" role="dialog" aria-modal="true" aria-label={thumbnailPreview.title}>
+          <button className="ai-drama-image-lightbox-close" type="button" autoFocus onClick={() => setThumbnailPreview(null)} aria-label="Đóng ảnh thumbnail">×</button>
+          <img src={thumbnailPreview.url} alt={thumbnailPreview.title} />
+          <figcaption>{thumbnailPreview.title} · {thumbnailPreview.subtitle}</figcaption>
         </figure>
       </div>}
       {episodeScriptEditorOpen && <div className="extend-episodes-backdrop episode-script-import-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !importingScripts) setEpisodeScriptEditorOpen(false); }}>

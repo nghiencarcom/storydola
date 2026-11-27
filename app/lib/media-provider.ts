@@ -1774,6 +1774,219 @@ export async function generateMaiVideoImageForScene({
   return { ...media, referenceCharacterIds: selectedCharacters.map((character) => character.id), ...(selectedLocation ? { referenceLocationId: selectedLocation.id } : {}) };
 }
 
+export function matchThumbnailReferences(
+  text: string,
+  characters: ProjectCharacter[],
+  locations: ProjectLocation[],
+  maxReferences = 9,
+  options?: {
+    explicitCharacterIds?: string[];
+    characterImportanceScores?: Record<string, number>;
+    minImportantCharacters?: number;
+  },
+) {
+  const limit = Math.max(0, maxReferences);
+  const eligibleCharacters = characters.filter((character) => Boolean(character.referenceImagePath));
+  const eligibleById = new Map(eligibleCharacters.map((character) => [character.id, character]));
+  const normalizedText = ` ${normalizeEntityName(text)} `;
+
+  let selectedCharacters: ProjectCharacter[] = [];
+  if (Array.isArray(options?.explicitCharacterIds)) {
+    const seen = new Set<string>();
+    for (const id of options.explicitCharacterIds) {
+      const cleanId = String(id || "").trim();
+      const matched = eligibleById.get(cleanId);
+      if (matched && !seen.has(matched.id)) {
+        seen.add(matched.id);
+        selectedCharacters.push(matched);
+      }
+    }
+  } else {
+    const characterMatches: Array<{ character: ProjectCharacter; position: number }> = [];
+    for (const character of eligibleCharacters) {
+      const normalizedName = normalizeEntityName(character.name);
+      if (!normalizedName) continue;
+      const position = normalizedText.indexOf(` ${normalizedName} `);
+      if (position >= 0) {
+        characterMatches.push({ character, position });
+      }
+    }
+    characterMatches.sort((a, b) => a.position - b.position);
+    selectedCharacters = characterMatches.map((item) => item.character);
+
+    const minBackfillThreshold = Math.min(2, eligibleCharacters.length);
+    const targetImportantCount = Math.min(options?.minImportantCharacters ?? 3, eligibleCharacters.length);
+    if (selectedCharacters.length < minBackfillThreshold && selectedCharacters.length < targetImportantCount) {
+      const selectedIds = new Set(selectedCharacters.map((character) => character.id));
+      const orderIndex = new Map(eligibleCharacters.map((character, index) => [character.id, index]));
+      const scores = options?.characterImportanceScores || {};
+      const rankedRemaining = eligibleCharacters
+        .filter((character) => !selectedIds.has(character.id))
+        .sort((left, right) => {
+          const scoreDiff = (scores[right.id] || 0) - (scores[left.id] || 0);
+          if (scoreDiff !== 0) return scoreDiff;
+          return (orderIndex.get(left.id) ?? 0) - (orderIndex.get(right.id) ?? 0);
+        });
+      for (const candidate of rankedRemaining) {
+        if (selectedCharacters.length >= targetImportantCount) break;
+        selectedCharacters.push(candidate);
+      }
+    }
+  }
+
+  let matchedLocation: ProjectLocation | undefined;
+  let bestLocationPos = Number.POSITIVE_INFINITY;
+  for (const location of locations) {
+    if (!location.referenceImagePath) continue;
+    const names = [location.name, ...(location.aliases || [])].map(normalizeEntityName).filter(Boolean);
+    for (const candidateName of names) {
+      const position = normalizedText.indexOf(` ${candidateName} `);
+      if (position >= 0 && position < bestLocationPos) {
+        bestLocationPos = position;
+        matchedLocation = location;
+      }
+    }
+  }
+
+  if (!matchedLocation) {
+    const stopwords = new Set(["the", "and", "for", "with", "village", "from", "into", "near", "side"]);
+    const textTokens = new Set(
+      normalizeEntityName(text)
+        .split(" ")
+        .filter((token) => token.length >= 3 && !stopwords.has(token)),
+    );
+    let bestOverlap = 0;
+    for (const location of locations) {
+      if (!location.referenceImagePath) continue;
+      const locTokens = new Set(
+        [location.name, ...(location.aliases || [])]
+          .flatMap((value) => normalizeEntityName(value).split(" "))
+          .filter((token) => token.length >= 3 && !stopwords.has(token)),
+      );
+      let overlap = 0;
+      for (const token of locTokens) {
+        if (textTokens.has(token)) overlap += 1;
+      }
+      if (overlap >= 2 && overlap > bestOverlap) {
+        bestOverlap = overlap;
+        matchedLocation = location;
+      }
+    }
+  }
+
+  const charCap = Array.isArray(options?.explicitCharacterIds)
+    ? limit
+    : matchedLocation && limit > 0
+      ? Math.max(0, limit - 1)
+      : limit;
+  const finalCharacters = selectedCharacters.slice(0, charCap);
+  const finalLocation = finalCharacters.length < limit ? matchedLocation : undefined;
+  return { characters: finalCharacters, location: finalLocation };
+}
+
+export async function generateMaiVideoThumbnailImage(input: {
+  projectSlug: string;
+  scope: string;
+  index: number;
+  concept?: string;
+  prompt: string;
+  layoutNote?: string;
+  aspectRatio?: string;
+  mediaGeneration?: Partial<MediaGenerationSettings>;
+  characters?: ProjectCharacter[];
+  locations?: ProjectLocation[];
+  referenceCharacterIds?: string[];
+  characterImportanceScores?: Record<string, number>;
+  contentGenre?: string;
+  secondaryGenres?: string[];
+  storySetting?: string;
+  settingNotes?: string;
+  visualStyle?: string;
+  imageStyle?: string;
+  userId?: string;
+  providerAuthToken?: string;
+}) {
+  const settings = resolveMediaGenerationSettings(input.mediaGeneration);
+  const configuredReferenceLimit = Number(process.env.MAIVIDEO_IMAGE_MAX_REFERENCE_IMAGES);
+  const referenceLimit = isMuseImageModel(settings.imageModel) || isFlowImageModel(settings.imageModel)
+    ? 30
+    : Number.isInteger(configuredReferenceLimit) && configuredReferenceLimit > 0 ? Math.min(9, configuredReferenceLimit) : 9;
+
+  const searchContext = [input.concept, input.prompt, input.layoutNote].filter(Boolean).join("\n");
+  const matched = matchThumbnailReferences(
+    searchContext,
+    input.characters || [],
+    input.locations || [],
+    referenceLimit,
+    {
+      explicitCharacterIds: input.referenceCharacterIds,
+      characterImportanceScores: input.characterImportanceScores,
+    },
+  );
+
+  const referenceImageUrls: string[] = [];
+  const referenceImageNames: string[] = [];
+  const useNamedRefs = isMuseImageModel(settings.imageModel) || isFlowImageModel(settings.imageModel);
+  for (const character of matched.characters) {
+    referenceImageUrls.push(await localCharacterReferenceDataUrl(input.projectSlug, character));
+    if (useNamedRefs) referenceImageNames.push(`Character - ${character.name}`);
+  }
+  if (matched.location) {
+    referenceImageUrls.push(await localLocationReferenceDataUrl(input.projectSlug, matched.location));
+    if (useNamedRefs) referenceImageNames.push(`Location - ${matched.location.name}`);
+  }
+
+  const visualDirection = visualStylePrompt(input.visualStyle);
+  const renderingStyle = imageStylePrompt(input.imageStyle);
+  const genreDirection = contentGenrePrompt(input.contentGenre, input.secondaryGenres);
+  const settingDirection = storySettingPrompt(input.storySetting, input.settingNotes);
+  const characterNote = characterContinuityNote(matched.characters, 1);
+  const castGuidance = buildGenreAndCastGuidance(matched.characters, input.contentGenre, input.secondaryGenres, "image");
+  const locationStartIndex = matched.characters.length + 1;
+  const locationNote = matched.location
+    ? `LOCATION CONTINUITY. Image ${locationStartIndex} is the four-view environment reference for ${matched.location.name}${matched.location.description ? ` (${matched.location.description})` : ""}. Use it only as a guide to the same architecture, materials, and palette; compose one dramatic thumbnail frame in that place.`
+    : "";
+
+  const rules = [
+    `YOUTUBE THUMBNAIL ART DIRECTION: Compose a single high-impact ${input.aspectRatio || "16:9"} cinematic key-art thumbnail with a clear dominant subject, strong foreground-to-background separation, high warm/cool contrast, and bold expressive emotion readable at small mobile feed size.`,
+    `STORY GENRES: ${genreDirection}. STORY SETTING: ${settingDirection}.`,
+    visualDirection ? `PROJECT VISUAL STYLE: ${visualDirection}.` : "",
+    renderingStyle ? `IMAGE STYLE: ${renderingStyle}. Apply consistently across subjects and environment.` : "",
+    characterNote,
+    castGuidance,
+    locationNote,
+    input.layoutNote ? `COMPOSITION & NEGATIVE SPACE NOTE (reserve clean dark/uncluttered space as described; do NOT render any text): ${input.layoutNote}` : "",
+    "CRITICAL CLEAN-ARTWORK RULE: Render zero text, zero letters, zero words, zero numbers, zero watermarks, zero logos, and no storyboard/grid/split-screen. Overlay typography will be composited separately.",
+  ].filter(Boolean).join("\n\n");
+
+  const composedPrompt = sanitizeDramaVisualPrompt(`${input.prompt.trim()}\n\n${rules}`).slice(0, 9_999);
+  const outputProvider = isMuseImageModel(settings.imageModel) ? "muse" : isFlowImageModel(settings.imageModel) ? "flow" : "maivideo";
+  const outputPath = path.join(
+    MEDIA_DIR,
+    safeSegment(input.projectSlug, "project"),
+    "thumbnails",
+    `${safeSegment(input.scope, "series")}-thumb-${input.index + 1}-${outputProvider}-base.png`,
+  );
+
+  const media = await generateMaiVideoImage(
+    composedPrompt,
+    outputPath,
+    input.aspectRatio || "16:9",
+    settings,
+    referenceImageUrls,
+    referenceImageNames,
+    input.userId,
+    undefined,
+    undefined,
+    input.providerAuthToken,
+  );
+  return {
+    ...media,
+    referenceCharacterIds: matched.characters.map((character) => character.id),
+    ...(matched.location ? { referenceLocationId: matched.location.id } : {}),
+  };
+}
+
 async function generateMaiVideoVideo(
   prompt: string,
   outputPath: string,

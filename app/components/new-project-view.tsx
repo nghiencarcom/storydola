@@ -1087,18 +1087,18 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
           {contentOutputSection}
 
           <section className="form-section panel-card provider-card">
-            <div className="section-kicker">04 / PROVIDER</div>
-            <h2>Script LLM</h2>
+            <div className="section-kicker">04 / CODE AGENT CLI</div>
+            <h2>Code Agent CLI</h2>
             <div className="provider-config-row">
-              <span className="provider-mark">O</span>
-              <div><strong>OpenAI API</strong><small>Responses API</small></div>
-              <StatusDot text={providerConfig.keyConfigured ? "API key đã cấu hình" : "Cần cấu hình key"} />
+              <span className="provider-mark">C</span>
+              <div><strong>Code Agent CLI</strong><small>Codex · Claude Code · Antigravity</small></div>
+              <StatusDot text={providerConfig.keyConfigured ? "CLI đã sẵn sàng" : "Chưa kết nối CLI"} />
             </div>
-            <div className="provider-config-detail"><span>Model</span><strong>{providerConfig.primaryModel}</strong></div>
-            <div className="provider-config-detail"><span>Reasoning effort</span><strong>{providerConfig.reasoningEffort}</strong></div>
-            <div className="provider-config-detail"><span>Speed tier</span><strong>{providerConfig.serviceTier === "fast" ? "Fast mode" : providerConfig.serviceTier}</strong></div>
-            <small className="field-help">Fast mode được gửi ở mọi yêu cầu; GPT-6 Luna tính phí Fast gấp 2 lần Standard theo tài liệu OpenAI.</small>
-            <div className="provider-config-detail"><span>Fallback</span><strong>{providerConfig.fallbackModels.length ? `${providerConfig.fallbackModels.length} models` : "Tắt"}</strong></div>
+            <div className="provider-config-detail"><span>CLI / Model</span><strong>{providerConfig.primaryModel}</strong></div>
+            <div className="provider-config-detail"><span>Chất lượng</span><strong>{providerConfig.reasoningEffort}</strong></div>
+            <div className="provider-config-detail"><span>Tốc độ</span><strong>{providerConfig.serviceTier === "fast" ? "Fast mode" : providerConfig.serviceTier}</strong></div>
+            <div className="provider-config-detail"><span>CLI khác khả dụng</span><strong>{providerConfig.fallbackModels.length ? providerConfig.fallbackModels.join(", ") : "Không có"}</strong></div>
+            <small className="field-help">Toàn bộ tác vụ AI kịch bản, phân tích và đóng gói dùng Code Agent CLI cục bộ. <Link href="/settings#agent-cli-connection">Cấu hình trong Cài đặt</Link>.</small>
           </section>
 
           <div className="form-submit">

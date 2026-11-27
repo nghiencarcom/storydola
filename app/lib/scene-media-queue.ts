@@ -188,7 +188,7 @@ async function checkpointProviderJobId(
   const checkpointed = await updateDataForUser(userId, (data) => {
     const project = data.projects.find((item) => item.slug === slug);
     const job = project && jobById(project, jobId);
-    if (!project || !job || job.status === "completed") return false;
+    if (!project || !job || job.status === "completed" || job.status === "cancelled") return false;
 
     const isMaiVideoJob = job.provider === "maivideo-image" || job.provider === "maivideo-video";
     if ((provider === "maivideo" && !isMaiVideoJob) || (provider === "higgsfield" && job.provider !== "higgsfield") || (provider === "seedance" && job.provider !== "seedance") || (provider === "muse" && job.provider !== "muse") || (provider === "flow" && job.provider !== "flow" && job.provider !== "flow-image")) return false;
@@ -384,6 +384,7 @@ async function runJobWithCheckpoint(userId: string, slug: string, job: SceneMedi
     const needsLocation = job.kind === "image" || settings.videoUseLocationReferences;
     if (project.presetId === "ai-drama" && locationId && needsLocation) {
       await ensureLocationReference(userId, slug, locationId, providerAuthToken);
+      if (signal.aborted) return;
       project = (await projectForUser(userId, slug)) || project;
     }
 
@@ -486,7 +487,7 @@ async function runJobWithCheckpoint(userId: string, slug: string, job: SceneMedi
     }));
     if (!completed || saved.superseded) return;
   } catch (cause) {
-    if (signal.aborted) return;
+    if (signal.aborted || (cause instanceof Error && cause.message === "SCENE_MEDIA_JOB_SUPERSEDED")) return;
     const message = userFacingError(cause);
     const pendingProviderId = cause instanceof MediaProviderJobPendingError
       ? cause.providerJobId
@@ -599,6 +600,63 @@ async function pumpUserQueue(userId: string) {
     queueRuntime.pumpingUsers.delete(userId);
     if (queueRuntime.pumpAgain.delete(userId)) requestUserQueuePump(userId);
   }
+}
+
+export async function cancelSceneMediaJobs(
+  userId: string,
+  slug: string,
+  options: { sceneIds?: string[]; jobIds?: string[]; kind?: "image" | "video" } = {},
+) {
+  const sceneIdSet = options.sceneIds?.length ? new Set(options.sceneIds.map((id) => id.trim()).filter(Boolean)) : null;
+  const jobIdSet = options.jobIds?.length ? new Set(options.jobIds.map((id) => id.trim()).filter(Boolean)) : null;
+  const cancelledJobs = await updateDataForUser(userId, (data) => {
+    const project = data.projects.find((item) => item.slug === slug);
+    if (!project) throw new Error("PROJECT_NOT_FOUND");
+    const cancelled: SceneMediaJob[] = [];
+    const timestamp = now();
+    for (const job of project.sceneMediaJobs || []) {
+      if (job.status !== "queued" && job.status !== "running") continue;
+      if (options.kind && job.kind !== options.kind) continue;
+      if (sceneIdSet && !sceneIdSet.has(job.sceneId)) continue;
+      if (jobIdSet && !jobIdSet.has(job.id)) continue;
+      job.status = "cancelled";
+      job.finishedAt = timestamp;
+      job.updatedAt = timestamp;
+      job.workerId = undefined;
+      job.stage = undefined;
+      job.error = undefined;
+      cancelled.push(structuredClone(job));
+    }
+    if (cancelled.length) {
+      const active = (project.sceneMediaJobs || []).filter((job) => job.status === "queued" || job.status === "running");
+      const finished = (project.sceneMediaJobs || []).filter((job) => job.status === "completed" || job.status === "failed" || job.status === "cancelled").slice(-120);
+      project.sceneMediaJobs = [...finished, ...active].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      project.updatedAt = timestamp;
+      const allVideos = cancelled.every((job) => job.kind === "video");
+      const allImages = cancelled.every((job) => job.kind === "image");
+      const cancelledSceneIds = [...new Set(cancelled.map((job) => job.sceneId))];
+      data.activities.unshift(makeActivity({
+        projectSlug: slug,
+        kind: "chunk",
+        title: allVideos ? "Đã huỷ tạo video" : allImages ? "Đã huỷ tạo ảnh" : "Đã huỷ tạo media",
+        detail: `${cancelled.length} job (${cancelledSceneIds.slice(0, 8).join(", ")}${cancelledSceneIds.length > 8 ? ` và ${cancelledSceneIds.length - 8} cảnh khác` : ""})`,
+        status: "warning",
+      }));
+    }
+    return cancelled;
+  });
+
+  for (const job of cancelledJobs) {
+    queueRuntime.activeJobs.get(job.id)?.controller?.abort(new Error("SCENE_MEDIA_JOB_CANCELLED"));
+    if (job.provider === "higgsfield") await deleteHiggsfieldSessionToken(userId, job.id).catch(() => undefined);
+    if (job.provider === "muse" || job.provider === "flow" || job.provider === "flow-image" || job.kind === "image") {
+      await deleteProviderSessionToken(userId, job.id).catch(() => undefined);
+    }
+  }
+  return {
+    cancelledJobs,
+    cancelledSceneIds: [...new Set(cancelledJobs.map((job) => job.sceneId))],
+  };
 }
 
 export function startSceneMediaQueue(userId: string, slug: string) {

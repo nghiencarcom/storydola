@@ -35,9 +35,9 @@ function isAlreadyAiVideo(scene: Record<string, unknown>, projectSlug: string) {
 
 function summarize(queue: VideoQueueState) {
   return queue.jobs.reduce((summary, job) => {
-    summary[job.status] += 1;
+    summary[job.status] = (summary[job.status] || 0) + 1;
     return summary;
-  }, { queued: 0, running: 0, completed: 0, failed: 0, paused: 0 } as Record<string, number>);
+  }, { queued: 0, running: 0, completed: 0, failed: 0, paused: 0, cancelled: 0 } as Record<string, number>);
 }
 
 export async function GET(_request: Request, context: { params: Promise<{ slug: string }> }) {

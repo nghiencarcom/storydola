@@ -1,8 +1,8 @@
 import { getCurrentUserId } from "../../../../lib/auth-server";
-import { generateWithCodingAgent } from "../../../../lib/coding-agent-cli";
+import { generateWithCodingAgent, getCodingAgentCliStatuses, type CodingAgent } from "../../../../lib/coding-agent-cli";
 import { getCodingAgentPreference } from "../../../../lib/coding-agent-preferences";
 import { NextResponse } from "next/server";
-import { generateWithScriptProvider, getProviderConfig, resolveConfiguredCodingAgent } from "../../../../lib/script-provider";
+import { resolveConfiguredCodingAgent } from "../../../../lib/script-provider";
 import { readProjectScenes } from "../../../../lib/scene-store";
 import { makeActivity, now, readChunkOutput, readData, updateData } from "../../../../lib/server-store";
 import type { ProjectChunk, StoryProject, VideoPublishingSet } from "../../../../lib/project-types";
@@ -116,18 +116,30 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     chunks = [chunk];
   }
 
-  const agent = body.agent;
-  if (agent !== undefined && agent !== "codex" && agent !== "claude" && agent !== "antigravity") {
+  const rawAgent = body.agent;
+  if (rawAgent !== undefined && rawAgent !== "codex" && rawAgent !== "claude" && rawAgent !== "antigravity") {
     return NextResponse.json({ message: "Hãy chọn coding agent hợp lệ." }, { status: 400 });
   }
+  const agent: CodingAgent | undefined = rawAgent;
   const userId = request.headers.get("x-storyai-user-id")?.trim() || await getCurrentUserId().catch(() => "");
   const savedPreference = userId ? await getCodingAgentPreference(userId).catch(() => undefined) : undefined;
-  const fallbackAgent = !agent && !getProviderConfig().keyConfigured
-    ? await resolveConfiguredCodingAgent(userId)
-    : undefined;
-  if (!agent && !getProviderConfig().keyConfigured && !fallbackAgent) {
+  let targetAgent;
+  if (agent) {
+    const statuses = await getCodingAgentCliStatuses({ includeModels: false }).catch(() => []);
+    if (!statuses.some((item) => item.id === agent && item.available)) {
+      return NextResponse.json({
+        message: "Chưa tìm thấy Code Agent CLI đã chọn trên máy đang chạy StoryAI. Hãy kiểm tra trong Cài đặt.",
+      }, { status: 503 });
+    }
+    targetAgent = savedPreference?.agent === agent
+      ? savedPreference
+      : { agent, model: "", quality: "auto" as const, speed: "standard" as const };
+  } else {
+    targetAgent = await resolveConfiguredCodingAgent(userId);
+  }
+  if (!targetAgent) {
     return NextResponse.json({
-      message: "Chưa cấu hình Script LLM hoặc kết nối Code Agent CLI (Codex / Claude Code / Antigravity) trong Cài đặt để tạo gợi ý.",
+      message: "Chưa kết nối Code Agent CLI (Codex / Claude Code / Antigravity) trong Cài đặt để tạo gợi ý.",
     }, { status: 503 });
   }
 
@@ -135,20 +147,12 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     const sceneRecords = await readProjectScenes(project) as Record<string, unknown>[];
     const briefs = await Promise.all(chunks.map((chunk) => chunkBrief(project, chunk, sceneRecords)));
     const prompt = publishingPrompt(project, target, briefs);
-    const matchingPref = agent && savedPreference?.agent === agent ? savedPreference : undefined;
-    const generated = agent
-      ? await generateWithCodingAgent(agent, prompt, {
-        promptOnlyJson: true,
-        ...(matchingPref ? { model: matchingPref.model, quality: matchingPref.quality, speed: matchingPref.speed } : {}),
-      })
-      : fallbackAgent
-        ? await generateWithCodingAgent(fallbackAgent.agent, prompt, {
-          promptOnlyJson: true,
-          model: fallbackAgent.model,
-          quality: fallbackAgent.quality,
-          speed: fallbackAgent.speed,
-        })
-        : await generateWithScriptProvider(prompt, { allowCodingAgentFallback: false });
+    const generated = await generateWithCodingAgent(targetAgent.agent, prompt, {
+      promptOnlyJson: true,
+      model: targetAgent.model,
+      quality: targetAgent.quality,
+      speed: targetAgent.speed,
+    });
     const packageSet = normalizeSet(generated.result);
     if (!packageSet) return NextResponse.json({ message: "AI trả về gói title/thumbnail chưa đủ cấu trúc. Hãy thử lại." }, { status: 502 });
     const savedSet: VideoPublishingSet = { ...packageSet, updatedAt: now(), source: "ai" };

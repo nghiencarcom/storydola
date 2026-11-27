@@ -35,6 +35,10 @@ export async function saveGeneratedSceneMedia({
     if (!scene) throw new Error("SCENE_NOT_FOUND");
     const chunk = project.chunks.find((item) => item.id === scene.chunkId);
     if (!chunk?.outputPath) throw new Error("CHUNK_OUTPUT_NOT_FOUND");
+    const sourceJob = jobId ? project.sceneMediaJobs?.find((job) => job.id === jobId) : undefined;
+    if (sourceJob?.status === "cancelled") {
+      return { outputPath: chunk.outputPath, scene, superseded: true };
+    }
 
     const currentMedia = asRecord(scene.media);
     const jobCreatedAtMs = Date.parse(jobCreatedAt || "");
