@@ -1036,12 +1036,12 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
                       <option value="scene">Theo độ dài từng cảnh</option>
                       {form.presetId !== "ai-drama" && <option value="fixed">Cố định cho mọi cảnh</option>}
                     </select>
-                    {form.presetId === "ai-drama" && <small className="field-help">{museSelected ? "Muse.ai chỉ nhận clip 5 hoặc 10 giây; cảnh dài hơn dùng tối đa 10 giây." : flowSelected ? "Flow nhận clip 5–15 giây; thời lượng cảnh được làm tròn lên giây phù hợp." : "Phim AI luôn tạo clip theo từng cảnh 5/10/15 giây."}</small>}
+                    {form.presetId === "ai-drama" && <small className="field-help">{museSelected ? "Muse.ai nhận clip 5, 10 hoặc 15 giây theo đúng độ dài cảnh." : flowSelected ? "Flow nhận clip 5–15 giây; thời lượng cảnh được làm tròn lên giây phù hợp." : "Phim AI luôn tạo clip theo từng cảnh 5/10/15 giây."}</small>}
                     {form.mediaGeneration.videoDurationMode === "fixed"
                       ? providerAccountSelected
                         ? <select id="project-video-duration-seconds" value={form.mediaGeneration.videoDurationSec} onChange={(event) => setMediaSettings({ videoDurationSec: Number(event.target.value) })}>{videoDurationChoices.map((seconds) => <option key={seconds} value={seconds}>{seconds} giây</option>)}</select>
                         : <input id="project-video-duration-seconds" type="number" min={videoMinDuration} max={videoMaxDuration} step={1} value={form.mediaGeneration.videoDurationSec} onChange={(event) => setMediaSettings({ videoDurationSec: Number(event.target.value) })} />
-                      : <small className="field-help">{providerAccountSelected ? `Tự chọn thời lượng hợp lệ theo cảnh${museSelected ? " (5/10s)" : flowSelected ? " (5–15s)" : " (5/10/15s)"}.` : `Theo cảnh · tối đa ${videoMaxDuration}s.`}</small>}
+                      : <small className="field-help">{providerAccountSelected ? `Tự chọn thời lượng hợp lệ theo cảnh${flowSelected ? " (5–15s)" : " (5/10/15s)"}.` : `Theo cảnh · tối đa ${videoMaxDuration}s.`}</small>}
                   </label>
                   {flowSelected && <label htmlFor="project-flow-reference-mode" className="form-field">
                     <span>Tham chiếu video Flow</span>

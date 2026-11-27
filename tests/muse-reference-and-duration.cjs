@@ -55,6 +55,7 @@ function loadTs(filePath) {
 const settings = loadTs("app/lib/media-generation-settings.ts");
 const provider = loadTs("app/lib/media-provider.ts");
 const policy = loadTs("app/lib/video-prompt-policy.ts");
+const safety = loadTs("app/lib/visual-prompt-safety.ts");
 
 (async () => {
   // 1. Muse 15s duration support
@@ -164,6 +165,14 @@ const policy = loadTs("app/lib/video-prompt-policy.ts");
     });
     if (videoProvider === "muse") {
       assert(composed.startsWith("SCENE VIDEO PROMPT (action and timing):\nDURATION: 15s."), "Muse must keep 15s scene duration");
+      assert(
+        composed.includes("MUSE OUTPUT REQUIREMENT: Render one complete 15-second final video artifact (16:9, exact 15s runtime; never output a shorter 5s or 10s draft clip)."),
+        "Muse prompt must enforce exact 15s output requirement",
+      );
+      assert(
+        composed.includes("Platform-safe non-graphic motion: perform choreography"),
+        "Muse prompt must use clean non-graphic cast guidance",
+      );
     }
     assert(composed.includes("Khoang Nâu (@Image2)"), `${videoProvider} shot description should bind @Image2`);
     assert(composed.includes("Mực Đen (@Image3)"), `${videoProvider} shot description should bind @Image3`);
@@ -176,7 +185,12 @@ const policy = loadTs("app/lib/video-prompt-policy.ts");
     assert(composed.includes(expectedMapEntry), `${videoProvider} visual reference map entry missing`);
   }
 
-  console.log("Passed: Muse 15s duration, @ImageN indexing, voice cues, mouth-closure lock, and off-screen reference filtering.");
+  // 6. Safety exclusion regex must preserve "without blood or gore" cleanly
+  const safeExclusion = "Keep the action intense without blood or gore during the chase.";
+  assert.equal(safety.sanitizeDramaVisualPrompt(safeExclusion), safeExclusion);
+  assert.deepEqual(safety.findUnsafeDramaPromptTerms(safeExclusion), []);
+
+  console.log("Passed: Muse 15s duration, @ImageN indexing, voice cues, mouth-closure lock, safety exclusions, and off-screen reference filtering.");
 })().catch((error) => {
   console.error(error);
   process.exit(1);

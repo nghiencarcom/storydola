@@ -38,7 +38,7 @@ export function sanitizeDramaVisualPrompt(value: string) {
     return `PROMPTSAFEPLACEHOLDER${index}END`;
   };
   const protectedValue = value
-    .replace(/\b(?:no|without|avoid|do not show)\s+(?:(?:graphic|physical|sexual)\s+)?(?:violence|blood|gore|nudity|weapons?)(?:\s*,\s*(?:blood|gore|nudity|weapons?))*\b/gi, protect)
+    .replace(/\b(?:no|without|avoid|do not show)\s+(?:(?:graphic|physical|sexual)\s+)?(?:violence|blood|gore|nudity|weapons?)(?:\s*(?:,\s*(?:(?:or|and)\s+)?|(?:or|and)\s+)(?:(?:graphic|physical|sexual)\s+)?(?:violence|blood|gore|nudity|weapons?))*\b/gi, protect)
     .replace(/\b(?:hit|hits|hitting|shoot|shooting)\s+(?:(?:the|a|an|its|his|her|their|against|into|onto)\s+)?(?:(?:wet|mossy|cracked|ancient|rocky|stone|wooden|metal|iron|sandy|muddy|heavy|low|high)\s+)*(?:button|key|switch|photo|photograph|scene|film|brakes?|throttle|gas|ground|floor|deck|water|waves?|surf|rocks?|stones?|boulders?|pebbles?|cliffs?|ledges?|walls?|pillars?|columns?|arches?|ruins?|trees?|trunks?|branches?|turf|mud|sand|dust|debris|gravel|shields?|staffs?|blades?|armors?|plates?|rails?|railings?|tables?|crates?|doors?|gates?|bars|barriers?|surfaces?|targets?|marks?|banks?|shores?|flagstones?)\b/gi, protect)
     .replace(/\b(?:violent|violently|brutal)\s+(?:gusts?|gales?|storms?|winds?|waves?|currents?|splashes?|sprays?|shockwaves?|tremors?|jolts?|recoil|downpour|turbulence)\b/gi, protect)
     .replace(/\bshooting\s+(?:straight\s+|high\s+|rapidly\s+|sharply\s+)?(?:up|upward|upwards|down|downward|out|outward|across|past|through|into\s+the\s+(?:air|sky|water|mist))\b/gi, protect)
@@ -72,7 +72,7 @@ export function sanitizeDramaScenePrompts(scenes: unknown[]) {
 export function findUnsafeDramaPromptTerms(value: string): string[] {
   if (!value.trim()) return [];
   const protectedValue = value
-    .replace(/\b(?:no|without|avoid|do not show)\s+(?:(?:graphic|physical|sexual)\s+)?(?:violence|blood|gore|nudity|weapons?)(?:\s*,\s*(?:blood|gore|nudity|weapons?))*\b/gi, " ")
+    .replace(/\b(?:no|without|avoid|do not show)\s+(?:(?:graphic|physical|sexual)\s+)?(?:violence|blood|gore|nudity|weapons?)(?:\s*(?:,\s*(?:(?:or|and)\s+)?|(?:or|and)\s+)(?:(?:graphic|physical|sexual)\s+)?(?:violence|blood|gore|nudity|weapons?))*\b/gi, " ")
     .replace(/\b(?:hit|hits|hitting|shoot|shooting)\s+(?:(?:the|a|an|its|his|her|their)\s+)?(?:(?:wet|mossy|cracked|ancient|rocky|stone|wooden|metal|iron|sandy|muddy|heavy|low|high)\s+)*(?:button|key|switch|photo|photograph|scene|film|brakes?|throttle|gas|ground|floor|deck|water|stone|stones|rock|rocks|boulder|wall|pillar|column|cliff|ledge|railing|timber|wood|tree|trunk|branch|shield|staff|blade|armor|sand|mud|dirt|dust|debris|crate|table|bars|gate|barrier|surface|target|mark|bank|shore|flagstones?)\b/gi, " ")
     .replace(/\b(?:violent|violently|brutal)\s+(?:gusts?|gales?|storms?|winds?|waves?|currents?|splashes?|sprays?|shockwaves?|tremors?|jolts?|recoil|downpour|turbulence)\b/gi, " ")
     .replace(/\b(?:(?:wide|medium|close|tight|extreme|establishing|tracking|handheld|static|panning|low-angle|high-angle|side-angle|eye-level|over-the-shoulder|pov|aerial|crane|dolly|two|single|reaction|insert|reverse|profile|rear|front)\s+(?:[\w-]+\s+){0,2})?shots?\s+at\s+(?!him\b|her\b|them\b|me\b|us\b|you\b|each\s+other\b)/gi, " ")

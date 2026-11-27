@@ -1718,13 +1718,13 @@ function buildGenreAndCastGuidance(
 
   if (hasNaturalCreature || matchesGenre(/^(?:action|adventure|fantasy|science-fiction|sci-fi|animal-adventure|martial-arts)$/)) {
     return mode === "image"
-      ? `Keep the image platform-safe without blood or gore. ${attireClause} Stage physical momentum, posture, blocking, and world-consistent environmental effects (dust, sparks, water spray, or established sci-fi/magic energy) clearly on-camera.`
-      : `Platform-safe motion without blood or gore: execute choreography, parries, pursuit, propulsion, and world-consistent environmental effects (dust, water spray, sparks, established sci-fi/magic VFX) directly on-camera. ${attireClause}`;
+      ? `Keep the image platform-safe and non-graphic. ${attireClause} Stage physical momentum, posture, blocking, and world-consistent environmental effects (dust, sparks, water spray, or established sci-fi/magic energy) clearly on-camera.`
+      : `Platform-safe non-graphic motion: perform choreography, parries, pursuit, propulsion, and world-consistent environmental effects (dust, water spray, sparks, established sci-fi/magic VFX) directly on-camera. ${attireClause}`;
   }
   if (matchesGenre(/^(?:horror|mystery-thriller)$/)) {
     return mode === "image"
-      ? `Keep the image platform-safe without graphic gore. ${attireClause} Build suspense through chiaroscuro lighting, threshold/shadow framing, foreground occlusion, tactile clues, and taut facial/body tension.`
-      : `Platform-safe suspense without graphic gore: build dread through controlled camera creeps, shadow contrast, clue reveals, taut pauses, and startled physical reactions. ${attireClause}`;
+      ? `Keep the image platform-safe and non-graphic. ${attireClause} Build suspense through chiaroscuro lighting, threshold/shadow framing, foreground occlusion, tactile clues, and taut facial/body tension.`
+      : `Platform-safe non-graphic suspense: build dread through controlled camera creeps, shadow contrast, clue reveals, taut pauses, and startled physical reactions. ${attireClause}`;
   }
   if (matchesGenre(/^comedy$/)) {
     return mode === "image"
@@ -2102,7 +2102,11 @@ export async function generateMaiVideoThumbnailImage(input: {
     "CRITICAL CLEAN-ARTWORK RULE: Render zero text, zero letters, zero words, zero numbers, zero watermarks, zero logos, and no storyboard/grid/split-screen. Overlay typography will be composited separately.",
   ].filter(Boolean).join("\n\n");
 
-  const composedPrompt = sanitizeDramaVisualPrompt(`${input.prompt.trim()}\n\n${rules}`).slice(0, 9_999);
+  const indexedThumbPrompt = injectCharacterImageTokensIntoPrompt(
+    input.prompt.trim(),
+    matched.characters.map((character, index) => ({ name: character.name, token: `@Image${index + 1}` })),
+  );
+  const composedPrompt = sanitizeDramaVisualPrompt(`${indexedThumbPrompt}\n\n${rules}`).slice(0, 9_999);
   const outputProvider = isMuseImageModel(settings.imageModel) ? "muse" : isFlowImageModel(settings.imageModel) ? "flow" : "maivideo";
   const outputPath = path.join(
     MEDIA_DIR,
@@ -2905,6 +2909,13 @@ export async function generateMaiVideoVideoForScene({
   const genreDirection = contentGenrePrompt(contentGenre, secondaryGenres);
   const settingDirection = storySettingPrompt(storySetting, settingNotes);
   const promptNotes: VideoApiPromptContext[] = [
+    settings.videoProvider === "muse"
+      ? {
+        text: `MUSE OUTPUT REQUIREMENT: Render one complete ${settings.videoDurationSec}-second final video artifact (${aspectRatio}, exact ${settings.videoDurationSec}s runtime; never output a shorter 5s or 10s draft clip).`,
+        sanitize: false,
+        required: true,
+      }
+      : "",
     dialogueNote,
     continuityNotes ? { text: continuityNotes, required: true } : "",
     `GENRE: ${genreDirection}. SETTING: ${settingDirection}`,
