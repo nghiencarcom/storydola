@@ -292,6 +292,58 @@ async function main() {
     }
   }
 
+  // 7. hasAntigravityAppInstalled & resolveAgyExecutable detect Windows Desktop + .local/bin/agy.exe
+  {
+    const vm = require("node:vm");
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "storyai-agy-detect-"));
+    try {
+      const desktopExe = path.join(tmpDir, "AppData", "Local", "Programs", "Antigravity", "Antigravity.exe");
+      const agyExe = path.join(tmpDir, ".local", "bin", "agy.exe");
+      fs.mkdirSync(path.dirname(desktopExe), { recursive: true });
+      fs.mkdirSync(path.dirname(agyExe), { recursive: true });
+      fs.writeFileSync(desktopExe, "", "utf8");
+      fs.writeFileSync(agyExe, "", "utf8");
+
+      const code = fs.readFileSync(path.join(__dirname, "..", "scripts", "github-tarball.cjs"), "utf8");
+      const moduleObj = { exports: {} };
+      const fakeProcess = {
+        ...process,
+        platform: "win32",
+        env: {
+          ...process.env,
+          PATH: "",
+          LOCALAPPDATA: path.join(tmpDir, "AppData", "Local"),
+          ProgramFiles: path.join(tmpDir, "Program Files"),
+          STORYAI_ANTIGRAVITY_CLI_PATH: "",
+        },
+      };
+      vm.runInNewContext(code, {
+        module: moduleObj,
+        exports: moduleObj.exports,
+        console,
+        process: fakeProcess,
+        Buffer,
+        AbortSignal,
+        fetch,
+        __dirname: path.join(__dirname, "..", "scripts"),
+        __filename: path.join(__dirname, "..", "scripts", "github-tarball.cjs"),
+        require: (id) => {
+          if (id === "node:child_process") {
+            return { spawnSync: (cmd) => ({ status: cmd === agyExe ? 0 : 1 }) };
+          }
+          if (id === "node:os") {
+            return { ...os, homedir: () => tmpDir };
+          }
+          return require(id);
+        },
+      });
+      assert.equal(moduleObj.exports.hasAntigravityAppInstalled(), true);
+      assert.equal(moduleObj.exports.resolveAgyExecutable(), agyExe);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }
+
   console.log("github-tarball-and-updater tests passed");
 }
 

@@ -8,6 +8,8 @@ const { ensureAntigravityVideoPlugins } = require("./ensure-antigravity-video-pl
 const {
   resolveGitExecutable,
   resolveFfmpegExecutables,
+  hasAntigravityAppInstalled,
+  resolveAgyExecutable,
   fetchRemoteBranchSha,
   downloadAndExtractGitHubArchive,
   syncExtractedArchiveToProject,
@@ -467,6 +469,37 @@ function ensureFfmpegInstalled() {
   return pair;
 }
 
+function ensureAntigravityCliInstalled() {
+  let agyBin = resolveAgyExecutable();
+  if (agyBin) return agyBin;
+  if (!envToggleEnabled("STORYAI_AUTO_INSTALL_AGY") || !hasAntigravityAppInstalled()) {
+    return "";
+  }
+
+  log("Antigravity detected without agy CLI. Automatically installing agy CLI for script generation...");
+  if (isWindows) {
+    spawnSync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", "irm https://antigravity.google/cli/install.ps1 | iex"],
+      { cwd: projectRoot, env: process.env, stdio: "inherit", shell: false, windowsHide: true, timeout: 180_000 },
+    );
+  } else {
+    spawnSync(
+      "/bin/bash",
+      ["-c", "curl -fsSL https://antigravity.google/cli/install.sh | bash"],
+      { cwd: projectRoot, env: process.env, stdio: "inherit", shell: false, timeout: 180_000 },
+    );
+  }
+
+  agyBin = resolveAgyExecutable();
+  if (agyBin) {
+    log(`Antigravity CLI (agy) installed and ready (${agyBin}).`);
+  } else {
+    log("Could not auto-install agy CLI; you can install it from Settings later.");
+  }
+  return agyBin;
+}
+
 function portFromConfig() {
   const environmentPort = process.env.PORT?.trim();
   if (/^\d+$/.test(environmentPort || "")) return Number(environmentPort);
@@ -697,6 +730,7 @@ async function main() {
   ensureLocalConfig();
   const gitBin = ensureGitInstalled();
   ensureFfmpegInstalled();
+  ensureAntigravityCliInstalled();
 
   const launcherPath = path.join(projectRoot, "scripts", "start-storyai.js");
   const beforeLauncherHash = sha256(fs.readFileSync(launcherPath));

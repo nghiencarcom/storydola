@@ -158,6 +158,86 @@ function resolveFfmpegExecutables() {
   return { ffmpeg, ffprobe };
 }
 
+function hasAntigravityAppInstalled() {
+  const home = os.homedir();
+  const localAppData = process.env.LOCALAPPDATA?.trim() || path.join(home, "AppData", "Local");
+  const programFiles = process.env.ProgramFiles?.trim() || "C:\\Program Files";
+  const candidates = [
+    path.join(home, ".gemini", "antigravity"),
+    path.join(home, ".gemini", "antigravity-ide"),
+    path.join(home, ".gemini", "config", "mcp_config.json"),
+    ...(process.platform === "darwin"
+      ? [
+        "/Applications/Antigravity.app",
+        path.join(home, "Applications", "Antigravity.app"),
+        "/Applications/Antigravity IDE.app",
+        path.join(home, "Applications", "Antigravity IDE.app"),
+      ]
+      : isWindows
+        ? [
+          path.join(localAppData, "Programs", "Antigravity", "Antigravity.exe"),
+          path.join(localAppData, "Programs", "Antigravity IDE", "Antigravity IDE.exe"),
+          path.join(localAppData, "Programs", "antigravity-ide", "Antigravity IDE.exe"),
+          path.join(localAppData, "Google", "Antigravity", "Antigravity.exe"),
+          path.join(localAppData, "Antigravity", "Antigravity.exe"),
+          path.join(programFiles, "Antigravity", "Antigravity.exe"),
+          path.join(programFiles, "Google", "Antigravity", "Antigravity.exe"),
+          path.join(programFiles, "Antigravity IDE", "Antigravity IDE.exe"),
+        ]
+        : [
+          "/usr/bin/antigravity",
+          "/usr/bin/antigravity-ide",
+          "/opt/Antigravity/antigravity",
+        ]),
+  ];
+  return candidates.some((candidate) => fs.existsSync(candidate));
+}
+
+function resolveAgyExecutable() {
+  const home = os.homedir();
+  const localAppData = process.env.LOCALAPPDATA?.trim() || path.join(home, "AppData", "Local");
+  const override = process.env.STORYAI_ANTIGRAVITY_CLI_PATH?.trim();
+  const candidates = override
+    ? [override]
+    : isWindows
+      ? [
+        path.join(home, ".local", "bin", "agy.exe"),
+        path.join(home, ".gemini", "bin", "agy.exe"),
+        path.join(localAppData, "agy", "bin", "agy.exe"),
+        path.join(localAppData, "Programs", "agy", "bin", "agy.exe"),
+        "agy.exe",
+      ]
+      : [
+        path.join(home, ".local", "bin", "agy"),
+        path.join(home, ".gemini", "bin", "agy"),
+        path.join(home, ".antigravity", "bin", "agy"),
+        "/usr/local/bin/agy",
+        "/opt/homebrew/bin/agy",
+        "agy",
+      ];
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (path.isAbsolute(candidate) && !fs.existsSync(candidate)) continue;
+    const res = spawnSync(candidate, ["--version"], {
+      stdio: "ignore",
+      shell: false,
+      windowsHide: true,
+      timeout: 8_000,
+    });
+    if (res.status === 0) {
+      if (path.isAbsolute(candidate)) {
+        prependToPath(path.dirname(candidate));
+        if (!process.env.STORYAI_ANTIGRAVITY_CLI_PATH) {
+          process.env.STORYAI_ANTIGRAVITY_CLI_PATH = candidate;
+        }
+      }
+      return candidate;
+    }
+  }
+  return "";
+}
+
 function parseUploadPackBranchSha(text, branch = "main") {
   const escapedBranch = branch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = new RegExp(`(?:^[0-9a-f]{4})*([0-9a-f]{40})[ \\t]+refs\\/heads\\/${escapedBranch}(?:$|[ \\t\\0])`, "i");
@@ -459,6 +539,8 @@ function syncExtractedArchiveToProject(stagingDir, projectRoot, previousManifest
 module.exports = {
   resolveGitExecutable,
   resolveFfmpegExecutables,
+  hasAntigravityAppInstalled,
+  resolveAgyExecutable,
   parseUploadPackBranchSha,
   fetchRemoteBranchSha,
   extractTarGzBuffer,

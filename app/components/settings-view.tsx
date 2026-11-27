@@ -52,6 +52,7 @@ export function SettingsView() {
   const [codingPreferenceNotice, setCodingPreferenceNotice] = useState<{ tone: "success" | "error"; text: string } | null>(null);
   const [agentAccessLoading, setAgentAccessLoading] = useState(true);
   const [agentAccessBusy, setAgentAccessBusy] = useState(false);
+  const [installingAgyCli, setInstallingAgyCli] = useState(false);
   const [agentAccessNotice, setAgentAccessNotice] = useState<{ tone: "success" | "error"; text: string } | null>(null);
   const [generatedAgentToken, setGeneratedAgentToken] = useState("");
   const [agentTokenCopied, setAgentTokenCopied] = useState(false);
@@ -246,6 +247,30 @@ export function SettingsView() {
     }
   }
 
+  async function installAntigravityCli() {
+    if (installingAgyCli || agentAccessBusy) return;
+    setInstallingAgyCli(true);
+    setAgentAccessNotice(null);
+    try {
+      const response = await fetch("/api/agent-access/cli-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agent: "antigravity" }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.message || "Không thể tự cài agy CLI.");
+      await refreshAgentAccess();
+      setAgentAccessNotice({
+        tone: "success",
+        text: "Đã cài đặt agy CLI thành công! Nếu đây là lần đầu dùng agy trên máy này, hãy mở Terminal/PowerShell gõ agy một lần để đăng nhập tài khoản Google.",
+      });
+    } catch (cause) {
+      setAgentAccessNotice({ tone: "error", text: cause instanceof Error ? cause.message : "Không thể tự cài agy CLI." });
+    } finally {
+      setInstallingAgyCli(false);
+    }
+  }
+
   async function revokeAgentToken() {
     if (agentAccessBusy || !agentAccessStatus?.configured) return;
     if (!window.confirm("Thu hồi token sẽ ngắt quyền truy cập StoryAI của các CLI đã kết nối. Tiếp tục?")) return;
@@ -318,7 +343,12 @@ export function SettingsView() {
               <div className="agent-connect-card-heading"><strong>{agent.label}</strong><span className={statusClass}>{statusLabel}</span></div>
               <small>{status?.error === "CONFIG_ACCESS_FAILED" ? "Không đọc được file cấu hình. Kiểm tra quyền truy cập của tài khoản chạy StoryAI." : needsFix ? "File cấu hình bị lỗi. Nhấn bên dưới để sao lưu và tạo lại cấu hình." : cliMissing ? (agent.id === "antigravity" ? "Cài ứng dụng hoặc CLI Antigravity trên máy chạy StoryAI rồi tải lại trạng thái." : "Cài CLI này trên máy chạy StoryAI rồi tải lại trạng thái.") : status?.needsUpdate ? "Cấu hình MCP cũ hoặc token kết nối cần được cập nhật." : status?.installed ? (agent.id === "antigravity" ? "Đã tìm thấy cấu hình StoryAI MCP trong Antigravity." : "Đã tìm thấy cấu hình StoryAI MCP trong CLI.") : (agent.id === "antigravity" ? "Cài StoryAI MCP vào Antigravity để truy cập dự án và công cụ StoryAI." : "Cài StoryAI MCP vào CLI này để truy cập dự án và công cụ StoryAI.")}</small>
               {agent.id === "antigravity" && !agentAccessLoading && codingAgentCliStatuses.length > 0 && !cliEntry?.available && (
-                <small>Chưa cài <code>agy</code> CLI (cần nếu chọn Antigravity làm CLI chạy ngầm): <code>{agyInstallCmd}</code></small>
+                <>
+                  <small>Chưa cài <code>agy</code> CLI (cần nếu chọn Antigravity làm CLI chạy ngầm): <code>{agyInstallCmd}</code></small>
+                  <button className="secondary-button compact" type="button" onClick={() => void installAntigravityCli()} disabled={installingAgyCli || agentAccessBusy}>
+                    {installingAgyCli ? "Đang cài agy CLI…" : "Cài tự động agy CLI"}
+                  </button>
+                </>
               )}
               <code className="agent-config-path">{status?.configPath || agent.configName}</code>
               <button className={status?.installed && !status?.needsUpdate ? "secondary-button compact" : "primary-button compact"} type="button"
