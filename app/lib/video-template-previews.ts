@@ -370,7 +370,7 @@ export function buildMotionVideoPresetDemoPlan(presetId: CreateVideoPresetId): C
         summary: "Nhịp tin nhanh không giây chết, thẻ thông số HyperFrames động.",
         dominantVector: vector,
         captionStyle,
-        keywordHighlights: [{ word: "nhanh", color: "emerald", emoji: "⚡" }],
+        keywordHighlights: [{ word: "AI", color: "emerald", emoji: "⚡" }],
         directorNotes: ["Cắt nhịp dồn dập, tận dụng waterfall-cut và whip-blur."],
         scenes: [
           {
@@ -425,7 +425,7 @@ export function buildMotionVideoPresetDemoPlan(presetId: CreateVideoPresetId): C
         summary: "Đặt con số ấn tượng lên đầu, biểu đồ khối 3D và so sánh chiến lược.",
         dominantVector: vector,
         captionStyle,
-        keywordHighlights: [{ word: "lợi", color: "emerald", emoji: "📊" }],
+        keywordHighlights: [{ word: "tiền", color: "emerald", emoji: "📊" }],
         directorNotes: ["Chuyển cảnh hướng lên (vector up) tạo cảm giác tăng trưởng."],
         scenes: [
           {

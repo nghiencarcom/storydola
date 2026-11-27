@@ -64,7 +64,7 @@ function useStoredGalleryViewMode(storageKey: string): ["grid" | "list", (mode: 
     }
   }, [storageKey]);
 
-  const viewMode = useSyncExternalStore(subscribe, getSnapshot, () => "grid");
+  const viewMode = useSyncExternalStore<"grid" | "list">(subscribe, getSnapshot, () => "grid");
 
   const updateViewMode = useCallback(
     (mode: "grid" | "list") => {
