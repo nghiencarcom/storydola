@@ -190,7 +190,21 @@ const safety = loadTs("app/lib/visual-prompt-safety.ts");
   assert.equal(safety.sanitizeDramaVisualPrompt(safeExclusion), safeExclusion);
   assert.deepEqual(safety.findUnsafeDramaPromptTerms(safeExclusion), []);
 
-  console.log("Passed: Muse 15s duration, @ImageN indexing, voice cues, mouth-closure lock, safety exclusions, and off-screen reference filtering.");
+  // 7. Synchronized pixverse_prompt.py parity checks in StoryAI
+  const pixverseCases = [
+    ["A 14-year-old girl wearing a pussy-bow blouse.", "A young adult woman wearing a ribbon-bow blouse."],
+    ["cô bé 12 tuổi mặc đồ thường ngày.", "cô gái trẻ mặc đồ thường ngày."],
+    ["Show no children, teenagers, or minors anywhere.", "Show only mature adults in frame."],
+    ["Pixar style animation with a blood orange under a shooting star.", "cinematic 3D animation style animation with a red-fleshed orange under a meteor streak."],
+    ["She wears no underwear and has apparent age and body proportions.", "She wears fully dressed in casual attire and has character styling and character proportions."],
+    ["Khoang Nâu (@Image1) runs past a sheer shirt shop.", "Khoang Nâu (@Image1) runs past a lightweight opaque shirt shop."],
+  ];
+  for (const [raw, expected] of pixverseCases) {
+    assert.equal(safety.normalizePixversePrompt(raw).prompt, expected, `normalizePixversePrompt parity mismatch for: ${raw}`);
+    assert.equal(safety.sanitizeDramaVisualPrompt(raw), expected, `sanitizeDramaVisualPrompt parity mismatch for: ${raw}`);
+  }
+
+  console.log("Passed: Muse 15s duration, @ImageN indexing, voice cues, mouth-closure lock, safety exclusions, PixVerse parity, and off-screen reference filtering.");
 })().catch((error) => {
   console.error(error);
   process.exit(1);

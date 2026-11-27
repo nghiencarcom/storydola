@@ -1,3 +1,7 @@
+import { normalizePixversePrompt } from "./pixverse-prompt-rules";
+
+export { normalizePixversePrompt };
+
 const violenceActionTerms = [
   "sexual violence", "sexual assault", "physical violence", "graphic violence", "counterattacking", "counterattacked", "counterattack", "dismemberment", "dismembered", "mutilation", "mutilated", "đập phá", "đánh đập", "đánh nhau", "hành hung", "bóp cổ", "siết cổ", "đẩy ngã", "quật ngã", "xô ngã", "đâm chém", "đâm", "chém", "đấm", "tát", "bắn", "giết", "hạ sát", "tấn công", "violently", "violent", "violence", "torturing", "tortured", "torture", "brutality", "brutal",
   "strangling", "strangled", "strangle", "choking", "choked", "choke", "stabbing", "stabbed", "stabs", "stab", "shooting at", "shooting", "shot at", "shoots at", "murdering", "murdered", "murders", "murder", "raping", "raped", "rape", "killing", "killed", "kills", "kill", "assaulting", "assaulted", "assaults", "assault",
@@ -45,13 +49,14 @@ export function sanitizeDramaVisualPrompt(value: string) {
     .replace(/\b(?:(?:wide|medium|close|tight|extreme|establishing|tracking|handheld|static|panning|low-angle|high-angle|side-angle|eye-level|over-the-shoulder|pov|aerial|crane|dolly|two|single|reaction|insert|reverse|profile|rear|front)\s+(?:[\w-]+\s+){0,2})?shots?\s+at\s+(?!him\b|her\b|them\b|me\b|us\b|you\b|each\s+other\b)/gi, protect)
     .replace(/\b(?:fog|smoke|dust|ash|mist|vine|weed|ice|snow|sand|mud|rain|steam|cloud)-choked\b/gi, protect)
     .replace(/\b(?:fight|fighting|fights|fought)\s+(?:the\s+)?(?:handlebars?|steering\s+wheel|current|wind|gale|storm|waves?|controls?|reins|gravity|balance|turbulence)\b/gi, protect);
-  return protectedValue
+  const pixverseNormalized = normalizePixversePrompt(protectedValue, 100_000).prompt;
+  return pixverseNormalized
     .replace(phrasePattern(violenceActionTerms), (_match, prefix: string, term: string) => `${prefix}${promptLanguageReplacement(term, "đối đầu căng thẳng nhưng không tiếp xúc", "tense non-contact confrontation")}`)
     .replace(phrasePattern(nudityTerms), (_match, prefix: string, term: string) => `${prefix}${promptLanguageReplacement(term, "trang phục kín đáo, phù hợp bối cảnh", "fully clothed in modest, age-appropriate clothing")}`)
     .replace(phrasePattern(graphicDetailTerms), (_match, prefix: string, term: string) => `${prefix}${promptLanguageReplacement(term, "sự việc chỉ được gợi qua phản ứng nhân vật và không gian", "the event is implied through character reactions and the setting")}`)
     .replace(phrasePattern(weaponTerms), (_match, prefix: string, term: string) => `${prefix}${promptLanguageReplacement(term, "đạo cụ trung tính", "neutral prop")}`)
-    .replace(/\s+([,.;:!?])/g, "$1")
-    .replace(/ {2,}/g, " ")
+    .replace(/[ \t]+([,.;:!?])/g, "$1")
+    .replace(/[ \t]{2,}/g, " ")
     .replace(/PROMPTSAFEPLACEHOLDER(\d+)END/g, (_match, index) => preserved[Number(index)])
     .trim();
 }

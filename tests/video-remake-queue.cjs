@@ -22,7 +22,14 @@ function load(name, imports = {}) {
     DOMException,
     setTimeout,
     clearTimeout,
-    require: (id) => imports[id] ?? require(id),
+    require: (id) => {
+      if (imports[id]) return imports[id];
+      if (id.startsWith("./")) {
+        const tsCandidate = path.join(__dirname, "..", "app", "lib", `${id.slice(2)}.ts`);
+        if (fs.existsSync(tsCandidate)) return load(id.slice(2), imports);
+      }
+      return require(id);
+    },
   });
   return exports;
 }
