@@ -3,7 +3,6 @@
 import { Player, type PlayerRef } from "@remotion/player";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
-  AUTO_EDIT_PRESET_CATEGORIES,
   AUTO_EDIT_PRESETS,
   computeAutoEditTimeline,
   type AutoEditAspectRatio,
@@ -20,6 +19,11 @@ import {
 } from "../lib/auto-edit";
 import { AutoEditRemotionComposition } from "./auto-edit-remotion-composition";
 import { SFX_CATALOG, SFX_CATEGORY_LABELS, type SfxCategory } from "../lib/sfx-library";
+import {
+  AutoEditTemplateGallery,
+  SelectedTemplateBanner,
+  TemplateLivePreviewModal,
+} from "./video-template-gallery";
 import { Icon } from "./ui-icon";
 
 const uploadChunkSize = 32 * 1024 * 1024;
@@ -79,6 +83,13 @@ async function apiAutoEdit<T>(init?: RequestInit, id?: string): Promise<T> {
   return payload;
 }
 
+function normalizeFitForAspect(fit: AutoEditVerticalFit, ratio: AutoEditAspectRatio): AutoEditVerticalFit {
+  if (ratio !== "9:16" && (fit === "blur-fit" || fit === "fill-crop")) {
+    return "auto";
+  }
+  return fit;
+}
+
 type PendingImageItem = { file: File; label: string };
 type LocalPickedVideo = { token: string; filename: string; displayPath: string; size: number };
 type LocalPickedImage = { token: string; filename: string; displayPath: string; size: number; label: string };
@@ -89,7 +100,12 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
 
   const [jobs, setJobs] = useState<AutoEditJobSummary[]>([]);
   const [selectedId, setSelectedId] = useState(initialJobId);
-  const [job, setJob] = useState<AutoEditJob>();
+  const [workspaceMode, setWorkspaceMode] = useState<"gallery" | "composer" | "studio">(
+    initialJobId ? "studio" : "gallery",
+  );
+  const [previewPresetId, setPreviewPresetId] = useState<AutoEditPresetId | null>(null);
+  const [fetchedJob, setFetchedJob] = useState<AutoEditJob>();
+  const job = fetchedJob && fetchedJob.id === selectedId ? fetchedJob : undefined;
   const [draftEdl, setDraftEdl] = useState<AutoEditEdl>();
   const [dirtyEdl, setDirtyEdl] = useState(false);
 
@@ -97,6 +113,10 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
   const [isLocalRuntime, setIsLocalRuntime] = useState(true);
   const [sourceMode, setSourceMode] = useState<"local" | "url">("local");
   const [sourceUrl, setSourceUrl] = useState("");
+  const [productName, setProductName] = useState("");
+  const [productHighlights, setProductHighlights] = useState("");
+  const [direction, setDirection] = useState("");
+  const [manualTranscript, setManualTranscript] = useState("");
   const [localVideos, setLocalVideos] = useState<LocalPickedVideo[]>([]);
   const [localImages, setLocalImages] = useState<LocalPickedImage[]>([]);
   const [manualLocalPath, setManualLocalPath] = useState("");
@@ -134,7 +154,10 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
   const selectedUpdatedAt = selectedSummary?.updatedAt;
 
   useEffect(() => {
-    if (initialJobId) setSelectedId(initialJobId);
+    if (initialJobId) {
+      setSelectedId(initialJobId);
+      setWorkspaceMode("studio");
+    }
   }, [initialJobId]);
 
   useEffect(() => {
@@ -152,9 +175,6 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
         const data = await apiAutoEdit<{ jobs: AutoEditJobSummary[] }>({ signal: controller.signal });
         if (controller.signal.aborted) return;
         setJobs(data.jobs);
-        if (!selectedId && data.jobs[0]) {
-          setSelectedId(data.jobs[0].id);
-        }
       } catch {
         // Keep polling quietly
       } finally {
@@ -166,7 +186,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [revision, selectedId]);
+  }, [revision]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -174,15 +194,15 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
     void apiAutoEdit<{ job: AutoEditJob }>({ signal: controller.signal }, selectedId)
       .then(({ job: fetched }) => {
         if (controller.signal.aborted) return;
-        setJob(fetched);
-        if (fetched.id !== job?.id || !dirtyEdl) {
+        setFetchedJob(fetched);
+        if (fetched.id !== fetchedJob?.id || !dirtyEdl) {
           setStudioAspectRatio(fetched.options.aspectRatio);
-          setStudioVerticalFit(fetched.options.verticalFit || "auto");
+          setStudioVerticalFit(normalizeFitForAspect(fetched.options.verticalFit || "auto", fetched.options.aspectRatio));
           setStudioMotionBlur(fetched.options.motionBlur ?? true);
         }
         setDraftEdl((prev) => {
           if (!fetched.edl) return undefined;
-          if (!prev || fetched.id !== job?.id || !dirtyEdl) return fetched.edl;
+          if (!prev || fetched.id !== fetchedJob?.id || !dirtyEdl) return fetched.edl;
           return prev;
         });
       })
@@ -190,7 +210,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
         if (!controller.signal.aborted) setError((err as Error).message);
       });
     return () => controller.abort();
-  }, [selectedId, selectedUpdatedAt, revision, dirtyEdl, job?.id]);
+  }, [selectedId, selectedUpdatedAt, revision, dirtyEdl, fetchedJob?.id]);
 
   const computedTimeline = useMemo(() => {
     if (!job || !draftEdl) return undefined;
@@ -234,11 +254,33 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
     setImageItems((prev) => [...prev, ...next].slice(0, Math.max(0, 20 - localImages.length)));
   }
 
-  function applyTemplatePreset(item: (typeof AUTO_EDIT_PRESETS)[number]) {
+  function selectTemplateAndOpenComposer(presetId: AutoEditPresetId, aspectOverride?: AutoEditAspectRatio) {
+    const item = AUTO_EDIT_PRESETS.find((p) => p.id === presetId) || AUTO_EDIT_PRESETS[0];
+    const nextAspect = aspectOverride || item.recommendedAspect;
     setPreset(item.id);
-    setAspectRatio(item.recommendedAspect);
-    setVerticalFit(item.recommendedVerticalFit);
+    setAspectRatio(nextAspect);
+    setVerticalFit(normalizeFitForAspect(item.recommendedVerticalFit, nextAspect));
     setSilenceThresholdMs(item.recommendedSilenceMs);
+    setPreviewPresetId(null);
+    setError("");
+    setWorkspaceMode("composer");
+  }
+
+  function openTemplateGallery() {
+    setError("");
+    setWorkspaceMode("gallery");
+  }
+
+  function openStudioWithJob(targetId?: string) {
+    setError("");
+    setStudioNotice("");
+    if (targetId) {
+      setDirtyEdl(false);
+      setSelectedId(targetId);
+    } else if (!selectedId && jobs[0]) {
+      setSelectedId(jobs[0].id);
+    }
+    setWorkspaceMode("studio");
   }
 
   async function handlePickNativeLocalFiles(kind: "video" | "image") {
@@ -340,10 +382,10 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
       aspectRatio,
       verticalFit,
       language,
-      productName: String(fd.get("productName") || ""),
-      productHighlights: String(fd.get("productHighlights") || ""),
-      direction: String(fd.get("direction") || ""),
-      manualTranscript: String(fd.get("manualTranscript") || ""),
+      productName: productName.trim(),
+      productHighlights: productHighlights.trim(),
+      direction: direction.trim(),
+      manualTranscript: manualTranscript.trim(),
       silenceThresholdMs,
       voiceTargetPeakDb,
       autoSfx,
@@ -391,11 +433,16 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
           createdId = created.id;
         }
         setSourceUrl("");
+        setProductName("");
+        setProductHighlights("");
+        setDirection("");
+        setManualTranscript("");
         setLocalImages([]);
         setImageItems([]);
         form.reset();
         setDirtyEdl(false);
         setSelectedId(createdId);
+        setWorkspaceMode("studio");
         setRevision((r) => r + 1);
         setTimeout(() => studioRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 180);
       } catch (err) {
@@ -448,9 +495,14 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
         setLocalVideos([]);
         setLocalImages([]);
         setImageItems([]);
+        setProductName("");
+        setProductHighlights("");
+        setDirection("");
+        setManualTranscript("");
         form.reset();
         setDirtyEdl(false);
         setSelectedId(createdId);
+        setWorkspaceMode("studio");
         setRevision((r) => r + 1);
         setTimeout(() => studioRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 180);
       } catch (err) {
@@ -547,9 +599,14 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
 
       setVideoFiles([]);
       setImageItems([]);
+      setProductName("");
+      setProductHighlights("");
+      setDirection("");
+      setManualTranscript("");
       form.reset();
       setDirtyEdl(false);
       setSelectedId(finData.id);
+      setWorkspaceMode("studio");
       setRevision((r) => r + 1);
       setTimeout(() => studioRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 180);
     } catch (err) {
@@ -710,9 +767,9 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
           optionsPatch: { aspectRatio: studioAspectRatio, verticalFit: studioVerticalFit, motionBlur: studioMotionBlur },
         }),
       });
-      setJob(updated);
+      setFetchedJob(updated);
       setStudioAspectRatio(updated.options.aspectRatio);
-      setStudioVerticalFit(updated.options.verticalFit || "auto");
+      setStudioVerticalFit(normalizeFitForAspect(updated.options.verticalFit || "auto", updated.options.aspectRatio));
       setStudioMotionBlur(updated.options.motionBlur ?? true);
       setDraftEdl(updated.edl);
       setDirtyEdl(false);
@@ -741,7 +798,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: job.id, action: "copilot-tweak", instruction: copilotPrompt.trim() }),
       });
-      setJob(updated);
+      setFetchedJob(updated);
       setDraftEdl(updated.edl);
       setDirtyEdl(false);
       setCopilotPrompt("");
@@ -802,18 +859,122 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
 
   return (
     <div className="auto-edit-workspace">
-      {/* Top Intake & Upload Panel */}
-      <section className="card auto-edit-intake-card">
-        <div className="card-heading">
-          <div>
-            <h1>Auto Edit Video</h1>
-            <p className="auto-edit-lead">
-              Chọn video, mẫu dựng và tuỳ chỉnh để bắt đầu.
-            </p>
-          </div>
-        </div>
+      {workspaceMode !== "composer" && error && (
+        <div className="auto-edit-error-banner">{error}</div>
+      )}
 
-        <form onSubmit={handleStartAutoEdit} className="auto-edit-form">
+      {workspaceMode === "gallery" && (
+        <>
+          <section className="card auto-edit-intake-card">
+            <div className="card-heading">
+              <div>
+                <h1>Auto Edit Video</h1>
+                <p className="auto-edit-lead">
+                  Tự động cắt khoảng lặng, bỏ câu nói vấp, chèn đồ hoạ HyperFrames &amp; phụ đề Karaoke từ video gốc. Chọn và xem thử mẫu dựng trước bên dưới.
+                </p>
+              </div>
+              {jobs.length > 0 && (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => openStudioWithJob()}
+                >
+                  <Icon name="scene" size={15} /> Mở Studio bản dựng gần đây ({jobs.length})
+                </button>
+              )}
+            </div>
+          </section>
+
+          <AutoEditTemplateGallery
+            selectedPresetId={preset}
+            category={presetCategory}
+            onCategoryChange={setPresetCategory}
+            onPreview={(id) => setPreviewPresetId(id)}
+            onSelect={(id) => selectTemplateAndOpenComposer(id)}
+          />
+
+          {jobs.length > 0 && (
+            <section className="card auto-edit-queue-card">
+              <div className="card-heading">
+                <div>
+                  <h2>Danh sách bản dựng gần đây ({jobs.length})</h2>
+                  <small style={{ color: "#64748b" }}>Bấm vào bản dựng để mở lại Studio chỉnh sửa &amp; xuất MP4</small>
+                </div>
+              </div>
+              <div className="auto-edit-job-pills">
+                {jobs.map((item) => {
+                  const savedPct =
+                    item.rawDurationMs && item.editedDurationMs && item.rawDurationMs > item.editedDurationMs
+                      ? Math.round(((item.rawDurationMs - item.editedDurationMs) / item.rawDurationMs) * 100)
+                      : 0;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`auto-edit-job-pill ${selectedId === item.id ? "is-active" : ""}`}
+                      onClick={() => openStudioWithJob(item.id)}
+                    >
+                      <div>
+                        <strong>{item.title}</strong>
+                        <small>
+                          {item.videoCount} clip · {item.imageCount} ảnh · {item.aspectRatio}
+                          {savedPct > 0 ? ` · Đã gọt -${savedPct}%` : ""}
+                        </small>
+                      </div>
+                      <span className={`project-status ${statusBadgeClasses[item.status]}`}>
+                        {statusLabels[item.status]}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+        </>
+      )}
+
+      {/* Top Intake & Upload Panel */}
+      {workspaceMode === "composer" && (
+        <>
+          <div className="video-composer-topbar">
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={openTemplateGallery}
+            >
+              ← Chọn mẫu khác
+            </button>
+            {jobs.length > 0 && (
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => openStudioWithJob()}
+              >
+                Bản dựng gần đây ({jobs.length}) →
+              </button>
+            )}
+          </div>
+
+          <section className="card auto-edit-intake-card">
+            <div className="card-heading">
+              <div>
+                <h1>Auto Edit Video</h1>
+                <p className="auto-edit-lead">
+                  Tải video hoặc dán link công khai, tuỳ chỉnh thông số theo mẫu dựng đã chọn để bắt đầu.
+                </p>
+              </div>
+            </div>
+
+            <div style={{ marginTop: 14 }}>
+              <SelectedTemplateBanner
+                kind="auto-edit"
+                presetId={preset}
+                onPreview={() => setPreviewPresetId(preset)}
+                onChangeTemplate={openTemplateGallery}
+              />
+            </div>
+
+            <form onSubmit={handleStartAutoEdit} className="auto-edit-form">
           <div className="remake-source-tabs" role="tablist" aria-label="Nguồn video Auto Edit">
             <button
               type="button"
@@ -1035,56 +1196,17 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
             </div>
           </div>
 
-          {/* 12 Multi-Topic Templates with Category Filter */}
-          <div className="auto-edit-templates-section">
-            <div className="auto-edit-templates-head">
-              <div>
-                <strong>3. Chọn mẫu dựng ({AUTO_EDIT_PRESETS.length} mẫu)</strong>
-              </div>
-              <div className="auto-edit-cat-pills" role="tablist" aria-label="Nhóm chủ đề Template">
-                {AUTO_EDIT_PRESET_CATEGORIES.map((cat) => (
-                  <button
-                    key={cat.id}
-                    type="button"
-                    role="tab"
-                    aria-selected={presetCategory === cat.id}
-                    className={`auto-edit-cat-pill ${presetCategory === cat.id ? "is-active" : ""}`}
-                    onClick={() => setPresetCategory(cat.id)}
-                  >
-                    {cat.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="auto-edit-preset-grid" role="radiogroup" aria-label="Template Auto Edit">
-              {AUTO_EDIT_PRESETS
-                .filter((item) => presetCategory === "all" || item.category === presetCategory)
-                .map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className={`auto-edit-preset-card ${preset === item.id ? "is-selected" : ""}`}
-                    onClick={() => applyTemplatePreset(item)}
-                  >
-                    <div className="auto-edit-preset-top">
-                      <span className="auto-edit-preset-badge">{item.badge}</span>
-                      <span className="auto-edit-preset-meta">
-                        {item.recommendedAspect} · {item.recommendedSilenceMs}ms
-                      </span>
-                    </div>
-                    <strong>{item.label}</strong>
-                    <span>{item.summary}</span>
-                  </button>
-                ))}
-            </div>
-          </div>
-
           {/* Options row */}
           <div className="form-grid auto-edit-options-grid">
             <label className="form-field">
               <span>Tiêu đề bản dựng / Tên sản phẩm</span>
-              <input name="productName" type="text" placeholder="VD: Kem chống nắng kiềm dầu SkinAqua..." />
+              <input
+                name="productName"
+                type="text"
+                value={productName}
+                onChange={(e) => setProductName(e.target.value)}
+                placeholder="VD: Kem chống nắng kiềm dầu SkinAqua..."
+              />
             </label>
             <label className="form-field">
               <span>Tỷ lệ video</span>
@@ -1094,7 +1216,10 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                     key={ratio}
                     type="button"
                     className={`auto-edit-ratio-btn ${aspectRatio === ratio ? "is-active" : ""}`}
-                    onClick={() => setAspectRatio(ratio)}
+                    onClick={() => {
+                      setAspectRatio(ratio);
+                      setVerticalFit((prev) => normalizeFitForAspect(prev, ratio));
+                    }}
                   >
                     {ratio === "9:16" ? "9:16 Dọc" : ratio === "16:9" ? "16:9 Ngang" : "1:1 Vuông"}
                   </button>
@@ -1148,6 +1273,8 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
               <textarea
                 name="productHighlights"
                 rows={2}
+                value={productHighlights}
+                onChange={(e) => setProductHighlights(e.target.value)}
                 placeholder="VD: Thấm ráo sau 10s, không nâng tông giả, giá dùng thử 219K..."
               />
             </label>
@@ -1156,6 +1283,8 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
               <textarea
                 name="direction"
                 rows={2}
+                value={direction}
+                onChange={(e) => setDirection(e.target.value)}
                 placeholder="VD: Giữ giọng nói tự nhiên, đoạn mở hộp cắt thật nhanh, nhấn mạnh câu kết..."
               />
             </label>
@@ -1206,6 +1335,8 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                 <textarea
                   name="manualTranscript"
                   rows={3}
+                  value={manualTranscript}
+                  onChange={(e) => setManualTranscript(e.target.value)}
                   placeholder="Chỉ nhập khi máy chưa cài Whisper hoặc video quay trong môi trường quá ồn..."
                 />
               </label>
@@ -1231,49 +1362,76 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
           </div>
         </form>
       </section>
+        </>
+      )}
 
       {/* Recent Auto-Edit Queue Strip */}
-      {jobs.length > 0 && (
+      {workspaceMode === "studio" && (
         <section className="card auto-edit-queue-card">
           <div className="card-heading">
             <h2>Danh sách bản dựng ({jobs.length})</h2>
+            <button
+              type="button"
+              className="secondary-button compact"
+              onClick={openTemplateGallery}
+            >
+              ← Kho mẫu / Dựng video mới
+            </button>
           </div>
-          <div className="auto-edit-job-pills">
-            {jobs.map((item) => {
-              const savedPct =
-                item.rawDurationMs && item.editedDurationMs && item.rawDurationMs > item.editedDurationMs
-                  ? Math.round(((item.rawDurationMs - item.editedDurationMs) / item.rawDurationMs) * 100)
-                  : 0;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  className={`auto-edit-job-pill ${selectedId === item.id ? "is-active" : ""}`}
-                  onClick={() => {
-                    setDirtyEdl(false);
-                    setSelectedId(item.id);
-                    setStudioNotice("");
-                  }}
-                >
-                  <div>
-                    <strong>{item.title}</strong>
-                    <small>
-                      {item.videoCount} clip · {item.imageCount} ảnh · {item.aspectRatio}
-                      {savedPct > 0 ? ` · Đã gọt -${savedPct}%` : ""}
-                    </small>
-                  </div>
-                  <span className={`project-status ${statusBadgeClasses[item.status]}`}>
-                    {statusLabels[item.status]}
-                  </span>
-                </button>
-              );
-            })}
+          {jobs.length > 0 && (
+            <div className="auto-edit-job-pills">
+              {jobs.map((item) => {
+                const savedPct =
+                  item.rawDurationMs && item.editedDurationMs && item.rawDurationMs > item.editedDurationMs
+                    ? Math.round(((item.rawDurationMs - item.editedDurationMs) / item.rawDurationMs) * 100)
+                    : 0;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`auto-edit-job-pill ${selectedId === item.id ? "is-active" : ""}`}
+                    onClick={() => openStudioWithJob(item.id)}
+                  >
+                    <div>
+                      <strong>{item.title}</strong>
+                      <small>
+                        {item.videoCount} clip · {item.imageCount} ảnh · {item.aspectRatio}
+                        {savedPct > 0 ? ` · Đã gọt -${savedPct}%` : ""}
+                      </small>
+                    </div>
+                    <span className={`project-status ${statusBadgeClasses[item.status]}`}>
+                      {statusLabels[item.status]}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
+
+      {workspaceMode === "studio" && selectedId && !job && !error && (
+        <section className="card auto-edit-studio-card">
+          <p className="auto-edit-summary" role="status">Đang tải dữ liệu bản dựng Auto Edit…</p>
+        </section>
+      )}
+
+      {workspaceMode === "studio" && !selectedId && (
+        <section className="card auto-edit-studio-card">
+          <div className="card-heading">
+            <div>
+              <h2>Chưa chọn bản dựng</h2>
+              <p className="auto-edit-summary">Chọn một mẫu dựng trong kho mẫu để bắt đầu tạo video mới.</p>
+            </div>
+            <button type="button" className="primary-button" onClick={openTemplateGallery}>
+              Mở Kho mẫu Auto Edit
+            </button>
           </div>
         </section>
       )}
 
       {/* 3-Column Interactive Studio */}
-      {job && (
+      {workspaceMode === "studio" && job && (
         <section ref={studioRef} className="card auto-edit-studio-card">
           <div className="card-heading auto-edit-studio-header">
             <div>
@@ -1303,6 +1461,7 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
                       className={`auto-edit-ratio-btn ${studioAspectRatio === ratio ? "is-active" : ""}`}
                       onClick={() => {
                         setStudioAspectRatio(ratio);
+                        setStudioVerticalFit((prev) => normalizeFitForAspect(prev, ratio));
                         setDirtyEdl(true);
                       }}
                       title={`Đổi tỷ lệ xuất sang ${ratio}`}
@@ -1782,6 +1941,14 @@ export function AutoEditView({ initialJobId = "" }: { initialJobId?: string }) {
           )}
         </section>
       )}
+
+      <TemplateLivePreviewModal
+        kind="auto-edit"
+        presetId={previewPresetId}
+        onClose={() => setPreviewPresetId(null)}
+        onNavigatePreset={(id) => setPreviewPresetId(id)}
+        onApply={(id, chosenAspect) => selectTemplateAndOpenComposer(id, chosenAspect)}
+      />
     </div>
   );
 }

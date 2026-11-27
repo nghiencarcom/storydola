@@ -3,7 +3,6 @@
 import { Player, type PlayerRef } from "@remotion/player";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
-  CREATE_VIDEO_PRESET_CATEGORIES,
   CREATE_VIDEO_PRESETS,
   computeCreateVideoTimeline,
   type CreateVideoAspectRatio,
@@ -28,6 +27,11 @@ import {
 } from "../lib/motion-video";
 import { SFX_CATALOG, SFX_CATEGORY_LABELS, type SfxCategory } from "../lib/sfx-library";
 import { MotionVideoRemotionComposition } from "./motion-video-remotion-composition";
+import {
+  MotionVideoTemplateGallery,
+  SelectedTemplateBanner,
+  TemplateLivePreviewModal,
+} from "./video-template-gallery";
 import { Icon, type IconName } from "./ui-icon";
 
 const statusLabels: Record<CreateVideoStage, string> = {
@@ -72,14 +76,6 @@ const sceneKindIcons: Record<CreateVideoSceneKind, IconName> = {
   stat_counter_3d: "grid", comparison_split: "layers", quote_editorial: "file",
   hyperframes_custom: "spark", cta_climax: "arrow",
 };
-
-const categoryIcons: Record<string, IconName> = { all: "grid", launch: "motion", knowledge: "file", social: "bolt" };
-const presetIcons: Record<string, IconName> = {
-  "apple-launch": "motion", "article-recap": "file", "vox-explainer": "file",
-  "tech-news": "bolt", "finance-data": "grid", "commerce-promo": "image",
-  "viral-hook": "bolt", "minimal-brand": "spark",
-};
-const withoutLeadingEmoji = (value: string) => value.replace(/^(?:\p{Extended_Pictographic}|\p{Emoji_Presentation}|\uFE0F|\u200D|\s)+/u, "");
 
 const seamTechniqueLabels: Record<CreateVideoSeamTechnique, string> = {
   "cut-the-curve": "Cut-the-Curve (Khớp vận tốc)",
@@ -138,7 +134,12 @@ export function MotionVideoView({ initialJobId = "" }: { initialJobId?: string }
 
   const [jobs, setJobs] = useState<CreateVideoJobSummary[]>([]);
   const [selectedId, setSelectedId] = useState(initialJobId);
-  const [job, setJob] = useState<CreateVideoJob>();
+  const [workspaceMode, setWorkspaceMode] = useState<"gallery" | "composer" | "studio">(
+    initialJobId ? "studio" : "gallery",
+  );
+  const [previewPresetId, setPreviewPresetId] = useState<CreateVideoPresetId | null>(null);
+  const [fetchedJob, setFetchedJob] = useState<CreateVideoJob>();
+  const job = fetchedJob && fetchedJob.id === selectedId ? fetchedJob : undefined;
   const [draftPlan, setDraftPlan] = useState<CreateVideoPlan>();
   const [dirtyPlan, setDirtyPlan] = useState(false);
   const [draftOutline, setDraftOutline] = useState<CreateVideoOutline>();
@@ -185,6 +186,13 @@ export function MotionVideoView({ initialJobId = "" }: { initialJobId?: string }
   const selectedUpdatedAt = selectedSummary?.updatedAt;
 
   useEffect(() => {
+    if (initialJobId) {
+      setSelectedId(initialJobId);
+      setWorkspaceMode("studio");
+    }
+  }, [initialJobId]);
+
+  useEffect(() => {
     fetch("/api/omnivoice/voices")
       .then((r) => r.json())
       .then((data) => {
@@ -210,9 +218,6 @@ export function MotionVideoView({ initialJobId = "" }: { initialJobId?: string }
         const data = await apiMotionVideo<{ jobs: CreateVideoJobSummary[] }>({ signal: controller.signal });
         if (controller.signal.aborted) return;
         setJobs(data.jobs);
-        if (!selectedId && data.jobs[0]) {
-          setSelectedId(data.jobs[0].id);
-        }
       } catch {
         // Silent polling
       } finally {
@@ -224,7 +229,7 @@ export function MotionVideoView({ initialJobId = "" }: { initialJobId?: string }
       controller.abort();
       clearTimeout(timer);
     };
-  }, [revision, selectedId]);
+  }, [revision]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -234,7 +239,7 @@ export function MotionVideoView({ initialJobId = "" }: { initialJobId?: string }
         if (controller.signal.aborted) return;
         const isJobSwitch = fetched.id !== loadedJobIdRef.current;
         loadedJobIdRef.current = fetched.id;
-        setJob(fetched);
+        setFetchedJob(fetched);
         if (isJobSwitch || !dirtyPlan) {
           setStudioAspectRatio(fetched.options.aspectRatio);
           setStudioMotionBlur(fetched.options.motionBlur ?? true);
@@ -306,20 +311,39 @@ export function MotionVideoView({ initialJobId = "" }: { initialJobId?: string }
     return [...grouped.entries()];
   }, []);
 
-  const filteredPresets = useMemo(
-    () => (presetCategory === "all" ? CREATE_VIDEO_PRESETS : CREATE_VIDEO_PRESETS.filter((p) => p.category === presetCategory)),
-    [presetCategory],
-  );
-
   const selectedScene = useMemo(
     () => draftPlan?.scenes.find((s) => s.id === activeSceneId) || draftPlan?.scenes[0],
     [draftPlan, activeSceneId],
   );
 
-  function applyPreset(item: (typeof CREATE_VIDEO_PRESETS)[number]) {
+  function selectPresetAndOpenComposer(presetId: CreateVideoPresetId, aspectOverride?: CreateVideoAspectRatio) {
+    const item = CREATE_VIDEO_PRESETS.find((p) => p.id === presetId) || CREATE_VIDEO_PRESETS[0];
     setPreset(item.id);
-    setAspectRatio(item.recommendedAspect);
+    setAspectRatio(aspectOverride || item.recommendedAspect);
     setCaptionStyle(item.defaultCaptionStyle);
+    setPreviewPresetId(null);
+    setError("");
+    setNotice("");
+    setWorkspaceMode("composer");
+  }
+
+  function openTemplateGallery() {
+    setError("");
+    setNotice("");
+    setWorkspaceMode("gallery");
+  }
+
+  function openStudioWithJob(targetId?: string) {
+    setError("");
+    setNotice("");
+    if (targetId) {
+      setDirtyPlan(false);
+      setDraftOutline(undefined);
+      setSelectedId(targetId);
+    } else if (!selectedId && jobs[0]) {
+      setSelectedId(jobs[0].id);
+    }
+    setWorkspaceMode("studio");
   }
 
   function addUploadImages(files: FileList | null) {
@@ -386,6 +410,7 @@ export function MotionVideoView({ initialJobId = "" }: { initialJobId?: string }
       setDirtyPlan(false);
       setDraftOutline(undefined);
       setSelectedId(created.id);
+      setWorkspaceMode("studio");
       setPendingImages([]);
       setRevision((r) => r + 1);
       setNotice(
@@ -473,7 +498,7 @@ export function MotionVideoView({ initialJobId = "" }: { initialJobId?: string }
           outline: sanitizedOutline,
         }),
       });
-      setJob(res.job);
+      setFetchedJob(res.job);
       setRevision((r) => r + 1);
       setNotice("Đã duyệt Dàn ý Chương! Code Agent đang viết kịch bản chi tiết từng Chương và tạo giọng đọc song song...");
     } catch (err) {
@@ -573,7 +598,7 @@ export function MotionVideoView({ initialJobId = "" }: { initialJobId?: string }
           },
         }),
       });
-      setJob(res.job);
+      setFetchedJob(res.job);
       setDraftPlan(res.job.plan);
       setDirtyPlan(false);
       setNotice("Đã lưu kịch bản phân cảnh & đồng bộ lại Audio-Clock.");
@@ -605,7 +630,7 @@ export function MotionVideoView({ initialJobId = "" }: { initialJobId?: string }
           chapterIndex: scopedChapter,
         }),
       });
-      setJob(res.job);
+      setFetchedJob(res.job);
       setDraftPlan(res.job.plan);
       setDirtyPlan(false);
       setCopilotPrompt("");
@@ -685,46 +710,144 @@ export function MotionVideoView({ initialJobId = "" }: { initialJobId?: string }
 
   return (
     <div className="auto-edit-workspace motion-video-workspace">
-      {/* 1. PROJECT QUEUE */}
-      {jobs.length > 0 && (
+      {workspaceMode !== "composer" && error && (
+        <div className="auto-edit-error-banner">{error}</div>
+      )}
+      {workspaceMode !== "composer" && notice && (
+        <div className="auto-edit-notice-banner">{notice}</div>
+      )}
+
+      {workspaceMode === "gallery" && (
+        <>
+          <section className="card auto-edit-intake-card">
+            <div className="auto-edit-studio-header">
+              <div>
+                <h1>Motion Video Studio</h1>
+                <p className="auto-edit-lead">
+                  Tạo video Motion Graphics từ 15 giây đến <strong>30 phút</strong> bằng Remotion, Three.js, GSAP &amp; HyperFrames. Chọn và xem trước mẫu video ngay bên dưới để bắt đầu.
+                </p>
+              </div>
+              {jobs.length > 0 && (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => openStudioWithJob()}
+                >
+                  <Icon name="scene" size={15} /> Mở Studio dự án gần đây ({jobs.length})
+                </button>
+              )}
+            </div>
+          </section>
+
+          <MotionVideoTemplateGallery
+            selectedPresetId={preset}
+            category={presetCategory}
+            onCategoryChange={setPresetCategory}
+            onPreview={(id) => setPreviewPresetId(id)}
+            onSelect={(id) => selectPresetAndOpenComposer(id)}
+          />
+
+          {jobs.length > 0 && (
+            <section className="card auto-edit-queue-card">
+              <div className="auto-edit-templates-head">
+                <div>
+                  <strong>Dự án Motion Video gần đây ({jobs.length})</strong>
+                  <small>Bấm vào bất kỳ dự án nào để mở lại Studio chỉnh sửa và xuất MP4</small>
+                </div>
+              </div>
+              <div className="auto-edit-job-pills">
+                {jobs.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`auto-edit-job-pill ${selectedId === item.id ? "is-active" : ""}`}
+                    onClick={() => openStudioWithJob(item.id)}
+                  >
+                    <div>
+                      <strong>{item.title}</strong>
+                      <small>
+                        {item.aspectRatio}
+                        {item.chapterCount ? ` · ${item.chapterCount} chương` : ""}
+                        {item.sceneCount ? ` · ${item.sceneCount} cảnh` : ""}
+                        {item.durationMs ? ` · ${formatTimeMs(item.durationMs)}` : ""}
+                      </small>
+                    </div>
+                    <span className={`status-pill ${statusBadgeClasses[item.status]}`}>
+                      {statusLabels[item.status]}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+        </>
+      )}
+
+      {/* 1. PROJECT QUEUE IN STUDIO */}
+      {workspaceMode === "studio" && (
         <section className="card auto-edit-queue-card">
           <div className="auto-edit-templates-head">
             <div>
               <strong>Dự án Motion Video ({jobs.length})</strong>
             </div>
+            <button
+              type="button"
+              className="secondary-button compact"
+              onClick={openTemplateGallery}
+            >
+              ← Kho mẫu / Tạo video mới
+            </button>
           </div>
-          <div className="auto-edit-job-pills">
-            {jobs.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={`auto-edit-job-pill ${selectedId === item.id ? "is-active" : ""}`}
-                onClick={() => {
-                  setDirtyPlan(false);
-                  setDraftOutline(undefined);
-                  setSelectedId(item.id);
-                }}
-              >
-                <div>
-                  <strong>{item.title}</strong>
-                  <small>
-                    {item.aspectRatio}
-                    {item.chapterCount ? ` · ${item.chapterCount} chương` : ""}
-                    {item.sceneCount ? ` · ${item.sceneCount} cảnh` : ""}
-                    {item.durationMs ? ` · ${formatTimeMs(item.durationMs)}` : ""}
-                  </small>
-                </div>
-                <span className={`status-pill ${statusBadgeClasses[item.status]}`}>
-                  {statusLabels[item.status]}
-                </span>
-              </button>
-            ))}
+          {jobs.length > 0 && (
+            <div className="auto-edit-job-pills">
+              {jobs.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`auto-edit-job-pill ${selectedId === item.id ? "is-active" : ""}`}
+                  onClick={() => openStudioWithJob(item.id)}
+                >
+                  <div>
+                    <strong>{item.title}</strong>
+                    <small>
+                      {item.aspectRatio}
+                      {item.chapterCount ? ` · ${item.chapterCount} chương` : ""}
+                      {item.sceneCount ? ` · ${item.sceneCount} cảnh` : ""}
+                      {item.durationMs ? ` · ${formatTimeMs(item.durationMs)}` : ""}
+                    </small>
+                  </div>
+                  <span className={`status-pill ${statusBadgeClasses[item.status]}`}>
+                    {statusLabels[item.status]}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      {workspaceMode === "studio" && selectedId && !job && !error && (
+        <section className="card auto-edit-studio-card">
+          <p className="auto-edit-summary" role="status">Đang tải dữ liệu dự án Motion Video…</p>
+        </section>
+      )}
+
+      {workspaceMode === "studio" && !selectedId && (
+        <section className="card auto-edit-studio-card">
+          <div className="auto-edit-studio-header">
+            <div>
+              <h2>Chưa chọn dự án Motion Video</h2>
+              <p className="auto-edit-summary">Chọn một mẫu ở kho mẫu để bắt đầu tạo video mới.</p>
+            </div>
+            <button type="button" className="primary-button" onClick={openTemplateGallery}>
+              Mở Kho mẫu Motion Video
+            </button>
           </div>
         </section>
       )}
 
       {/* 2. ACTIVE JOB PROGRESS (Excluding awaiting_outline_approval which renders Outline Editor) */}
-      {job &&
+      {workspaceMode === "studio" && job &&
         job.status !== "awaiting_outline_approval" &&
         job.status !== "ready" &&
         job.status !== "rendered" &&
@@ -750,7 +873,7 @@ export function MotionVideoView({ initialJobId = "" }: { initialJobId?: string }
         )}
 
       {/* 3. STEP 2A: OUTLINE REVIEW & APPROVAL EDITOR */}
-      {job && job.status === "awaiting_outline_approval" && draftOutline && (
+      {workspaceMode === "studio" && job && job.status === "awaiting_outline_approval" && draftOutline && (
         <section className="card auto-edit-studio-card motion-video-outline-card">
           <div className="auto-edit-studio-header">
             <div>
@@ -903,7 +1026,7 @@ export function MotionVideoView({ initialJobId = "" }: { initialJobId?: string }
       )}
 
       {/* 4. 3-COLUMN MOTION STUDIO */}
-      {job && draftPlan && computedTimeline && (
+      {workspaceMode === "studio" && job && draftPlan && computedTimeline && (
         <section className="card auto-edit-studio-card">
           <div className="auto-edit-studio-header">
             <div>
@@ -1398,17 +1521,47 @@ export function MotionVideoView({ initialJobId = "" }: { initialJobId?: string }
       )}
 
       {/* 5. INTAKE & BRIEF BUILDER */}
-      <section className="card auto-edit-intake-card">
-        <div className="auto-edit-studio-header">
-          <div>
-            <h1>Motion Video Studio</h1>
-            <p className="auto-edit-lead">
-              Tạo video Motion Graphics từ 15 giây đến <strong>30 phút</strong> bằng Remotion, Three.js, GSAP &amp; HyperFrames. Hỗ trợ cả chế độ <strong>Tự động 1 chạm</strong> lẫn <strong>Duyệt Dàn ý Chương 2 bước</strong>.
-            </p>
+      {workspaceMode === "composer" && (
+        <>
+          <div className="video-composer-topbar">
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={openTemplateGallery}
+            >
+              ← Chọn mẫu khác
+            </button>
+            {jobs.length > 0 && (
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => openStudioWithJob()}
+              >
+                Dự án gần đây ({jobs.length}) →
+              </button>
+            )}
           </div>
-        </div>
 
-        <form className="auto-edit-form" onSubmit={handleCreateSubmit}>
+          <section className="card auto-edit-intake-card">
+            <div className="auto-edit-studio-header">
+              <div>
+                <h1>Tạo Motion Video mới</h1>
+                <p className="auto-edit-lead">
+                  Nhập nguồn nội dung và tuỳ chỉnh thời lượng từ 15 giây đến <strong>30 phút</strong> theo mẫu phong cách đã chọn.
+                </p>
+              </div>
+            </div>
+
+            <div style={{ marginTop: 14 }}>
+              <SelectedTemplateBanner
+                kind="motion"
+                presetId={preset}
+                onPreview={() => setPreviewPresetId(preset)}
+                onChangeTemplate={openTemplateGallery}
+              />
+            </div>
+
+            <form className="auto-edit-form" onSubmit={handleCreateSubmit}>
           <div className="motion-video-mode-tabs" role="group" aria-label="Nguồn nội dung">
             <button
               type="button"
@@ -1527,46 +1680,6 @@ export function MotionVideoView({ initialJobId = "" }: { initialJobId?: string }
                   ))}
                 </div>
               </div>
-            </div>
-          </div>
-
-          <div className="auto-edit-templates-section">
-            <div className="auto-edit-templates-head">
-              <div>
-                <strong>Phong cách video</strong>
-              </div>
-              <div className="auto-edit-cat-pills">
-                {CREATE_VIDEO_PRESET_CATEGORIES.map((cat) => (
-                  <button
-                    key={cat.id}
-                    type="button"
-                    className={`auto-edit-cat-pill ${presetCategory === cat.id ? "is-active" : ""}`}
-                    aria-pressed={presetCategory === cat.id}
-                    onClick={() => setPresetCategory(cat.id)}
-                  >
-                    <Icon name={categoryIcons[cat.id] || "grid"} size={14} /> {withoutLeadingEmoji(cat.label)}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="auto-edit-preset-grid">
-              {filteredPresets.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  className={`auto-edit-preset-card ${preset === item.id ? "is-selected" : ""}`}
-                  aria-pressed={preset === item.id}
-                  onClick={() => applyPreset(item)}
-                >
-                  <div className="auto-edit-preset-top">
-                    <span className="auto-edit-preset-badge">{item.badge}</span>
-                    <span className="auto-edit-preset-meta">{item.recommendedAspect} · {item.dominantVector}</span>
-                  </div>
-                  <strong className="motion-video-preset-title"><Icon name={presetIcons[item.id] || "spark"} size={15} /> {withoutLeadingEmoji(item.label)}</strong>
-                  <span>{item.summary}</span>
-                </button>
-              ))}
             </div>
           </div>
 
@@ -1694,9 +1807,19 @@ export function MotionVideoView({ initialJobId = "" }: { initialJobId?: string }
           </div>
         </form>
 
-        {error && <div className="auto-edit-error-banner" style={{ marginTop: 12 }}>{error}</div>}
-        {notice && <div className="auto-edit-notice-banner">{notice}</div>}
-      </section>
+            {error && <div className="auto-edit-error-banner" style={{ marginTop: 12 }}>{error}</div>}
+            {notice && <div className="auto-edit-notice-banner">{notice}</div>}
+          </section>
+        </>
+      )}
+
+      <TemplateLivePreviewModal
+        kind="motion"
+        presetId={previewPresetId}
+        onClose={() => setPreviewPresetId(null)}
+        onNavigatePreset={(id) => setPreviewPresetId(id)}
+        onApply={(id, chosenAspect) => selectPresetAndOpenComposer(id, chosenAspect)}
+      />
     </div>
   );
 }

@@ -629,6 +629,54 @@ const sfxRoute = loadTsModule("app/api/auto-edit/sfx/[sfxId]/route.ts", {
     }
   }
 
+  // 12. Verify Motion Video (8) & Auto Edit (12) Template Preview Demo Builders
+  {
+    const motionVideo = loadTsModule("app/lib/motion-video.ts");
+    const previewLib = loadTsModule("app/lib/video-template-previews.ts");
+
+    assert.equal(motionVideo.CREATE_VIDEO_PRESETS.length, 8);
+    for (const preset of motionVideo.CREATE_VIDEO_PRESETS) {
+      assert.ok(previewLib.MOTION_PRESET_PREVIEW_META[preset.id], `Missing preview meta for Motion preset ${preset.id}`);
+      const plan = previewLib.buildMotionVideoPresetDemoPlan(preset.id);
+      assert.equal(plan.schema, "create-video-plan.v1");
+      assert.ok(plan.scenes.length >= 3, `Expected >= 3 demo scenes for ${preset.id}`);
+      const timeline = motionVideo.computeCreateVideoTimeline(plan, preset.recommendedAspect, [], { autoSfx: true });
+      assert.ok(timeline.totalFrames >= 90, `Expected >= 90 frames for ${preset.id}`);
+      assert.equal(timeline.scenes.length, plan.scenes.length);
+      const tokenSet = new Set(
+        timeline.words.map((w) => w.text.replace(/[.,!?;:"'()]/gu, "").trim().toLowerCase()),
+      );
+      for (const hl of plan.keywordHighlights) {
+        assert.ok(
+          tokenSet.has(hl.word.trim().toLowerCase()),
+          `Motion demo highlight "${hl.word}" not found in timeline words for ${preset.id}`,
+        );
+      }
+    }
+
+    assert.equal(autoEdit.AUTO_EDIT_PRESETS.length, 12);
+    for (const preset of autoEdit.AUTO_EDIT_PRESETS) {
+      assert.ok(previewLib.AUTO_EDIT_PRESET_PREVIEW_META[preset.id], `Missing preview meta for Auto Edit preset ${preset.id}`);
+      const demo = previewLib.buildAutoEditPresetDemoData(preset.id);
+      assert.equal(demo.edl.schema, "auto-edit-edl.v1");
+      assert.ok(demo.words.length >= 4, `Expected >= 4 demo words for ${preset.id}`);
+      assert.ok(demo.edl.overlays.every((ov) => !ov.imageId), `Demo overlays should not reference imageId for ${preset.id}`);
+      const timeline = autoEdit.computeAutoEditTimeline(demo.edl, demo.words, preset.recommendedAspect, demo.rawDurationMs, { autoSfx: true });
+      assert.ok(timeline.keptSegments.length >= 2, `Expected >= 2 kept segments for ${preset.id}`);
+      assert.ok(timeline.cutCount >= 1, `Expected >= 1 cut segment for ${preset.id}`);
+      assert.ok(timeline.overlays.length >= 2, `Expected >= 2 overlays for ${preset.id}`);
+      assert.equal(
+        timeline.words.length,
+        demo.words.length,
+        `Expected all demo words to survive segment clamping for ${preset.id}`,
+      );
+      assert.ok(
+        timeline.words.some((w) => Boolean(w.highlightColor)),
+        `Expected at least one highlighted word in ${preset.id}`,
+      );
+    }
+  }
+
   console.log("auto-edit-engine tests passed!");
 })().catch((err) => {
   console.error(err);

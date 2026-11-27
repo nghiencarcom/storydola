@@ -11,7 +11,9 @@ import {
   type AutoEditVerticalFit,
   type ComputedAutoEditTimeline,
   type ComputedTimelineOverlay,
+  type ComputedTimelineSegment,
 } from "../lib/auto-edit";
+import type { AutoEditDemoTheme } from "../lib/video-template-previews";
 import { AutoEditThreeBackdrop } from "./auto-edit-three-stage";
 
 export type AutoEditPlayerProps = {
@@ -24,6 +26,7 @@ export type AutoEditPlayerProps = {
   aspectRatio: "9:16" | "16:9" | "1:1";
   verticalFit?: AutoEditVerticalFit;
   motionBlur?: boolean;
+  demoTheme?: AutoEditDemoTheme;
 };
 
 function accentColorHex(color?: AutoEditHighlightColor) {
@@ -443,6 +446,191 @@ function OverlayLayer({
   );
 }
 
+function DemoArollCanvas({
+  demoTheme,
+  segment,
+  currentTimeMs,
+  isPortrait,
+  isBlurredBg = false,
+}: {
+  demoTheme: AutoEditDemoTheme;
+  segment: ComputedTimelineSegment;
+  currentTimeMs: number;
+  isPortrait: boolean;
+  isBlurredBg?: boolean;
+}) {
+  const accent = demoTheme.accentHex || "#38bdf8";
+  const pulse = 0.5 + 0.5 * Math.sin(currentTimeMs / 360);
+  const isScreencast = demoTheme.kind === "screencast-ui" || demoTheme.kind === "vox-board";
+
+  return (
+    <div
+      style={{
+        width: "100%",
+        height: "100%",
+        position: "relative",
+        overflow: "hidden",
+        background: `radial-gradient(circle at 22% 24%, ${accent}33, transparent 54%), radial-gradient(circle at 80% 78%, rgba(99,102,241,0.3), transparent 56%), linear-gradient(155deg, #0b1120 0%, #111827 52%, #090d16 100%)`,
+        transform: `scale(${isBlurredBg ? 1.12 : segment.zoom})`,
+        transformOrigin: `50% ${Math.round(segment.zoomFocusY * 100)}%`,
+        filter: isBlurredBg ? "blur(24px) brightness(0.5)" : undefined,
+        display: "flex",
+        flexDirection: "column",
+        justifyContent: "center",
+        alignItems: "center",
+        padding: isPortrait ? "34px 28px" : "26px 46px",
+        color: "#f8fafc",
+      }}
+    >
+      {/* Subtle studio grid */}
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          backgroundImage:
+            "linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px)",
+          backgroundSize: "42px 42px",
+          pointerEvents: "none",
+        }}
+      />
+
+      {!isBlurredBg && (
+        <div
+          style={{
+            position: "absolute",
+            top: isPortrait ? 20 : 16,
+            left: 20,
+            right: 20,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            fontSize: 13,
+            fontWeight: 800,
+            color: "#cbd5e1",
+            zIndex: 2,
+          }}
+        >
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 7,
+              padding: "5px 12px",
+              borderRadius: 999,
+              background: "rgba(15, 23, 42, 0.78)",
+              border: `1px solid ${accent}66`,
+            }}
+          >
+            <span style={{ width: 8, height: 8, borderRadius: 99, background: "#ef4444", opacity: 0.55 + pulse * 0.45 }} />
+            DEMO A-ROLL · {demoTheme.presenterTitle}
+          </span>
+          <span
+            style={{
+              padding: "5px 11px",
+              borderRadius: 999,
+              background: "rgba(15, 23, 42, 0.78)",
+              border: "1px solid rgba(255,255,255,0.16)",
+              color: accent,
+            }}
+          >
+            Zoom {segment.zoom.toFixed(2)}x
+          </span>
+        </div>
+      )}
+
+      {isScreencast ? (
+        <div
+          style={{
+            position: "relative",
+            width: isPortrait ? "92%" : "82%",
+            borderRadius: 18,
+            background: "rgba(15, 23, 42, 0.92)",
+            border: `1.5px solid ${accent}66`,
+            boxShadow: "0 24px 54px rgba(0,0,0,0.55)",
+            padding: isPortrait ? 18 : 22,
+            display: "grid",
+            gap: 14,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 99, background: "#fb7185" }} />
+            <span style={{ width: 10, height: 10, borderRadius: 99, background: "#fbbf24" }} />
+            <span style={{ width: 10, height: 10, borderRadius: 99, background: "#34d399" }} />
+            <span style={{ marginLeft: 8, fontSize: 12, color: "#94a3b8", fontWeight: 700 }}>
+              {demoTheme.presenterSubtitle}
+            </span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div style={{ padding: 12, borderRadius: 12, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)" }}>
+              <div style={{ width: "55%", height: 8, borderRadius: 99, background: "rgba(255,255,255,0.25)", marginBottom: 8 }} />
+              <div style={{ width: "85%", height: 8, borderRadius: 99, background: "rgba(255,255,255,0.12)" }} />
+            </div>
+            <div style={{ padding: 12, borderRadius: 12, background: `${accent}22`, border: `1.5px solid ${accent}` }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: accent }}>✦ Tạo Workflow AI</div>
+              <div style={{ fontSize: 11, color: "#cbd5e1", marginTop: 4 }}>Tự động 1 chạm</div>
+            </div>
+          </div>
+          <div style={{ padding: 12, borderRadius: 12, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.09)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>Model: Gemini Auto Director</span>
+            <span style={{ fontSize: 12, fontWeight: 800, color: accent }}>Đang kích hoạt</span>
+          </div>
+        </div>
+      ) : (
+        <div
+          style={{
+            position: "relative",
+            width: isPortrait ? "88%" : "74%",
+            display: "grid",
+            justifyItems: "center",
+            gap: 14,
+            textAlign: "center",
+          }}
+        >
+          <div
+            style={{
+              width: isPortrait ? 132 : 112,
+              height: isPortrait ? 132 : 112,
+              borderRadius: "50%",
+              background: `linear-gradient(145deg, ${accent}55, rgba(15,23,42,0.95))`,
+              border: `3px solid ${accent}`,
+              boxShadow: `0 0 42px ${accent}44`,
+              display: "grid",
+              placeItems: "center",
+            }}
+          >
+            <svg width="56" height="56" viewBox="0 0 48 48" fill="none">
+              <circle cx="24" cy="18" r="8" fill="#f8fafc" fillOpacity="0.92" />
+              <path d="M10 40c1.8-7.5 7.4-11 14-11s12.2 3.5 14 11" fill="#f8fafc" fillOpacity="0.88" />
+            </svg>
+          </div>
+
+          <div style={{ fontSize: isPortrait ? 20 : 22, fontWeight: 900, color: "#ffffff", lineHeight: 1.25 }}>
+            {demoTheme.presenterSubtitle}
+          </div>
+
+          {/* Animated voice waveform */}
+          <div style={{ display: "flex", alignItems: "center", gap: 5, height: 34 }}>
+            {Array.from({ length: 16 }, (_, idx) => {
+              const barH = Math.round(10 + 22 * Math.abs(Math.sin(currentTimeMs / 170 + idx * 0.7)));
+              return (
+                <span
+                  key={idx}
+                  style={{
+                    width: 5,
+                    height: barH,
+                    borderRadius: 99,
+                    background: idx % 3 === 0 ? accent : "rgba(248, 250, 252, 0.55)",
+                  }}
+                />
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function AutoEditRemotionComposition({
   jobId,
   timeline,
@@ -453,6 +641,7 @@ export function AutoEditRemotionComposition({
   aspectRatio,
   verticalFit = "auto",
   motionBlur = true,
+  demoTheme,
 }: AutoEditPlayerProps) {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
@@ -502,16 +691,20 @@ export function AutoEditRemotionComposition({
         const durationInFrames = Math.max(1, endFrame - fromFrame);
         const startFrom = Math.round((seg.sourceStartMs / 1000) * fps);
         const endAt = Math.max(startFrom + 1, Math.round((seg.sourceEndMs / 1000) * fps));
+        const isDemoMode = videos.length === 0 && Boolean(demoTheme);
         const videoSrc = `/api/auto-edit/${encodeURIComponent(jobId)}/media?kind=video&clipId=${encodeURIComponent(seg.clipId)}`;
         const clipMeta = clipMetaById.get(seg.clipId);
-        const isLandscapeSource = clipMeta?.width && clipMeta?.height
-          ? clipMeta.width > clipMeta.height * 1.12
-          : clipMeta?.aspectRatio === "16:9";
+        const isLandscapeSource = isDemoMode
+          ? true
+          : clipMeta?.width && clipMeta?.height
+            ? clipMeta.width > clipMeta.height * 1.12
+            : clipMeta?.aspectRatio === "16:9";
         const useAuroraStage = verticalFit === "aurora-3d";
         const useVerticalBlurCanvas =
           !useAuroraStage &&
           aspectRatio === "9:16" &&
           (verticalFit === "blur-fit" || (verticalFit === "auto" && isLandscapeSource));
+        const isPortraitCanvas = height > width;
 
         return (
           <Sequence key={seg.id} from={fromFrame} durationInFrames={durationInFrames}>
@@ -523,6 +716,7 @@ export function AutoEditRemotionComposition({
                     <div
                       style={{
                         width: "100%",
+                        aspectRatio: isDemoMode ? "16 / 9" : undefined,
                         borderRadius: 18,
                         overflow: "hidden",
                         border: "1.5px solid rgba(148, 163, 184, 0.32)",
@@ -530,55 +724,99 @@ export function AutoEditRemotionComposition({
                         transform: `perspective(1200px) rotateY(${(Math.sin(currentTimeMs / 2400) * 3.2).toFixed(2)}deg) rotateX(${(Math.cos(currentTimeMs / 2800) * 2.1).toFixed(2)}deg)`,
                       }}
                     >
-                      <Html5Video
-                        src={videoSrc}
-                        startFrom={startFrom}
-                        endAt={endAt}
-                        style={{
-                          width: "100%",
-                          height: "auto",
-                          display: "block",
-                          transform: `scale(${seg.zoom})`,
-                          transformOrigin: `50% ${Math.round(seg.zoomFocusY * 100)}%`,
-                        }}
-                      />
+                      {isDemoMode && demoTheme ? (
+                        <DemoArollCanvas
+                          demoTheme={demoTheme}
+                          segment={seg}
+                          currentTimeMs={currentTimeMs}
+                          isPortrait={false}
+                        />
+                      ) : (
+                        <Html5Video
+                          src={videoSrc}
+                          startFrom={startFrom}
+                          endAt={endAt}
+                          style={{
+                            width: "100%",
+                            height: "auto",
+                            display: "block",
+                            transform: `scale(${seg.zoom})`,
+                            transformOrigin: `50% ${Math.round(seg.zoomFocusY * 100)}%`,
+                          }}
+                        />
+                      )}
                     </div>
                   </AbsoluteFill>
                 </>
               ) : useVerticalBlurCanvas ? (
                 <>
-                  <Html5Video
-                    src={videoSrc}
-                    startFrom={startFrom}
-                    endAt={endAt}
-                    muted
-                    style={{
-                      position: "absolute",
-                      inset: 0,
-                      width: "100%",
-                      height: "100%",
-                      objectFit: "cover",
-                      filter: "blur(26px) brightness(0.52)",
-                      transform: "scale(1.12)",
-                    }}
-                  />
-                  <AbsoluteFill style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <div style={{ width: "100%", overflow: "hidden", boxShadow: "0 18px 44px rgba(0,0,0,0.55)" }}>
-                      <Html5Video
-                        src={videoSrc}
-                        startFrom={startFrom}
-                        endAt={endAt}
-                        style={{
-                          width: "100%",
-                          height: "auto",
-                          display: "block",
-                          transform: `scale(${seg.zoom})`,
-                          transformOrigin: `50% ${Math.round(seg.zoomFocusY * 100)}%`,
-                        }}
+                  {isDemoMode && demoTheme ? (
+                    <div style={{ position: "absolute", inset: 0 }}>
+                      <DemoArollCanvas
+                        demoTheme={demoTheme}
+                        segment={seg}
+                        currentTimeMs={currentTimeMs}
+                        isPortrait={isPortraitCanvas}
+                        isBlurredBg
                       />
+                    </div>
+                  ) : (
+                    <Html5Video
+                      src={videoSrc}
+                      startFrom={startFrom}
+                      endAt={endAt}
+                      muted
+                      style={{
+                        position: "absolute",
+                        inset: 0,
+                        width: "100%",
+                        height: "100%",
+                        objectFit: "cover",
+                        filter: "blur(26px) brightness(0.52)",
+                        transform: "scale(1.12)",
+                      }}
+                    />
+                  )}
+                  <AbsoluteFill style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <div
+                      style={{
+                        width: "100%",
+                        aspectRatio: isDemoMode ? "16 / 9" : undefined,
+                        overflow: "hidden",
+                        boxShadow: "0 18px 44px rgba(0,0,0,0.55)",
+                      }}
+                    >
+                      {isDemoMode && demoTheme ? (
+                        <DemoArollCanvas
+                          demoTheme={demoTheme}
+                          segment={seg}
+                          currentTimeMs={currentTimeMs}
+                          isPortrait={false}
+                        />
+                      ) : (
+                        <Html5Video
+                          src={videoSrc}
+                          startFrom={startFrom}
+                          endAt={endAt}
+                          style={{
+                            width: "100%",
+                            height: "auto",
+                            display: "block",
+                            transform: `scale(${seg.zoom})`,
+                            transformOrigin: `50% ${Math.round(seg.zoomFocusY * 100)}%`,
+                          }}
+                        />
+                      )}
                     </div>
                   </AbsoluteFill>
                 </>
+              ) : isDemoMode && demoTheme ? (
+                <DemoArollCanvas
+                  demoTheme={demoTheme}
+                  segment={seg}
+                  currentTimeMs={currentTimeMs}
+                  isPortrait={isPortraitCanvas}
+                />
               ) : (
                 <Html5Video
                   src={videoSrc}
