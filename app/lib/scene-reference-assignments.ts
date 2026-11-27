@@ -18,6 +18,11 @@ function sceneLocationId(scene: SceneReferenceRecord) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+export function hasExplicitSceneReferenceCharacterIds(scene: SceneReferenceRecord, kind: SceneReferenceKind) {
+  const prefix = kind === "image" ? "image" : "video";
+  return Array.isArray(scene[`${prefix}_reference_character_ids`]) || Array.isArray(scene[`${prefix}ReferenceCharacterIds`]);
+}
+
 export function sceneReferenceCharacterIds(scene: SceneReferenceRecord, kind: SceneReferenceKind) {
   const prefix = kind === "image" ? "image" : "video";
   const explicit = uniqueIds(scene[`${prefix}_reference_character_ids`] ?? scene[`${prefix}ReferenceCharacterIds`]);

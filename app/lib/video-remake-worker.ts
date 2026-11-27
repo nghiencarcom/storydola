@@ -460,8 +460,8 @@ function pacingSceneRecord(scene: RemakeDraft["scenes"][number], window: RemakeW
   };
 }
 
-const maxRemakeCharacters = 28;
-const maxRemakeLocations = 36;
+const maxRemakeCharacters = 44;
+const maxRemakeLocations = 48;
 
 function mergeBatchCharacters(
   planCharacters: RemakeDraft["characters"],
@@ -547,10 +547,23 @@ function validateDraft(
     const location = locations.get(normalizeEntityName(scene.location));
     if (!location) throw new RemakeValidationError(`Cảnh ${sceneNumber} có bối cảnh nằm ngoài danh sách chuẩn.`);
     scene.location = location;
-    scene.characters = [...new Set(scene.characters.map((name) => {
-      const canonical = characters.get(normalizeEntityName(name));
-      if (!canonical) throw new RemakeValidationError(`Cảnh ${sceneNumber} có nhân vật nằm ngoài danh sách chuẩn.`);
-      return canonical;
+    scene.characters = [...new Set(scene.characters.flatMap((name) => {
+      const trimmed = name.trim();
+      const canonical = characters.get(normalizeEntityName(trimmed));
+      if (canonical) return [canonical];
+      if (!allowGracefulRepair) {
+        throw new RemakeValidationError(`Cảnh ${sceneNumber} có nhân vật nằm ngoài danh sách chuẩn.`);
+      }
+      if (trimmed && !isTemplateEntityName(trimmed) && draft.characters.length < maxRemakeCharacters) {
+        draft.characters.push({
+          name: trimmed,
+          description: "Supporting character appearing in scene.",
+          imagePrompt: "Full-body character design on plain clean white studio background, even studio lighting.",
+        });
+        characters.set(normalizeEntityName(trimmed), trimmed);
+        return [trimmed];
+      }
+      return [];
     }))];
     const allCanonicalNames = draft.characters.map(({ name }) => name);
     const promptMentioned = mentionedCanonicalCharacters(`${scene.imagePrompt}\n${scene.videoPrompt}`, allCanonicalNames);
@@ -791,10 +804,11 @@ async function draftRemake(
     `Ngôn ngữ thoại: ${job.input.language === "vi" ? "tiếng Việt" : "English"}. Ngôn ngữ prompt: English. Tỷ lệ: ${media.aspectRatio}. Định hướng: ${JSON.stringify(job.input.direction)}`,
   ];
 
-  type AskOptions = { compactRetry?: boolean; promptGuidance?: string[]; effortOverride?: "auto" | "low" };
+  type AskOptions = { compactRetry?: boolean; promptGuidance?: string[]; effortOverride?: "auto" | "low"; signal?: AbortSignal };
   async function ask<T>(schema: z.ZodType<T>, instructions: string[], sheets: typeof media.sheets, options: AskOptions = {}): Promise<T> {
     const compactRetry = Boolean(options.compactRetry);
-    if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
+    const activeSignal = options.signal ?? signal;
+    if (activeSignal?.aborted) throw activeSignal.reason ?? new DOMException("Aborted", "AbortError");
     const prompt = [
       ...(options.promptGuidance ?? guidance), ...instructions,
       `Frames trong các ảnh theo thứ tự đính kèm: ${JSON.stringify(sheets.map(({ rows }) => rows))}`,
@@ -807,7 +821,7 @@ async function draftRemake(
         promptOnlyJson: true, imagePaths: sheets.map(({ imagePath }) => imagePath),
       }));
     } catch (error) {
-      if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
+      if (activeSignal?.aborted) throw activeSignal.reason ?? new DOMException("Aborted", "AbortError");
       const { name: errorName, message: errorMessage } = errorInfo(error);
       const combinedError = `${errorName} ${errorMessage}`;
       console.error("[video-remake] Code Agent", errorName || "error", errorMessage.slice(0, 300));
@@ -846,13 +860,13 @@ async function draftRemake(
       }
       if (!compactRetry && /\b(?:AGENT_RUN_FAILED|ECONNRESET|EPIPE|đã đóng kết nối|phản hồi trống)\b/iu.test(combinedError)) {
         await new Promise((resolve) => setTimeout(resolve, 3_000));
-        if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
+        if (activeSignal?.aborted) throw activeSignal.reason ?? new DOMException("Aborted", "AbortError");
         return ask(schema, instructions, sheets, { ...options, compactRetry: true });
       }
       const detailSuffix = errorMessage ? ` (${errorMessage.replace(/^AGENT_RUN_FAILED:\s*/u, "").slice(0, 180)})` : "";
       throw new Error(`Code Agent chưa trả được bản phân tích${detailSuffix}. Kiểm tra đăng nhập CLI và model hỗ trợ ảnh trong Cài đặt.`);
     }
-    if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
+    if (activeSignal?.aborted) throw activeSignal.reason ?? new DOMException("Aborted", "AbortError");
     const parsed = schema.safeParse(result);
     if (!parsed.success) {
       const field = parsed.error.issues[0]?.path.join(".");
@@ -888,13 +902,16 @@ async function draftRemake(
     }
     return { draft: validateDraft({ ...plan, scenes: parsedScenes.data }, windows, job.input, previousBatchLast, allowGracefulRepair, autoRepairMinor), windows };
   }
-  async function withTimingRepair<T>(run: (feedback: string, isFinalAttempt: boolean) => Promise<T>) {
+  async function withTimingRepair<T>(
+    run: (feedback: string, isFinalAttempt: boolean) => Promise<T>,
+    batchSignal?: AbortSignal,
+  ) {
     let feedback = "";
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         return await run(feedback, attempt === 2);
       } catch (error) {
-        if (signal?.aborted) throw error;
+        if (signal?.aborted || batchSignal?.aborted) throw error;
         if (attempt === 2 || !(error instanceof RemakeValidationError)) {
           throw error;
         }
@@ -1062,141 +1079,177 @@ async function draftRemake(
   };
 
   const batchWorkerCount = Math.min(maxConcurrentBatchesPerJob, Math.max(1, pendingBatchIndices.length));
-  await Promise.all(Array.from({ length: batchWorkerCount }, async () => {
-    while (nextPendingPos < pendingBatchIndices.length) {
-      if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
-      const index = pendingBatchIndices[nextPendingPos++];
-      const batch = batches[index];
-      const { start, end, windows, sheets } = batch;
-      const charsSnapshot = [...currentCharacters];
-      const locsSnapshot = [...currentLocations];
-      const remainingCharacterSlots = Math.max(0, maxRemakeCharacters - charsSnapshot.length);
-      const remainingLocationSlots = Math.max(0, maxRemakeLocations - locsSnapshot.length);
+  const batchPoolController = new AbortController();
+  const onParentAbort = () => batchPoolController.abort(signal?.reason);
+  if (signal?.aborted) batchPoolController.abort(signal.reason);
+  else signal?.addEventListener("abort", onParentAbort, { once: true });
 
-      const prevBatchData = index === 0
-        ? undefined
-        : index === prefixCompletedBatches && prefixScenes.length
-          ? { scenes: prefixScenes, windows: prefixWindows }
-          : batchOutputs.get(index - 1);
+  const settledWorkers = await (async () => {
+    try {
+      return await Promise.allSettled(Array.from({ length: batchWorkerCount }, async () => {
+        while (nextPendingPos < pendingBatchIndices.length) {
+          if (batchPoolController.signal.aborted) {
+            throw batchPoolController.signal.reason ?? new DOMException("Aborted", "AbortError");
+          }
+          const index = pendingBatchIndices[nextPendingPos++];
+          const batch = batches[index];
+          const { start, end, windows, sheets } = batch;
+          const charsSnapshot = [...currentCharacters];
+          const locsSnapshot = [...currentLocations];
+          const remainingCharacterSlots = Math.max(0, maxRemakeCharacters - charsSnapshot.length);
+          const remainingLocationSlots = Math.max(0, maxRemakeLocations - locsSnapshot.length);
 
-      let batchSheets = sheets;
-      let visualBridgeNote = "";
-      let recentTail: Array<{
-        sceneNumber: number; location: string; characters: string[]; action: string;
-        dialogue: RemakeDraft["scenes"][number]["dialogue"]; blocking?: string; eyelineAction?: string; continuityOut: string;
-      }> = [];
-      let previousLast: { scene: RemakeDraft["scenes"][number]; window: RemakeWindow; sceneNumber: number } | undefined;
+          const prevBatchData = index === 0
+            ? undefined
+            : index === prefixCompletedBatches && prefixScenes.length
+              ? { scenes: prefixScenes, windows: prefixWindows }
+              : batchOutputs.get(index - 1);
 
-      if (prevBatchData && prevBatchData.scenes.length) {
-        const priorSceneBase = index === prefixCompletedBatches ? 0 : (batches[index - 1]?.start || 0);
-        recentTail = prevBatchData.scenes.slice(-2).map((item, offset) => ({
-          sceneNumber: priorSceneBase + prevBatchData.scenes.length - Math.min(2, prevBatchData.scenes.length) + offset + 1,
-          location: item.location,
-          characters: item.characters,
-          action: item.action,
-          dialogue: item.dialogue,
-          blocking: item.blocking,
-          eyelineAction: item.eyelineAction,
-          continuityOut: item.continuityOut,
-        }));
-        previousLast = {
-          scene: prevBatchData.scenes.at(-1)!,
-          window: prevBatchData.windows.at(-1)!,
-          sceneNumber: priorSceneBase + prevBatchData.scenes.length,
-        };
-      } else if (index > 0) {
-        const leadInSheet = batches[index - 1].sheets.at(-1);
-        if (leadInSheet) {
-          batchSheets = [leadInSheet, ...sheets];
-          const bridgeBeatIndex = Math.floor((index - 1) * beatCount / batches.length);
-          const leadStart = leadInSheet.rows[0].scene;
-          const leadEnd = leadInSheet.rows.at(-1)!.scene;
-          visualBridgeNote = `CẦU NỐI ĐẦU LÔ SONG SONG: Ảnh đính kèm ĐẦU TIÊN (khoảng nguồn ${leadStart}–${leadEnd}, thuộc lô ngay trước: ${JSON.stringify(beats[bridgeBeatIndex])}) CHỈ để đối chiếu Frame-0.0s, nhân vật, trang phục và trục 180° nối tiếp vào cảnh mở đầu của lô này; TUYỆT ĐỐI KHÔNG tạo scene cho khoảng nguồn ${leadStart}–${leadEnd}, chỉ tạo scenes cho ĐÚNG khoảng nguồn ${start + 1} đến ${end}.`;
+          let batchSheets = sheets;
+          let visualBridgeNote = "";
+          let recentTail: Array<{
+            sceneNumber: number; location: string; characters: string[]; action: string;
+            dialogue: RemakeDraft["scenes"][number]["dialogue"]; blocking?: string; eyelineAction?: string; continuityOut: string;
+          }> = [];
+          let previousLast: { scene: RemakeDraft["scenes"][number]; window: RemakeWindow; sceneNumber: number } | undefined;
+
+          if (prevBatchData && prevBatchData.scenes.length) {
+            const priorSceneBase = index === prefixCompletedBatches ? 0 : (batches[index - 1]?.start || 0);
+            recentTail = prevBatchData.scenes.slice(-2).map((item, offset) => ({
+              sceneNumber: priorSceneBase + prevBatchData.scenes.length - Math.min(2, prevBatchData.scenes.length) + offset + 1,
+              location: item.location,
+              characters: item.characters,
+              action: item.action,
+              dialogue: item.dialogue,
+              blocking: item.blocking,
+              eyelineAction: item.eyelineAction,
+              continuityOut: item.continuityOut,
+            }));
+            previousLast = {
+              scene: prevBatchData.scenes.at(-1)!,
+              window: prevBatchData.windows.at(-1)!,
+              sceneNumber: priorSceneBase + prevBatchData.scenes.length,
+            };
+          } else if (index > 0) {
+            const leadInSheet = batches[index - 1].sheets.at(-1);
+            if (leadInSheet) {
+              batchSheets = [leadInSheet, ...sheets];
+              const bridgeBeatIndex = Math.floor((index - 1) * beatCount / batches.length);
+              const leadStart = leadInSheet.rows[0].scene;
+              const leadEnd = leadInSheet.rows.at(-1)!.scene;
+              visualBridgeNote = `CẦU NỐI ĐẦU LÔ SONG SONG: Ảnh đính kèm ĐẦU TIÊN (khoảng nguồn ${leadStart}–${leadEnd}, thuộc lô ngay trước: ${JSON.stringify(beats[bridgeBeatIndex])}) CHỈ để đối chiếu Frame-0.0s, nhân vật, trang phục và trục 180° nối tiếp vào cảnh mở đầu của lô này; TUYỆT ĐỐI KHÔNG tạo scene cho khoảng nguồn ${leadStart}–${leadEnd}, chỉ tạo scenes cho ĐÚNG khoảng nguồn ${start + 1} đến ${end}.`;
+            }
+          }
+
+          const beatIndex = Math.floor(index * beatCount / batches.length);
+          const nextBeat = beats[beatIndex + 1];
+          const matchingTranscript = timed.length ? timed
+            .filter((cue) => cue.start < windows.at(-1)!.sourceEnd && cue.end > windows[0].sourceStart)
+            .map(({ block }) => block).join("\n\n") : overviewTranscript(media.transcript.text);
+          const batchCharacterHint = remainingCharacterSlots > 0
+            ? `ưu tiên TÁI SỬ DỤNG các nhân vật/nguyên mẫu đã có trong danh sách characters bất cứ khi nào cùng loài/cùng vai; CHỈ khi xuất hiện nhân vật hoặc loài sinh vật thực sự mới hoàn toàn khác biệt, mới khai báo vào newCharacters (tối đa ${Math.min(4, remainingCharacterSlots)} nhân vật, mô tả tiếng Anh trên nền trắng plain clean white studio background, giữ đúng giải phẫu loài) và dùng đúng tên đó ở scene.characters;`
+            : `danh sách characters đã đạt trần ${maxRemakeCharacters} nhân vật của dự án, BẮT BUỘC tái sử dụng đúng tên nhân vật phù hợp nhất đã có và để trống newCharacters;`;
+          const batchLocationHint = remainingLocationSlots > 0
+            ? `nếu đoạn video này xuất hiện bối cảnh vật lý thực sự mới chưa có trong danh sách locations hiện tại, khai báo thêm vào newLocations (tối đa ${Math.min(6, remainingLocationSlots)} địa điểm, mô tả tiếng Anh không người, không tỷ lệ khung hình) và dùng đúng tên đó ở scene.location.`
+            : `danh sách locations đã đạt trần ${maxRemakeLocations} địa điểm của dự án; hãy chọn đúng location phù hợp nhất đã có và để trống newLocations.`;
+
+          const compactPlanContext = {
+            title: plan.title,
+            logline: plan.logline,
+            continuity: plan.continuity,
+            dialoguePolicy: plan.dialoguePolicy,
+            visualStyle: plan.visualStyle,
+            imageStyle: plan.imageStyle,
+            contentGenre: plan.contentGenre,
+            storySetting: plan.storySetting,
+            characters: charsSnapshot.map(({ name, description }) => ({ name, description })),
+            locations: locsSnapshot.map(({ name, description }) => ({ name, description })),
+          };
+
+          let batchResult: {
+            draft: RemakeDraft;
+            windows: RemakeWindow[];
+            newCharacters?: RemakeDraft["characters"];
+            newLocations?: RemakeDraft["locations"];
+          };
+          try {
+            batchResult = await withTimingRepair(async (feedback, isFinalAttempt) => {
+              const { newCharacters, newLocations, scenes: drafted } = await ask(z.object({
+                newCharacters: z.array(planEntitySchema).max(remainingCharacterSlots > 0 ? Math.min(4, remainingCharacterSlots) : 4).optional(),
+                newLocations: z.array(planEntitySchema).max(remainingLocationSlots > 0 ? Math.min(6, remainingLocationSlots) : 6).optional(),
+                scenes: sceneList.max(windows.length),
+              }), [
+                `Chỉ dùng các khoảng nguồn ${start + 1} đến ${end} trên tổng số ${media.windows.length} khoảng. Gộp linh hoạt các khoảng nguồn cùng bối cảnh/pha đấu liên hoàn thành cảnh 10s (sourceWindows = 2) và 15s (sourceWindows = 3) kết hợp 5s (sourceWindows = 1) cho cú cắt ngắn; KHÔNG để toàn bộ lô đều là 5s nếu hành động diễn ra liên tục. Theo kế hoạch chung, giữ đúng tên nhân vật/bối cảnh; ${batchCharacterHint} ${batchLocationHint} Hook mở video chỉ ở nhóm đầu, kết thúc câu chuyện chỉ ở nhóm cuối.`,
+                `Kế hoạch chung: ${JSON.stringify(compactPlanContext)}`,
+                `Nội dung nhóm: ${JSON.stringify(beats[beatIndex])}`,
+                visualBridgeNote,
+                recentTail.length ? `Trạng thái nối tiếp từ các cảnh ngay trước (giữ đồng nhất vị trí trục 180 độ, đạo cụ, trang phục, lặp lại từ khóa chủ chốt ở continuityIn; ĐẶC BIỆT kiểm tra action & dialogue của cảnh sát trước để KHÔNG dịch/viết lặp lại cùng câu thoại hoặc ý vừa nói khi phụ đề vắt qua ranh giới hai nhóm): ${JSON.stringify(recentTail)}` : "",
+                nextBeat ? `Chuẩn bị nối tới nhóm sau: ${JSON.stringify(nextBeat)}` : "",
+                `Cửa sổ theo thứ tự: ${JSON.stringify(windows)}`,
+                audioRhythm(media.audioCues?.slice(start, end)),
+                transcript(overviewTranscript(matchingTranscript, 4_000)),
+                feedback,
+              ].filter(Boolean), batchSheets, { promptGuidance: batchGuidance, effortOverride: batchEffortOverride, signal: batchPoolController.signal });
+              const candidateCharacters = mergeBatchCharacters(currentCharacters, remainingCharacterSlots > 0 ? newCharacters : undefined);
+              const candidateLocations = mergeBatchLocations(currentLocations, remainingLocationSlots > 0 ? newLocations : undefined);
+              const validated = finalize(
+                { ...plan, characters: candidateCharacters, locations: candidateLocations },
+                drafted,
+                windows,
+                previousLast,
+                isFinalAttempt,
+                true,
+              );
+              const synthesizedChars = validated.draft.characters.filter(
+                (ch) => !currentCharacters.some((existing) => normalizeEntityName(existing.name) === normalizeEntityName(ch.name)),
+              );
+              const mergedNewChars = mergeBatchCharacters(newCharacters || [], synthesizedChars, 8);
+              return { ...validated, newCharacters: mergedNewChars, newLocations };
+            }, batchPoolController.signal);
+          } catch (error) {
+            if (!batchPoolController.signal.aborted) {
+              batchPoolController.abort(error);
+            }
+            throw error;
+          }
+
+          checkpointQueue = checkpointQueue.then(async () => {
+            currentCharacters = mergeBatchCharacters(currentCharacters, batchResult.newCharacters);
+            currentLocations = mergeBatchLocations(currentLocations, batchResult.newLocations);
+            batchOutputs.set(index, { scenes: batchResult.draft.scenes, windows: batchResult.windows });
+            const { assembledScenes, assembledWindows, contiguousBatches, totalDoneWindows } = assembleContiguousPrefix();
+            const serializedOutputs = Object.fromEntries(
+              [...batchOutputs.entries()].sort((a, b) => a[0] - b[0]).map(([batchKey, val]) => [String(batchKey), val]),
+            );
+            await saveJobCheckpoint(folder, job.id, {
+              version: 1,
+              totalWindows: media.windows.length,
+              batchCount: batches.length,
+              plan: { ...plan, characters: currentCharacters, locations: currentLocations },
+              beats,
+              currentCharacters,
+              currentLocations,
+              completedBatches: contiguousBatches,
+              completedWindows: totalDoneWindows,
+              scenes: assembledScenes,
+              mergedWindows: assembledWindows,
+              completedBatchOutputs: serializedOutputs,
+            });
+            await onProgress(totalDoneWindows);
+          });
+          await checkpointQueue;
         }
-      }
-
-      const beatIndex = Math.floor(index * beatCount / batches.length);
-      const nextBeat = beats[beatIndex + 1];
-      const matchingTranscript = timed.length ? timed
-        .filter((cue) => cue.start < windows.at(-1)!.sourceEnd && cue.end > windows[0].sourceStart)
-        .map(({ block }) => block).join("\n\n") : overviewTranscript(media.transcript.text);
-      const batchCharacterHint = remainingCharacterSlots > 0
-        ? `nếu đoạn video này xuất hiện nhân vật hoặc loài sinh vật/quái thú thực sự mới chưa có trong danh sách characters hiện tại, hãy khai báo thêm vào newCharacters (tối đa ${Math.min(4, remainingCharacterSlots)} nhân vật, mô tả tiếng Anh trên nền trắng plain clean white studio background, giữ đúng giải phẫu loài) và dùng đúng tên đó ở scene.characters;`
-        : `danh sách characters đã đạt trần ${maxRemakeCharacters} nhân vật của dự án, hãy chọn đúng nhân vật phù hợp nhất đã có và để trống newCharacters;`;
-      const batchLocationHint = remainingLocationSlots > 0
-        ? `nếu đoạn video này xuất hiện bối cảnh vật lý thực sự mới chưa có trong danh sách locations hiện tại, khai báo thêm vào newLocations (tối đa ${Math.min(6, remainingLocationSlots)} địa điểm, mô tả tiếng Anh không người, không tỷ lệ khung hình) và dùng đúng tên đó ở scene.location.`
-        : `danh sách locations đã đạt trần ${maxRemakeLocations} địa điểm của dự án; hãy chọn đúng location phù hợp nhất đã có và để trống newLocations.`;
-
-      const compactPlanContext = {
-        title: plan.title,
-        logline: plan.logline,
-        continuity: plan.continuity,
-        dialoguePolicy: plan.dialoguePolicy,
-        visualStyle: plan.visualStyle,
-        imageStyle: plan.imageStyle,
-        contentGenre: plan.contentGenre,
-        storySetting: plan.storySetting,
-        characters: charsSnapshot.map(({ name, description }) => ({ name, description })),
-        locations: locsSnapshot.map(({ name, description }) => ({ name, description })),
-      };
-
-      const batchResult = await withTimingRepair(async (feedback, isFinalAttempt) => {
-        const { newCharacters, newLocations, scenes: drafted } = await ask(z.object({
-          newCharacters: z.array(planEntitySchema).max(remainingCharacterSlots > 0 ? Math.min(4, remainingCharacterSlots) : 4).optional(),
-          newLocations: z.array(planEntitySchema).max(remainingLocationSlots > 0 ? Math.min(6, remainingLocationSlots) : 6).optional(),
-          scenes: sceneList.max(windows.length),
-        }), [
-          `Chỉ dùng các khoảng nguồn ${start + 1} đến ${end} trên tổng số ${media.windows.length} khoảng. Gộp linh hoạt các khoảng nguồn cùng bối cảnh/pha đấu liên hoàn thành cảnh 10s (sourceWindows = 2) và 15s (sourceWindows = 3) kết hợp 5s (sourceWindows = 1) cho cú cắt ngắn; KHÔNG để toàn bộ lô đều là 5s nếu hành động diễn ra liên tục. Theo kế hoạch chung, giữ đúng tên nhân vật/bối cảnh; ${batchCharacterHint} ${batchLocationHint} Hook mở video chỉ ở nhóm đầu, kết thúc câu chuyện chỉ ở nhóm cuối.`,
-          `Kế hoạch chung: ${JSON.stringify(compactPlanContext)}`,
-          `Nội dung nhóm: ${JSON.stringify(beats[beatIndex])}`,
-          visualBridgeNote,
-          recentTail.length ? `Trạng thái nối tiếp từ các cảnh ngay trước (giữ đồng nhất vị trí trục 180 độ, đạo cụ, trang phục, lặp lại từ khóa chủ chốt ở continuityIn; ĐẶC BIỆT kiểm tra action & dialogue của cảnh sát trước để KHÔNG dịch/viết lặp lại cùng câu thoại hoặc ý vừa nói khi phụ đề vắt qua ranh giới hai nhóm): ${JSON.stringify(recentTail)}` : "",
-          nextBeat ? `Chuẩn bị nối tới nhóm sau: ${JSON.stringify(nextBeat)}` : "",
-          `Cửa sổ theo thứ tự: ${JSON.stringify(windows)}`,
-          audioRhythm(media.audioCues?.slice(start, end)),
-          transcript(overviewTranscript(matchingTranscript, 4_000)),
-          feedback,
-        ].filter(Boolean), batchSheets, { promptGuidance: batchGuidance, effortOverride: batchEffortOverride });
-        const candidateCharacters = mergeBatchCharacters(currentCharacters, remainingCharacterSlots > 0 ? newCharacters : undefined);
-        const candidateLocations = mergeBatchLocations(currentLocations, remainingLocationSlots > 0 ? newLocations : undefined);
-        const validated = finalize(
-          { ...plan, characters: candidateCharacters, locations: candidateLocations },
-          drafted,
-          windows,
-          previousLast,
-          isFinalAttempt,
-          true,
-        );
-        return { ...validated, newCharacters, newLocations };
-      });
-
-      checkpointQueue = checkpointQueue.then(async () => {
-        currentCharacters = mergeBatchCharacters(currentCharacters, batchResult.newCharacters);
-        currentLocations = mergeBatchLocations(currentLocations, batchResult.newLocations);
-        batchOutputs.set(index, { scenes: batchResult.draft.scenes, windows: batchResult.windows });
-        const { assembledScenes, assembledWindows, contiguousBatches, totalDoneWindows } = assembleContiguousPrefix();
-        const serializedOutputs = Object.fromEntries(
-          [...batchOutputs.entries()].sort((a, b) => a[0] - b[0]).map(([batchKey, val]) => [String(batchKey), val]),
-        );
-        await saveJobCheckpoint(folder, job.id, {
-          version: 1,
-          totalWindows: media.windows.length,
-          batchCount: batches.length,
-          plan: { ...plan, characters: currentCharacters, locations: currentLocations },
-          beats,
-          currentCharacters,
-          currentLocations,
-          completedBatches: contiguousBatches,
-          completedWindows: totalDoneWindows,
-          scenes: assembledScenes,
-          mergedWindows: assembledWindows,
-          completedBatchOutputs: serializedOutputs,
-        });
-        await onProgress(totalDoneWindows);
-      });
-      await checkpointQueue;
+      }));
+    } finally {
+      signal?.removeEventListener("abort", onParentAbort);
     }
-  }));
+  })();
+
+  await checkpointQueue.catch(() => undefined);
+  const firstRejection = settledWorkers.find((entry): entry is PromiseRejectedResult => entry.status === "rejected");
+  if (firstRejection) {
+    throw firstRejection.reason;
+  }
 
   await checkpointQueue;
   const { assembledScenes, assembledWindows } = assembleContiguousPrefix();

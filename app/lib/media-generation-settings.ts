@@ -25,8 +25,8 @@ export const MUSE_VIDEO_MODEL_OPTION: VideoGenerationModelOption = {
   qualities: [],
   aspectRatios: ["9:16", "16:9", "1:1", "4:3", "3:4"],
   minDurationSec: 5,
-  maxDurationSec: 10,
-  supportedDurationsSec: [5, 10],
+  maxDurationSec: 15,
+  supportedDurationsSec: [5, 10, 15],
   supportsMultiShot: false,
   supportsAudio: true,
   supportsOffPeak: false,
@@ -193,7 +193,7 @@ export function preferredVideoQuality(modelId: string | undefined, currentQualit
 }
 
 export function videoDurationOptions(model?: VideoGenerationModelOption, quality = "") {
-  if (model?.provider === "muse") return [5, 10];
+  if (model?.provider === "muse") return [5, 10, 15];
   if (model?.provider === "flow") return Array.from({ length: 11 }, (_, index) => index + 5);
   const { min, max } = videoDurationBoundsForModel(model, quality);
   const supported = model?.supportedDurationsSec?.filter((duration) => Number.isInteger(duration) && duration >= min && duration <= max);
@@ -202,7 +202,7 @@ export function videoDurationOptions(model?: VideoGenerationModelOption, quality
 }
 
 export function videoDurationBoundsForModel(model?: VideoGenerationModelOption, quality = "") {
-  if (model?.provider === "muse") return { min: 5, max: 10 };
+  if (model?.provider === "muse") return { min: 5, max: 15 };
   if (model?.provider === "flow") return { min: 5, max: 15 };
   const min = Math.max(1, Math.round(model?.minDurationSec || 1));
   const configuredMax = model?.maxDurationByQuality?.[quality] || model?.maxDurationSec || 15;
@@ -218,7 +218,9 @@ export function normalizeVideoDuration(requested: number, model?: VideoGeneratio
 
 function normalizeMuseDuration(requested: number, fallback = 10) {
   const duration = Math.max(1, Math.ceil(Number(requested) || fallback || 10));
-  return duration <= 5 ? 5 : 10;
+  if (duration <= 5) return 5;
+  if (duration <= 10) return 10;
+  return 15;
 }
 
 function normalizeFlowDuration(requested: number, fallback = DEFAULT_FLOW_VIDEO_DURATION_SEC) {
@@ -287,7 +289,7 @@ export function resolveMediaGenerationSettings(settings?: Partial<MediaGeneratio
   const flowReferenceMode = settings?.flowReferenceMode === "frames" ? "frames" : "ingredients";
   const seedanceChatMode = settings?.seedanceChatMode === "Pro" ? "Pro" : "Fast";
   const pixverse = isPixverseVideoSettings({ videoProvider, videoModel });
-  const maxVideoDuration = videoProvider === "muse" ? 10 : videoProvider === "maivideo" && videoModel === WAN_3_VIDEO_MODEL_ID ? 30 : 15;
+  const maxVideoDuration = videoProvider === "maivideo" && videoModel === WAN_3_VIDEO_MODEL_ID ? 30 : 15;
   const minVideoDuration = videoProvider === "maivideo" && videoModel === MINIMAX_H3_VIDEO_MODEL_ID ? 5 : videoProvider === "maivideo" && videoModel === WAN_3_VIDEO_MODEL_ID ? 2 : 1;
   const maiVideoSeedance = videoProvider === "maivideo" && isMaiVideoSeedanceModel(videoModel);
   const requiresOffPeak = videoProvider === "maivideo" && isVideoOffPeakRequired(videoModel);

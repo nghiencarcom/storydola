@@ -16,7 +16,7 @@ function normalizedPhrase(value: unknown) {
 }
 
 function sceneText(scene: Record<string, unknown>) {
-  const fields = ["title", "scene_title", "purpose", "story_purpose", "beat_summary", "action", "visual_intent", "image_prompt", "imagePrompt", "video_prompt", "videoPrompt", "voiceover", "dialogue_or_voiceover", "dialogue", "speaker", "speaker_name", "speakerName", "character_name", "characterName"];
+  const fields = ["title", "scene_title", "purpose", "story_purpose", "beat_summary", "action", "visual_intent", "image_prompt", "imagePrompt", "video_prompt", "videoPrompt", "speaker", "speaker_name", "speakerName", "character_name", "characterName", "speaker_character", "speakerCharacter"];
   return fields.map((key) => typeof scene[key] === "string" ? scene[key] as string : "").join(" ");
 }
 
@@ -54,7 +54,18 @@ function hasPhrase(text: string, phrase: string) {
 function inferSceneCharacterIds(scene: Record<string, unknown>, characters: ProjectCharacter[]) {
   const text = normalizedPhrase(sceneText(scene));
   const paddedText = ` ${text} `;
-  const explicitNames = asNames(scene.characters).concat(asNames(scene.character_names), asNames(scene.characterNames), asNames(scene.present_characters), asNames(scene.presentCharacters));
+  const dialogueCues = Array.isArray(scene.dialogue_segments)
+    ? scene.dialogue_segments
+    : Array.isArray(scene.dialogueSegments)
+      ? scene.dialogueSegments
+      : [];
+  const cueSpeakers = dialogueCues
+    .map((item) => asRecord(item))
+    .flatMap((item) => item
+      ? [item.speaker_character, item.speakerCharacter, item.speaker_name, item.speakerName, item.speaker].filter((name): name is string => typeof name === "string")
+      : []);
+  const explicitNames = asNames(scene.characters)
+    .concat(asNames(scene.character_names), asNames(scene.characterNames), asNames(scene.present_characters), asNames(scene.presentCharacters), cueSpeakers);
   const explicit = new Set(explicitNames.map(normalizedPhrase).filter(Boolean));
   const knownIds = new Set(characters.map((character) => character.id));
   const existing = sceneCharacterIds(scene).filter((id) => knownIds.has(id));

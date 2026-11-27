@@ -18,13 +18,13 @@ export function normalizeDramaPlan(value: unknown, expectedEpisodes: number): Dr
     const name = line(item.name, 80);
     const description = line(item.description, 1200);
     return { name, description, imagePrompt: characterReferencePrompt(name, sanitizeDramaVisualPrompt((typeof item.imagePrompt === "string" ? item.imagePrompt.trim() : "") || description)) };
-  }).filter((item) => item.name).slice(0, 28) : [];
+  }).filter((item) => item.name).slice(0, 44) : [];
   const locations = Array.isArray(input.locations) ? input.locations.map((value) => {
     const item = record(value);
     const name = line(item.name, 100);
     const description = line(item.description, 1200);
     return { name, description, imagePrompt: locationReferencePrompt(name, sanitizeDramaVisualPrompt((typeof item.imagePrompt === "string" ? item.imagePrompt.trim() : "") || description)) };
-  }).filter((item) => item.name).slice(0, 36) : [];
+  }).filter((item) => item.name).slice(0, 48) : [];
   const episodes = Array.isArray(input.episodes) ? input.episodes.map((value) => {
     const item = record(value);
     return {
