@@ -5,7 +5,7 @@ import { getCodingAgentPreference, type CodingAgentPreference } from "../../lib/
 import { readDataForUser } from "../../lib/server-store";
 import { remakeInputSchema } from "../../lib/video-remake";
 import { createRemakeProject } from "../../lib/video-remake-project";
-import { addRemakeJob, deleteRemakeJob, getRemakeJob, linkRemakeProject, listRemakeJobs, retryRemakeJob, runRemakeQueue } from "../../lib/video-remake-worker";
+import { addRemakeJob, deleteRemakeJob, getRemakeJob, linkRemakeProject, listRemakeJobs, maxQueuedRemakeJobsPerUser, retryRemakeJob, runRemakeQueue } from "../../lib/video-remake-worker";
 
 export const runtime = "nodejs";
 
@@ -60,7 +60,7 @@ export async function POST(request: Request) {
   const agent = await configuredAgent(owner);
   if (!agent) return respond({ message: "Hãy chọn và kết nối Code Agent CLI trong Cài đặt để phân tích khung hình." }, 503);
   const id = await addRemakeJob(owner, parsed.data, agent);
-  if (!id) return respond({ message: "Bạn đang có 5 job remake trong hàng đợi. Hãy đợi một job hoàn tất." }, 409);
+  if (!id) return respond({ message: `Bạn đang có ${maxQueuedRemakeJobsPerUser} job remake trong hàng đợi. Hãy đợi một job hoàn tất.` }, 409);
   wakeQueue();
   return respond({ id }, 202);
 }

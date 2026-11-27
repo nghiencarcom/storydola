@@ -355,6 +355,9 @@ async function main() {
   assert.equal(funnyJob.status, "ready", funnyJob.error);
   assert.equal(funnyAttempt, 3);
   assert.match(funnyObserved[0], /TỰ ĐỘNG PHÁT HIỆN NGUỒN KHÔNG HỘI THOẠI/);
+  assert.match(funnyObserved[0], /PHÂN BIỆT CHẤT LIỆU CHUYỂN ĐỘNG, NHỊP MÁY & SFX\/VFX THEO ĐÚNG THỂ LOẠI/);
+  assert.match(funnyObserved[0], /HORROR \/ MYSTERY-THRILLER/);
+  assert.match(funnyObserved[0], /DRAMA \/ ROMANCE/);
   assert.match(funnyObserved[0], /peaksAt/);
   assert.match(funnyObserved[0], /SPOILER FRAME-0/);
   assert.match(funnyObserved[1], /lệnh cắt cảnh/);
@@ -708,6 +711,90 @@ async function main() {
   await pQueuePromise;
   assert.equal((await parallelWorker.getRemakeJob("parallel-user", pJob1)).status, "ready");
   assert.equal((await parallelWorker.getRemakeJob("parallel-user", pJob2)).status, "ready");
+
+  // Verify multi-genre execution guidance covers all 11 genres (including documentary/explainer) and sparse suspense dialogue.
+  assert.equal(contentGenres.CONTENT_GENRES.length, 11);
+  assert.ok(contentGenres.CONTENT_GENRES.some((g) => g.value === "documentary"));
+  assert.match(contentGenres.remakeGenreExecutionGuidance(""), /DOCUMENTARY \/ EXPLAINER \/ VLOG/);
+  for (const genre of contentGenres.CONTENT_GENRES) {
+    const guided = contentGenres.remakeGenreExecutionGuidance(genre.value);
+    assert.ok(guided.includes(`KỶ LUẬT THỂ LOẠI ĐÃ CHỌN (${genre.value})`), `missing genre header for ${genre.value}`);
+  }
+  let horrorPrompt = "";
+  let shouldFailAnalyze = false;
+  const horrorWorker = load("video-remake-worker", {
+    "./ai-drama-video-prompt-guidance": aiDramaGuidance,
+    "./content-genres": contentGenres,
+    "./visual-styles": visualStyles,
+    "./visual-prompt-safety": visualPromptSafety,
+    "./video-prompt-policy": videoPromptPolicy,
+    "./dialogue-pacing": dialoguePacing,
+    "./data-directory": { dataPath: (...parts) => path.join(root, "horror-data", ...parts) },
+    "./video-remake": remake,
+    "./entity-name": entityName,
+    "./video-remake-media": {
+      prepareRemakeMedia: async () => ({
+        windows: remake.makeRemakeWindows(10, 5),
+        sheets: [{ imagePath: "/tmp/h.jpg", rows: [{ scene: 1, framesAt: [0.5] }, { scene: 2, framesAt: [5.5] }] }],
+        aspectRatio: "16:9",
+        transcript: { kind: "transcribed", text: "1\n00:00:06,400 --> 00:00:08,200\nAi đó?" },
+        audioCues: [],
+      }),
+    },
+    "./coding-agent-cli": {
+      generateWithCodingAgent: async (_agent, prompt) => {
+        if (!horrorPrompt) horrorPrompt = prompt;
+        if (shouldFailAnalyze) {
+          throw new Error("CLI auth expired, see https://docs.example.test/login for help");
+        }
+        return {
+          result: {
+            ...plan,
+            visualStyle: "Dark suspense", imageStyle: "Realistic Film", contentGenre: "horror", storySetting: "modern",
+            dialoguePolicy: "spoken",
+            characters: [{ name: "Minh Anh", description: "Adult night guard, female, quiet steady voice, dark coat.", imagePrompt: "Full-body character design of an adult female guard in a dark coat, plain clean white studio background." }],
+            locations: [{ name: "Dim Corridor", description: "Long narrow apartment corridor lit by a flickering ceiling bulb.", imagePrompt: "Long narrow corridor with flickering ceiling light, empty of characters, no text." }],
+            scenes: [{
+              sourceWindows: 2, sourceVisuals: "Shadow moves at corridor end.", sourceStory: "Guard checks corridor.", sourceRole: "Hook",
+              purpose: "Tạo căng thẳng 6 giây im lặng trước một câu hỏi khẽ.", action: "Minh Anh bước chậm qua hành lang tối trong im lặng 6 giây rồi khẽ hỏi vào khe cửa.",
+              characters: ["Minh Anh"], location: "Dim Corridor", dialogueMode: "visual_led",
+              actingBeat: "Minh Anh creeps forward in tense silence, then whispers cautiously at the doorway.",
+              blocking: "Center corridor.", shotSize: "Medium Shot", cameraMovement: "04 Slow Push-In + Rack Focus",
+              eyelineAction: "Minh Anh stares toward the doorway.", sfx: "0.4s soft footsteps; 4.8s faint door creak.", vfx: "none",
+              continuityIn: "Đầu", continuityOut: "Cuối",
+              imagePrompt: "Dim Corridor, night. Medium shot. Minh Anh stands facing the half-open doorway holding a flashlight, 16:9 framing.",
+              videoPrompt: "PRIMARY CAMERA COMBO: 04 Slow Push-In + Rack Focus. 0.0-5.8s: Minh Anh steps cautiously forward in tense silence as the flashlight beam sweeps the half-open doorway. 5.8-10.0s: Minh Anh stops still and whispers cautiously (6.4-8.2s).",
+              dialogue: [{ speaker: "Minh Anh", text: "Có ai trong phòng kho đó không?", start: 6.4, end: 8.2 }],
+            }],
+          },
+        };
+      },
+    },
+  });
+  const horrorJobId = await horrorWorker.addRemakeJob("horror-user", {
+    url: "https://example.test/horror.mp4", language: "vi", direction: "", transcript: "",
+    remakeMode: "faithful", dialoguePolicy: "auto", visualStyle: "", imageStyle: "", contentGenre: "horror", storySetting: "",
+  }, { agent: "claude", model: "", quality: "auto", speed: "standard" });
+  await horrorWorker.runRemakeQueue();
+  const horrorJob = await horrorWorker.getRemakeJob("horror-user", horrorJobId);
+  assert.equal(horrorJob.status, "ready", horrorJob.error);
+  assert.match(horrorPrompt, /KỶ LUẬT THỂ LOẠI ĐÃ CHỌN \(horror\)/);
+  assert.match(horrorPrompt, /scene MẪU E \(10s · sourceWindows = 2/);
+  assert.doesNotMatch(horrorPrompt, /KỶ LUẬT THỂ LOẠI ĐÃ CHỌN \(comedy\)/);
+  const horrorProjectSlug = await projectModule.createRemakeProject("horror-user", horrorJob);
+  assert.ok(horrorProjectSlug.startsWith("remake-"));
+
+  shouldFailAnalyze = true;
+  const analyzeErrJobId = await horrorWorker.addLocalRemakeJob("horror-user", {
+    language: "vi", direction: "", transcript: "",
+    remakeMode: "faithful", dialoguePolicy: "auto", visualStyle: "", imageStyle: "", contentGenre: "horror", storySetting: "",
+  }, { agent: "claude", model: "", quality: "auto", speed: "standard" }, { uploadId: "11111111-2222-3333-4444-555555555555", filename: "clip.mp4", extension: ".mp4" });
+  await horrorWorker.runRemakeQueue();
+  const analyzeErrJob = await horrorWorker.getRemakeJob("horror-user", analyzeErrJobId);
+  assert.equal(analyzeErrJob.status, "failed");
+  assert.doesNotMatch(analyzeErrJob.error, /Không đọc được tệp video/);
+  assert.doesNotMatch(analyzeErrJob.error, /https:\/\//);
+  assert.match(analyzeErrJob.error, /CLI auth expired/);
 
   console.log("Passed 10-minute queue, PID/bootId lock recovery, case-sensitive character matching, sfx/vfx & full draft repair, upload cleanup, job cancellation and episode range handoff.");
 }

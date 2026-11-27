@@ -3,7 +3,7 @@ import { getCurrentUserId } from "../../../lib/auth-server";
 import { getCodingAgentCliStatuses } from "../../../lib/coding-agent-cli";
 import { getCodingAgentPreference, type CodingAgentPreference } from "../../../lib/coding-agent-preferences";
 import { remakeOptionsSchema } from "../../../lib/video-remake";
-import { runRemakeQueue } from "../../../lib/video-remake-worker";
+import { maxQueuedRemakeJobsPerUser, runRemakeQueue } from "../../../lib/video-remake-worker";
 import { beginRemakeUpload, finishRemakeUpload, getRemakeUpload, remakeUploadChunkBytes, writeRemakeUploadChunk } from "../../../lib/video-remake-upload";
 
 export const runtime = "nodejs";
@@ -113,5 +113,5 @@ export async function PATCH(request: Request) {
   if (result.kind === "missing") return respond({ message: "Không tìm thấy phiên tải video." }, 404);
   if (result.kind === "busy") return respond({ message: "Đang lưu video. Hãy thử lại sau giây lát." }, 409);
   if (result.kind === "incomplete") return respond({ message: `Video mới tải được ${result.uploaded.toLocaleString("vi-VN")}/${result.size.toLocaleString("vi-VN")} byte.` }, 409);
-  return respond({ message: "Hàng đợi đã đủ 5 job đang chạy. Video đã tải xong; hãy thử thêm lại sau khi một job kết thúc." }, 409);
+  return respond({ message: `Hàng đợi đã đủ ${maxQueuedRemakeJobsPerUser} job đang chạy. Video đã tải xong; hãy thử thêm lại sau khi một job kết thúc.` }, 409);
 }

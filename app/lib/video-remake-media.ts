@@ -51,7 +51,7 @@ const ffprobe = () => {
   return resolveMediaBinary("ffprobe", [process.env.STORYAI_FFPROBE_PATH, process.env.VIBE_FFPROBE_PATH], siblingDir);
 };
 const ytDlp = () => resolveMediaBinary("yt-dlp", [process.env.STORYAI_YT_DLP_PATH, process.env.VIBE_TOOL_YT_DLP_PATH]);
-const inputOptions = ["-protocol_whitelist", "file", "-format_whitelist", "mov,matroska,webm"];
+const inputOptions = ["-protocol_whitelist", "file", "-format_whitelist", "mov,matroska,webm,mpegts,flv,avi"];
 type PlatformSource = NonNullable<ReturnType<typeof classifyRemakeSource>>;
 
 export async function openPublicUrl(url: URL, signal?: AbortSignal) {
@@ -184,7 +184,7 @@ async function downloadPlatformVideo(source: PlatformSource, work: string, maiVi
     throw new Error(`${maiVideoError.message} yt-dlp cũng chưa tải được từ ${source.label}.`);
   }
   const file = stdout.trim().split(/\r?\n/u).find((line) =>
-    path.dirname(line) === work && /^source\.(?:mp4|webm|mkv|mov)$/iu.test(path.basename(line)));
+    path.dirname(line) === work && /^source\.(?:mp4|m4v|webm|mkv|mov|ts|flv|avi)$/iu.test(path.basename(line)));
   if (!file || !(await stat(file).catch(() => undefined))?.size) {
     throw new Error(`${maiVideoError.message} yt-dlp cũng chưa trả tệp video phù hợp từ ${source.label}.`);
   }

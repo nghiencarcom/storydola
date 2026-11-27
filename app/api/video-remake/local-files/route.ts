@@ -13,7 +13,7 @@ import {
   stageZeroCopyLocalVideoToTarget,
 } from "../../../lib/auto-edit-local-files";
 import { remakeOptionsSchema } from "../../../lib/video-remake";
-import { addLocalRemakeJob, remakeOwnerFolder, runRemakeQueue } from "../../../lib/video-remake-worker";
+import { addLocalRemakeJob, maxQueuedRemakeJobsPerUser, remakeOwnerFolder, runRemakeQueue } from "../../../lib/video-remake-worker";
 
 export const runtime = "nodejs";
 
@@ -88,7 +88,7 @@ export async function POST(request: Request) {
       );
       if (!jobId) {
         await rm(targetDir, { recursive: true, force: true }).catch(() => undefined);
-        return respond({ message: "Bạn đang có 5 job remake đang chạy. Hãy đợi một job hoàn tất." }, 409);
+        return respond({ message: `Bạn đang có ${maxQueuedRemakeJobsPerUser} job remake đang chạy. Hãy đợi một job hoàn tất.` }, 409);
       }
       after(() => runRemakeQueue().catch((err) => console.error("[video-remake] Queue failed", err)));
       return respond({ id: jobId }, 202);

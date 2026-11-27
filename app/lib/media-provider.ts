@@ -23,7 +23,7 @@ import type {
 } from "./project-types";
 import { IMAGE_DETAIL_LEVELS } from "./project-types";
 import { isFlowStoryOnlyPreset, type StoryPresetId } from "./story-presets";
-import { characterReferencePrompt, isNaturalCreatureCharacterPrompt, locationReferencePrompt, PROFILE_REFERENCE_ASPECT_RATIO } from "./ai-drama-reference-prompts";
+import { characterReferencePrompt, classifyCharacterReferenceKind, isNaturalCreatureCharacterPrompt, locationReferencePrompt, PROFILE_REFERENCE_ASPECT_RATIO } from "./ai-drama-reference-prompts";
 import { normalizeEntityName } from "./entity-name";
 import { normalizeAiDramaSceneDuration } from "./ai-drama-scene-timing";
 import { availableImageModels, defaultMediaGenerationSettings, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, filterPixverseVideoQualities, FLOW_IMAGE_MODEL_OPTIONS, FLOW_VIDEO_MODEL_OPTION, HIGGSFIELD_SEEDANCE_MODEL_ID, isFlowImageModel, isKlingVideoModel, isMaiVideoPixverseV56Model, isMaiVideoSeedanceModel, isMuseImageModel, isPixverseVideoSettings, isVideoOffPeakRequired, MINIMAX_H3_VIDEO_MODEL_ID, MUSE_IMAGE_MODEL_OPTION, MUSE_VIDEO_MODEL_OPTION, normalizeVideoDuration, PIXVERSE_SEEDANCE_2_FAST_MODEL_ID, resolveMediaGenerationSettings, SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES, shouldUseVideoLocationReference, WAN_3_VIDEO_MODEL_ID } from "./media-generation-settings";
@@ -1453,9 +1453,16 @@ export async function generateMaiVideoProfileImage(input: {
     visualDirection ? `VISUAL STYLE (light, palette and atmosphere): ${visualDirection}.` : "",
     renderingStyle ? `IMAGE STYLE (rendering medium and materials): ${renderingStyle}.` : "",
   ].filter(Boolean).join(" ");
-  const isCreatureProfile = input.profileKind === "characters" && isNaturalCreatureCharacterPrompt(basePrompt);
+  const characterKind = input.profileKind === "characters" ? classifyCharacterReferenceKind(basePrompt) : "human";
+  const characterSheetGuidance = characterKind === "natural_creature"
+    ? "Use neutral, even studio lighting and a plain neutral background for accurate fur, scale, hide and natural marking colors; keep authentic non-human species anatomy without human clothing, and reserve cinematic lighting for scene images."
+    : characterKind === "dressed_creature"
+      ? "Use neutral, even studio lighting and a plain neutral background for accurate fur/scale colors, species anatomy and signature outfit/accessory details; reserve cinematic lighting for scene images."
+      : characterKind === "construct"
+        ? "Use neutral, even studio lighting and a plain neutral background for accurate chassis geometry, metallic/stone/energy surface materials and sensor details; reserve cinematic lighting for scene images."
+        : "Use neutral, even studio lighting and a plain neutral background for accurate skin, costume and material colors; cinematic lighting applies to scene images, not this identity sheet.";
   const visualPrompt = styleNotes
-    ? sanitizeDramaVisualPrompt(`${styleNotes} Apply the selected visual and rendering styles consistently to the reference sheet; preserve its required layout. ${input.profileKind === "characters" ? (isCreatureProfile ? "Use neutral, even studio lighting and a plain neutral background for accurate fur, scale, hide and natural marking colors; keep authentic non-human species anatomy without human clothing, and reserve cinematic lighting for scene images." : "Use neutral, even studio lighting and a plain neutral background for accurate skin, costume and material colors; cinematic lighting applies to scene images, not this identity sheet.") : "Render the complete environment in every panel; preserve its architecture, specified lighting and materials. Do not use a neutral studio background or turn the room into an isolated miniature."}\n\n${basePrompt}`)
+    ? sanitizeDramaVisualPrompt(`${styleNotes} Apply the selected visual and rendering styles consistently to the reference sheet; preserve its required layout. ${input.profileKind === "characters" ? characterSheetGuidance : "Render the complete environment in every panel; preserve its architecture, specified lighting and materials. Do not use a neutral studio background or turn the room into an isolated miniature."}\n\n${basePrompt}`)
     : basePrompt;
   const prompt = sanitizeDramaVisualPrompt(input.profileKind === "characters"
     ? characterReferencePrompt(input.profileId, visualPrompt, PROFILE_REFERENCE_ASPECT_RATIO)
@@ -1542,8 +1549,53 @@ function locationAppearanceNote(location: ProjectLocation) {
 
 function characterContinuityNote(characters: ProjectCharacter[], startImageIndex = 1) {
   return characters.length
-    ? `CHARACTER CONTINUITY. Use the attached reference images in this exact order: ${characters.map((character, index) => `Image ${index + startImageIndex} is ${character.name}`).join("; ")}. These are white-background front/back turnarounds with a portrait; use them as identity guides, then render each person naturally in the described shot and location. Use assigned images as sole identity/costume sources. Do not describe age or facial appearance; acting/gaze are allowed. Do not keep the white studio background or blend identities.`
+    ? `CHARACTER CONTINUITY. Use the attached reference images in this exact order: ${characters.map((character, index) => `Image ${index + startImageIndex} is ${character.name}`).join("; ")}. These are white-background front/back turnarounds with a portrait; use them as identity guides, then render each character naturally in the described shot and location. Use assigned images as sole identity/costume sources. Do not describe age or facial appearance; acting/gaze are allowed. Do not keep the white studio background or blend identities.`
     : "";
+}
+
+function buildGenreAndCastGuidance(
+  characters: ProjectCharacter[],
+  contentGenre?: string,
+  secondaryGenres?: string[],
+  mode: "image" | "video" = "image",
+) {
+  const kinds = new Set(characters.map((character) => classifyCharacterReferenceKind(`${character.description || ""} ${character.imagePrompt || ""}`)));
+  const hasNaturalCreature = kinds.has("natural_creature");
+  const hasDressedCreature = kinds.has("dressed_creature");
+  const hasConstruct = kinds.has("construct");
+  const attireClause = hasNaturalCreature && hasDressedCreature
+    ? "Keep unclad animals in natural species anatomy without adding clothes, preserve reference-shown outfits on dressed animal characters, and use modest era-appropriate clothing for any human characters."
+    : hasNaturalCreature
+      ? "Preserve natural species anatomy for animal/creature characters without adding human clothes; use modest era-appropriate clothing for any human characters."
+      : hasDressedCreature
+        ? "Preserve each animal/creature character's species anatomy and exact reference-shown outfit/accessories; use modest era-appropriate clothing for any human characters."
+        : hasConstruct
+          ? "Preserve mechanical/elemental chassis geometry and materials for construct characters, and modest era-appropriate clothing for any human characters."
+          : "Use modest, era-appropriate clothing consistent with the story setting.";
+
+  const activeGenres = [contentGenre, ...(secondaryGenres || [])]
+    .map((item) => String(item || "").trim().toLowerCase())
+    .filter(Boolean);
+  const matchesGenre = (pattern: RegExp) => activeGenres.some((genre) => pattern.test(genre));
+
+  if (hasNaturalCreature || matchesGenre(/^(?:action|adventure|fantasy|science-fiction|sci-fi|animal-adventure|martial-arts)$/)) {
+    return mode === "image"
+      ? `Keep the image platform-safe without blood or gore. ${attireClause} Stage physical momentum, posture, blocking, and world-consistent environmental effects (dust, sparks, water spray, or established sci-fi/magic energy) clearly on-camera.`
+      : `Platform-safe motion without blood or gore: execute choreography, parries, pursuit, propulsion, and world-consistent environmental effects (dust, water spray, sparks, established sci-fi/magic VFX) directly on-camera. ${attireClause}`;
+  }
+  if (matchesGenre(/^(?:horror|mystery-thriller)$/)) {
+    return mode === "image"
+      ? `Keep the image platform-safe without graphic gore. ${attireClause} Build suspense through chiaroscuro lighting, threshold/shadow framing, foreground occlusion, tactile clues, and taut facial/body tension.`
+      : `Platform-safe suspense without graphic gore: build dread through controlled camera creeps, shadow contrast, clue reveals, taut pauses, and startled physical reactions. ${attireClause}`;
+  }
+  if (matchesGenre(/^comedy$/)) {
+    return mode === "image"
+      ? `Keep the image age-appropriate and platform-safe. ${attireClause} Capture clear comic staging, expressive posture/reaction contrast, and visual prop or situational irony cleanly in-frame.`
+      : `Platform-safe comedy: hit crisp setup-pause-payoff timing, expressive physical or conversational reactions, and visual reveal beats cleanly on-camera. ${attireClause}`;
+  }
+  return mode === "image"
+    ? `Keep the image age-appropriate and platform-safe. ${attireClause} Show dramatic or romantic tension through micro-expressions, eyelines, spatial distance, framing, lighting, and reactions; imply unsafe events outside the frame.`
+    : `${attireClause} Convey dramatic or romantic tension through nuanced micro-expressions, eyeline shifts, breathing pauses, and blocking; imply unsafe events off-screen through reactions.`;
 }
 
 function buildAiDramaImagePrompt({
@@ -1593,10 +1645,7 @@ function buildAiDramaImagePrompt({
     VIDEO_REFERENCE_RULES.replace("The current scene image binds opening composition, people, positions, setting, props, lighting and palette; do not reset or replace it.", "The scene prompt establishes this image composition and action."),
     "CHARACTER REFERENCE SCOPE: When a character reference image is attached, it is the sole visual identity source; Specific age and facial-appearance descriptions are forbidden in scene-specific text; general rules binding those traits to the reference image are allowed. Frame-specific expression is allowed. Without an attached character image, follow the canonical Character Bible/profile and do not invent or alter age or identity.",
     "References govern stable identity and established set design only. Character descriptions are design notes, not extra actions; do not copy incidental carried objects or add props unless the scene requires them. The current scene governs the subjects present, their actions, pose, expression, camera, composition, lighting and any explicit changes. Keep identities distinct and anatomically plausible; preserve cultural appearance only when established by project canon; do not add unassigned characters or duplicate subjects.",
-    characters.some((character) => isNaturalCreatureCharacterPrompt(`${character.description || ""} ${character.imagePrompt || ""}`))
-      || /^(?:action|adventure|fantasy|sci-fi|animal-adventure|martial-arts)$/i.test(String(contentGenre || "").trim())
-      ? "Keep the image platform-safe without gore or blood. Preserve natural species anatomy for animals/creatures without adding human clothes; for human characters, use modest clothing. Stage physical momentum, posture, and environmental impact (dust, sparks, water spray) clearly on-camera."
-      : "Keep the image age-appropriate and platform-safe. Use modest clothing and show dramatic tension through expression, distance, framing, lighting, and reactions. Keep unsafe events outside the frame and imply them only through the setting or the characters' reactions.",
+    buildGenreAndCastGuidance(characters, contentGenre, secondaryGenres, "image"),
     "Respect the story's established era and world rules. Do not introduce technology, magic or system interfaces that the story has not established. Render established magic or interfaces only when the current scene calls for them.",
     `Create exactly one finished, full-frame image of one moment, composed for ${aspectRatio}. Use a clear, natural composition with readable spatial relationships. No storyboard, grid, collage, panels, borders, reference sheet or contact sheet.`,
     "No added captions, subtitles, speech bubbles, decorative typography, watermarks or signatures. Diegetic text on a required prop or established sign is allowed only when explicitly requested by the scene; render the exact requested text, otherwise keep it unreadable. Do not invent text.",
@@ -2479,10 +2528,7 @@ export async function generateMaiVideoVideoForScene({
     renderingStyle ? `RENDERING: ${renderingStyle}; match scene frame throughout.` : "",
     textOnlyNotes ? { text: `CANONICAL APPEARANCE (no image):\n${textOnlyNotes}`, required: true } : "",
     presetId === "ai-drama"
-      ? (sceneCharacters.some((character) => isNaturalCreatureCharacterPrompt(`${character.description || ""} ${character.imagePrompt || ""}`))
-        || /^(?:action|adventure|fantasy|sci-fi|animal-adventure|martial-arts)$/i.test(String(contentGenre || "").trim())
-        ? "Platform-safe action without blood or gore: execute physical motion, parries, charges, and environmental impacts (dust, water spray, sparks) directly on-camera. Keep natural animal/creature anatomy without human clothing; use modest clothing for human characters."
-        : "Modest clothing; convey tension through acting/framing. Imply unsafe events off-screen through reactions.")
+      ? buildGenreAndCastGuidance(sceneCharacters, contentGenre, secondaryGenres, "video")
       : "",
   ].filter(Boolean);
   const providerPromptMaxLength = settings.videoProvider === "seedance"

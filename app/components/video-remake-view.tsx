@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
-import { CONTENT_GENRES, STORY_SETTING_OPTIONS } from "../lib/content-genres";
+import { CONTENT_GENRES, contentGenreLabel, STORY_SETTING_OPTIONS, storySettingLabel } from "../lib/content-genres";
 import { planRemakeEpisodes, type RemakeInput, type RemakeJob, type RemakeJobSummary, type RemakeStage, type RemakeTranscript } from "../lib/video-remake";
 import { IMAGE_STYLE_PRESETS, VISUAL_STYLE_PRESETS } from "../lib/visual-styles";
 import { useProjects } from "../lib/project-store";
@@ -362,7 +362,10 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
           body: JSON.stringify({ uploadId: sessionId, ...options }),
         }));
       }
-      form.reset();
+      const urlField = form.elements.namedItem("url");
+      if (urlField instanceof HTMLInputElement) urlField.value = "";
+      const transcriptField = form.elements.namedItem("transcript");
+      if (transcriptField instanceof HTMLTextAreaElement) transcriptField.value = "";
       if (fileInputRef.current) fileInputRef.current.value = "";
       setLocalFile(undefined);
       setPickedLocalVideo(null);
@@ -707,8 +710,8 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
                 result.draft.dialoguePolicy === "silent_sfx" ? "Không lời thoại (SFX & VFX)" : result.draft.dialoguePolicy === "spoken" ? "Có lời thoại" : "",
                 result.draft.imageStyle,
                 result.draft.visualStyle,
-                result.draft.contentGenre,
-                result.draft.storySetting,
+                result.draft.contentGenre ? contentGenreLabel(result.draft.contentGenre) : "",
+                result.draft.storySetting ? storySettingLabel(result.draft.storySetting) : "",
               ].filter(Boolean).join(" · ")}</dd></div>
             )}
             <div><dt>Hook mở đầu</dt><dd>{result.draft.openingHook}</dd></div>
@@ -740,7 +743,7 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
         </div>
         {visibleSceneRows.map(({ scene, index, window }) => {
           const episode = remakeEpisodes.find((item) => index + 1 >= item.sceneStart && index + 1 <= item.sceneEnd);
-          return <details className="remake-scene" key={window.start}>
+          return <details className="remake-scene" key={`${index}-${window.start}`}>
             <summary>Tập {String((episode?.index || 0) + 1).padStart(2, "0")} · Cảnh {index + 1} · Nguồn {seconds(window.sourceStart)}–{seconds(window.sourceEnd)} · Bản mới {seconds(window.duration)}{scene.dialogueMode ? ` · ${scene.dialogueMode === "dialogue_led" ? "Thoại dẫn nhịp" : "Hình ảnh dẫn nhịp"}` : ""}</summary>
             <dl className="remake-facts">
               <div><dt>Hình ảnh nguồn</dt><dd>{scene.sourceVisuals}</dd></div>
@@ -749,7 +752,7 @@ export function VideoRemakeView({ initialJobId = "" }: { initialJobId?: string }
               {(scene.shotSize || scene.cameraMovement) && <div><dt>Cỡ cảnh &amp; máy quay</dt><dd>{[scene.shotSize, scene.cameraMovement].filter(Boolean).join(" — ")}</dd></div>}
               {scene.actingBeat && <div><dt>Diễn xuất &amp; trục nhìn</dt><dd>{[scene.actingBeat, scene.eyelineAction].filter(Boolean).join(" · ")}</dd></div>}
               {(scene.sfx || scene.vfx) && <div><dt>SFX &amp; VFX</dt><dd>{[scene.sfx ? `SFX: ${scene.sfx}` : "", scene.vfx && scene.vfx.toLowerCase() !== "none" ? `VFX: ${scene.vfx}` : ""].filter(Boolean).join("\n") || "Không có hiệu ứng đặc biệt"}</dd></div>}
-              {scene.dialogue.length > 0 && <div><dt>Lời thoại</dt><dd><ul>{scene.dialogue.map(({ speaker, text, start, end }) => <li key={start}>{seconds(start)}–{seconds(end)} · <strong>{speaker}</strong> {text}</li>)}</ul></dd></div>}
+              {scene.dialogue.length > 0 && <div><dt>Lời thoại</dt><dd><ul>{scene.dialogue.map(({ speaker, text, start, end }, lineIdx) => <li key={`${lineIdx}-${start}-${end}`}>{seconds(start)}–{seconds(end)} · <strong>{speaker}</strong> {text}</li>)}</ul></dd></div>}
               <div><dt>Prompt ảnh</dt><dd>{scene.imagePrompt}</dd></div>
               <div><dt>Prompt video</dt><dd>{scene.videoPrompt}</dd></div>
             </dl>

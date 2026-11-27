@@ -61,6 +61,7 @@ const CONTENT_GENRE_EN_LABELS: Record<(typeof CONTENT_GENRES)[number]["value"], 
   comedy: "Comedy",
   romance: "Romance",
   "animal-adventure": "Animal Adventure",
+  documentary: "Documentary / Explainer / Vlog",
 };
 
 const STORY_SETTING_EN_LABELS: Record<(typeof STORY_SETTING_OPTIONS)[number]["value"], string> = {
