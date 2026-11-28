@@ -3,7 +3,7 @@ import { withProviderSubmissionCheckpoint, canSafelyResumeUnsubmittedJob } from 
 import { randomUUID } from "node:crypto";
 import type { SceneMediaJob, SceneMediaJobStatus, SceneMediaAsset, StoryProject } from "./project-types";
 import { generateMaiVideoImageForScene, generateMaiVideoVideoForScene, isSeedancePendingStatusMessage, MediaProviderJobPendingError, SeedanceGenerationError } from "./media-provider";
-import { isFlowImageModel, isMuseImageModel, resolveMediaGenerationSettings } from "./media-generation-settings";
+import { isFlowImageModel, isMuseImageModel, isRemakeProject, resolveMediaGenerationSettings } from "./media-generation-settings";
 import { isFlowStoryOnlyPreset } from "./story-presets";
 import { deleteHiggsfieldSessionToken, getHiggsfieldSessionToken } from "./higgsfield-session-store";
 import { deleteProviderSessionToken, getProviderSessionToken } from "./provider-session-store";
@@ -371,7 +371,7 @@ async function runJobWithCheckpoint(userId: string, slug: string, job: SceneMedi
       ...record(scene.mediaGeneration || scene.media_generation),
       ...job.mediaGeneration,
       ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
-    });
+    }, { remake: isRemakeProject(project) });
     const higgsfieldAuthToken = job.kind === "video" && settings.videoProvider === "higgsfield"
       ? await getHiggsfieldSessionToken(userId, job.id)
       : "";

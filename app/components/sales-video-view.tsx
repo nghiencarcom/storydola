@@ -6,7 +6,7 @@ import { useEffect, useId, useMemo, useRef, useState, useCallback, type Clipboar
 import {
   salesVideoDurationOptions, salesVideoProductSegments, salesVideoLanguages, salesVideoWordCount, salesVideoMaxWordCount,
   salesVideoSplitDialogue, salesVideoDialogueToSrt,
-  salesVideoMaiVideoModels, salesVideoGatewayVideoModels, salesVideoModelOptions, salesVideoModels, salesVideoProductExamples, salesVideoTextExamples, salesVideoSupportsDialogue,
+  salesVideoMaiVideoModels, salesVideoGatewayVideoModels, salesVideoHiggsfieldModels, salesVideoModelOptions, salesVideoModels, salesVideoProductExamples, salesVideoTextExamples, salesVideoSupportsDialogue,
   salesVideoCreativeTemplates, salesVideoFileTypes, salesVideoFileLimits, salesVideoNameLimit, salesVideoRatios, salesVideoTemplates,
   salesVideoClaimCategories, salesVideoImageTypes, salesVideoMaxProductImages, salesVideoScriptPlaceholder,
   salesVideoHookStyles, salesVideoTargetAudiences, salesVideoPainExamples, salesVideoHeroExamples, salesVideoFlawExamples,
@@ -15,7 +15,7 @@ import { clearSalesVideoDraft, loadSalesVideoDraft, saveSalesVideoDraftFields, s
 
 import type { VideoGenerationModelOption } from "../lib/project-types";
 import {
-  HIGGSFIELD_SEEDANCE_MODEL_ID, isVideoOffPeakRequired, PIXVERSE_SEEDANCE_2_FAST_MODEL_ID,
+  HIGGSFIELD_SEEDANCE_MODEL_ID, isHiggsfieldWanModel, isVideoOffPeakRequired, PIXVERSE_SEEDANCE_2_FAST_MODEL_ID,
   SALES_VIDEO_GATEWAY_VIDEO_MODEL_OPTIONS,
 } from "../lib/media-generation-settings";
 import type { SalesVideoProject } from "../lib/sales-video-storage";
@@ -581,8 +581,8 @@ export function SalesVideoView() {
   const videoUrl = selected ? `/api/sales-video/${selected.id}` : "";
   const selectedVideoModelId = selected?.details?.videoModelId || "";
   const selectedPromptMaxLength = selected?.details?.promptMaxLength
-    || catalog.find((model) => model.id === selectedVideoModelId || `maivideo:${model.id}` === selectedVideoModelId)?.promptMaxLength
-    || (selectedVideoModelId === "higgsfield" ? 10_000 : 5_000);
+    || catalog.find((model) => model.id === selectedVideoModelId || `${model.provider || "maivideo"}:${model.id}` === selectedVideoModelId)?.promptMaxLength
+    || (selectedVideoModelId === "higgsfield" ? 10_000 : isHiggsfieldWanModel(selectedVideoModelId.replace(/^higgsfield:/, "")) ? 12_000 : 5_000);
   const activeTemplateId = route.templateId || "";
   const validTemplate = salesVideoTemplates.some(({ id }) => id === activeTemplateId)
     || salesVideoCreativeTemplates.some(({ id }) => id === activeTemplateId);
@@ -1328,6 +1328,8 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
       const targetAudienceLabel = salesVideoTargetAudiences.find(({ id }) => id === targetAudience)?.label || targetAudience;
       const hookStyleLabel = salesVideoHookStyles.find(({ id }) => id === hookStyle)?.label || hookStyle;
       const segmentPlan = salesVideoProductSegments(selectedDuration, model?.modelMeta, videoQuality);
+      const usesLowercaseRefTokens = model?.modelMeta?.provider === "maivideo" || (model?.id || selectedModel).startsWith("maivideo:");
+      const productToken = usesLowercaseRefTokens ? "@image2" : "@Image2";
       const payload = {
         schema: "storyai.manual-ugc-job.v1",
         template: { id: templateId, name: selectedTemplate?.name || "Video review" },
@@ -1365,10 +1367,10 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
             const role = segmentPlan.length === 1
               ? `Standalone UGC arc: hook 0–${hookEnd}s, verified product demo ${hookEnd}–${demoEnd}s, soft CTA ${demoEnd}–${segmentDuration}s`
               : isFirst
-                ? `The Thumb-Stop Hook & Problem Setup (In Medias Res, 35mm Medium Shot, reveal @Image2 ${hookEnd}–${demoEnd}s, prepare match-cut during final second of this ${segmentDuration}s clip)`
+                ? `The Thumb-Stop Hook & Problem Setup (In Medias Res, 35mm Medium Shot, reveal ${productToken} ${hookEnd}–${demoEnd}s, prepare match-cut during final second of this ${segmentDuration}s clip)`
                 : isLast
-                  ? "Visible Demo Payoff & Soft CTA (warm settled Medium Shot, natural interaction with @Image2, approachable low-friction advice; do not imply unprovided usage/results)"
-                  : `Deep-Dive Hands-On Demo (45° Macro Close-Up / POV, tactile interaction with @Image2; if user supplied a real flaw, mention it around ${flawStart}–${flawEnd}s without inventing tests or claims)`;
+                  ? `Visible Demo Payoff & Soft CTA (warm settled Medium Shot, natural interaction with ${productToken}, approachable low-friction advice; do not imply unprovided usage/results)`
+                  : `Deep-Dive Hands-On Demo (45° Macro Close-Up / POV, tactile interaction with ${productToken}; if user supplied a real flaw, mention it around ${flawStart}–${flawEnd}s without inventing tests or claims)`;
             return {
               start: segmentPlan.slice(0, index).reduce((sum, value) => sum + value, 0),
               duration: segmentDuration,
@@ -1384,21 +1386,29 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
           note: "Tên ảnh tham chiếu chỉ để đối chiếu; ảnh cần được tải lên riêng khi tạo job thủ công.",
         },
       };
+      const manualGuideText = usesLowercaseRefTokens
+        ? guideData.content
+          .replace(/(^|[^\w])@Image([1-9]\d*)\b/gi, "$1@image$2")
+          .replace(/(^|[^\w])@Video([1-9]\d*)\b/gi, "$1@video$2")
+        : guideData.content;
       const manualInstructions = [
         "NHIỆM VỤ: Soạn nội dung cho job video review UGC dựa trên dữ liệu JSON và toàn bộ hướng dẫn văn bản thuần bên dưới.",
         "ĐỌC HƯỚNG DẪN: áp dụng đầy đủ phần HƯỚNG DẪN UGC bên dưới và chọn module ngành hàng phù hợp.",
         "GIỮ NGUYÊN: schema, template, toàn bộ product, creative.claimCategory, model, thời lượng, tỷ lệ khung hình, ngôn ngữ, chất lượng và attachments.",
         "CHỈ ĐƯỢC ĐIỀN prompt cho từng clip trong video.segments và creative.script. Không thêm, xóa, sắp xếp lại clip hoặc thay start/duration đã cho.",
+        usesLowercaseRefTokens
+          ? "Model đang chọn thuộc PixVerse / MaiVideo (bao gồm Seedance 2.0 · PixVerse): bắt buộc dùng tag chữ thường @image1, @image2, @image3... (và @video1 nếu có video tham chiếu); không viết hoa @Image1 hay @Video1."
+          : "",
         "Viết prompt hình ảnh từng clip bằng tiếng Anh theo cấu trúc 5 khối: [REFERENCE LOCK] -> [CAMERA & FRAMING] -> [ACTION & CHOREOGRAPHY (timecoded)] -> [ENVIRONMENT & LIGHTING] -> [VIDEO OVERLAY TIMELINE & SFX TIMELINE]. Bám sát 'role' phân vai cho từng clip. Viết lời thoại bằng ngôn ngữ đã chọn cho một người dẫn duy nhất. Không tạo thoại hỏi đáp, người hỏi ngoài khung hình hoặc nhãn vai.",
         "TEXT OVERLAY: Trong VIDEO OVERLAY TIMELINE, viết chữ in hoa 2–5 từ kèm 1–2 emoji giật tít, nêu lợi ích tốc độ hoặc đánh nỗi đau (VD: 'QUAY ĐÊM HẠT NHƯ CÁT? 😩', 'BẬT MÁY 1 GIÂY ⚡', 'CỰC ĐẦM TAY! 🏆'). CẤM mô tả lại hành động mắt thấy như 'XOAY MÀN HÌNH', 'CẦM BÌNH', 'MỞ NẮP'.",
         "Chỉ dùng thông tin xác minh và trải nghiệm người dùng có trong dữ liệu job; không bịa thông số, công dụng, giá, ưu đãi, chứng nhận hoặc trải nghiệm.",
         "Trả về duy nhất toàn bộ JSON job hợp lệ, không Markdown, không code fence, không giải thích. Ảnh tham chiếu được tải lên riêng trong StoryAI.",
-      ].join("\n");
+      ].filter(Boolean).join("\n");
       const clipboardText = [
         "DỮ LIỆU JOB (JSON)",
         JSON.stringify(payload, null, 2),
         "HƯỚNG DẪN UGC (VĂN BẢN THUẦN)",
-        guideData.content,
+        manualGuideText,
         "YÊU CẦU CHO AI",
         manualInstructions,
       ].join("\n\n");
@@ -1828,11 +1838,17 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
   }
 
   const models = salesVideoModelOptions(creative);
+  const higgsfieldVideoModels = salesVideoHiggsfieldModels(catalog, creative, ratio, Boolean(selectedTemplate));
   const maiVideoModels = salesVideoMaiVideoModels(catalog, creative, ratio);
   const gatewayVideoModels = salesVideoGatewayVideoModels(catalog, creative, ratio, Boolean(selectedTemplate));
   const pixverseReferenceWorkflow = creative?.workflow === "remake" || creative?.workflow === "background";
   const options = [
     ...models.filter((id) => id === "higgsfield").map((id) => ({ id, label: selectedTemplate ? salesVideoModels[id] : `${salesVideoModels[id]} · tối đa 15 giây mỗi clip`, available: true, modelMeta: undefined as VideoGenerationModelOption | undefined })),
+    ...higgsfieldVideoModels.map((item) => {
+      const max = isHiggsfieldWanModel(item.id) ? 30 : Math.min(15, item.maxDurationSec);
+      const label = selectedTemplate ? item.label : `${item.label} · tối đa ${max} giây mỗi clip`;
+      return { id: `higgsfield:${item.id}`, label, available: true, modelMeta: item };
+    }),
     ...gatewayVideoModels.map((item) => {
       const providerLabel = item.provider === "flow" ? "Flow" : "Muse.ai";
       const label = `${item.label.toLowerCase().includes(providerLabel.toLowerCase()) ? item.label : `${item.label} · ${providerLabel}`}${salesVideoSupportsDialogue(item) ? "" : " · không thoại"}`;
@@ -1848,7 +1864,7 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
   ];
   const model = options.find((option) => option.id === selectedModel && option.available)
     ?? options.find((option) => option.available) ?? options[0];
-  const videoQuality = model?.id === "higgsfield"
+  const videoQuality = model?.id === "higgsfield" || model?.id === `higgsfield:${HIGGSFIELD_SEEDANCE_MODEL_ID}`
     ? "720p"
     : model?.modelMeta?.qualities.includes("720p") ? "720p" : model?.modelMeta?.qualities[0] || "";
   const offPeakRequired = Boolean(model?.modelMeta && isVideoOffPeakRequired(model.modelMeta.id, model.modelMeta.label));

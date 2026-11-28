@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { MediaGenerationSettings } from "../../../../../../lib/project-types";
 import { chunkForScene, findProjectScene } from "../../../../../../lib/scene-store";
-import { isFlowImageModel, isMuseImageModel, resolveMediaGenerationSettings, SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES, shouldUseVideoLocationReference } from "../../../../../../lib/media-generation-settings";
+import { isFlowImageModel, isHiggsfieldWanModel, isMuseImageModel, resolveMediaGenerationSettings, SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES, shouldUseVideoLocationReference, WAN_3_VIDEO_MODEL_ID } from "../../../../../../lib/media-generation-settings";
 import { getProjectOrThrow, makeActivity, markRenderStale, now, readChunkOutput, readData, saveChunkOutput, updateData } from "../../../../../../lib/server-store";
 import { resolveProjectSceneVoice } from "../../../../../../lib/project-tts-voice";
 import { isFlowStoryOnlyPreset } from "../../../../../../lib/story-presets";
@@ -54,7 +54,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   });
   const model = settings.videoModel.toLowerCase();
   const configuredLimit = Number(process.env.MAIVIDEO_VIDEO_MAX_REFERENCE_IMAGES);
-  const modelLimit = settings.videoProvider === "flow" ? 10 : settings.videoProvider === "seedance" || settings.videoProvider === "muse" ? SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES : settings.videoProvider === "higgsfield" ? 9 : 7;
+  const modelLimit = settings.videoProvider === "flow" ? 10 : settings.videoProvider === "seedance" || settings.videoProvider === "muse" ? SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES : settings.videoProvider === "higgsfield" ? (isHiggsfieldWanModel(model) ? 10 : 9) : model === WAN_3_VIDEO_MODEL_ID ? 10 : 7;
   const referenceLimit = Number.isInteger(configuredLimit) && configuredLimit > 0
     ? Math.min(modelLimit, configuredLimit)
     : modelLimit;

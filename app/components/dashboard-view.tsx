@@ -9,7 +9,7 @@ import { useProjects } from "../lib/project-store";
 import { FALLBACK_VIDEO_LANGUAGES, voiceLanguageLabel, type OmniVoiceCatalog, type OmniVoiceOption } from "../lib/omnivoice";
 import { DEFAULT_RENDER_SETTINGS, normalizeRenderSettings } from "../lib/render-effects";
 import { DEFAULT_MEDIA_GENERATION_SETTINGS, IMAGE_DETAIL_LEVEL_LABELS, type DialogueSegment, type ImageGenerationModelOption, type MediaGenerationSettings, type MediaModelCatalog, type ProjectCharacter, type ProjectLocation, type RenderSettings, type SceneAiReview, type SceneMediaJob, type StoryProject, type VideoGenerationModelOption, type VideoPublishingSet } from "../lib/project-types";
-import { availableImageModels as filterAvailableImageModels, DEFAULT_FLOW_VIDEO_DURATION_SEC, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, DEFAULT_SEEDANCE_VIDEO_MODEL_ID, HIGGSFIELD_SEEDANCE_MODEL_ID, imageDetailLevelsForModel, imageModelDisplayName, isFlowImageModel, isMuseImageModel, isPixverseVideoSettings, isTemporarilyHiddenMaiVideoSeedance25, isVideoOffPeakRequired, normalizeVideoDuration, preferredVideoQuality, resolveMediaGenerationSettings, videoDurationBoundsForModel, videoDurationOptions, videoModelDisplayName, videoQualitiesForModel, visibleVideoModels } from "../lib/media-generation-settings";
+import { availableImageModels as filterAvailableImageModels, DEFAULT_FLOW_VIDEO_DURATION_SEC, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, DEFAULT_SEEDANCE_VIDEO_MODEL_ID, HIGGSFIELD_SEEDANCE_MODEL_ID, imageDetailLevelsForModel, imageModelDisplayName, isFlowImageModel, isHiggsfieldWanModel, isMuseImageModel, isPixverseVideoSettings, isTemporarilyHiddenMaiVideoSeedance25, isVideoOffPeakRequired, normalizeVideoDuration, preferredVideoQuality, resolveMediaGenerationSettings, videoDurationBoundsForModel, videoDurationOptions, videoModelDisplayName, videoQualitiesForModel, visibleVideoModels } from "../lib/media-generation-settings";
 import { estimateDialogueDurationMs, hasExplicitDialogueSegments, isTemplateDialogueText, readDialogueSegments } from "../lib/dialogue-segments";
 import { useSeedanceAccounts } from "../lib/seedance-accounts-client";
 import { isTemplateEntityName, normalizeEntityName } from "../lib/entity-name";
@@ -524,7 +524,7 @@ function sceneMediaKindLabel(media?: SceneMediaPreview, aiDrama = false) {
   if (!media || media.status !== "ready") return "Thiếu media";
   if (aiDrama && media.kind !== "video") return "Sai loại media";
   if (media.provider?.includes("muse")) return "Muse.ai";
-  if (media.provider?.includes("higgsfield")) return "Seedance 2.0 · Higgsfield";
+  if (media.provider?.includes("higgsfield")) return isHiggsfieldWanModel(media.model) ? "Wan 3.0 · Higgsfield" : "Seedance 2.0 · Higgsfield";
   if (media.model === "seedance-2.0-fast") return "Seedance 2.0 · PixVerse";
   if (media.provider?.includes("seedance")) return "Seedance AI";
   return media.provider?.startsWith("maivideo") ? "MaiVideo AI" : media.provider?.startsWith("pexels") ? "Stock" : "Có media";

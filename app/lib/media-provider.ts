@@ -26,7 +26,7 @@ import { isFlowStoryOnlyPreset, type StoryPresetId } from "./story-presets";
 import { characterReferencePrompt, classifyCharacterReferenceKind, isNaturalCreatureCharacterPrompt, locationReferencePrompt, PROFILE_REFERENCE_ASPECT_RATIO } from "./ai-drama-reference-prompts";
 import { normalizeEntityName } from "./entity-name";
 import { normalizeAiDramaSceneDuration } from "./ai-drama-scene-timing";
-import { availableImageModels, defaultMediaGenerationSettings, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, filterPixverseVideoQualities, FLOW_IMAGE_MODEL_OPTIONS, FLOW_VIDEO_MODEL_OPTION, HIGGSFIELD_SEEDANCE_MODEL_ID, isFlowImageModel, isKlingVideoModel, isMaiVideoPixverseV56Model, isMaiVideoSeedanceModel, isMuseImageModel, isPixverseVideoSettings, isVideoOffPeakRequired, MINIMAX_H3_VIDEO_MODEL_ID, MUSE_IMAGE_MODEL_OPTION, MUSE_VIDEO_MODEL_OPTION, normalizeVideoDuration, PIXVERSE_SEEDANCE_2_FAST_MODEL_ID, resolveMediaGenerationSettings, SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES, shouldUseVideoLocationReference, WAN_3_VIDEO_MODEL_ID } from "./media-generation-settings";
+import { availableImageModels, defaultMediaGenerationSettings, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, filterPixverseVideoQualities, FLOW_IMAGE_MODEL_OPTIONS, FLOW_VIDEO_MODEL_OPTION, HIGGSFIELD_SEEDANCE_MODEL_ID, HIGGSFIELD_WAN_3_MODEL_ID, isFlowImageModel, isHiggsfieldWanModel, isKlingVideoModel, isMaiVideoPixverseV56Model, isMaiVideoSeedanceModel, isMuseImageModel, isPixverseVideoSettings, isVideoOffPeakRequired, MINIMAX_H3_VIDEO_MODEL_ID, MUSE_IMAGE_MODEL_OPTION, MUSE_VIDEO_MODEL_OPTION, normalizeVideoDuration, PIXVERSE_SEEDANCE_2_FAST_MODEL_ID, resolveMediaGenerationSettings, SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES, shouldUseVideoLocationReference, WAN_3_VIDEO_MODEL_ID } from "./media-generation-settings";
 import { getSeedanceApiKey, getSeedanceApiSessionToken } from "./seedance-accounts";
 import { getMaiVideoApiKey } from "./maivideo-api-keys";
 import { getCurrentUserId } from "./auth-server";
@@ -53,6 +53,7 @@ const HIGGSFIELD_VIDEO_TIMEOUT_MAX_MS = 24 * 60 * 60 * 1000;
 const MAIVIDEO_VIDEO_PROMPT_DEFAULT_MAX_CHARS = 5_000;
 const SEEDANCE_DIRECT_VIDEO_PROMPT_MAX_CHARS = 10_000;
 const HIGGSFIELD_SEEDANCE_VIDEO_PROMPT_MAX_CHARS = 10_000;
+const HIGGSFIELD_WAN_3_VIDEO_PROMPT_MAX_CHARS = 12_000;
 
 function requireVideoPromptWithinLimit(prompt: string, providerName: string, maxChars: number) {
   if (prompt.length > maxChars) {
@@ -368,22 +369,39 @@ const MAIVIDEO_VIDEO_MODEL_FALLBACKS: VideoGenerationModelOption[] = [
 ];
 
 // The separate Higgsfield tab uses a session-authenticated multipart API.
-const HIGGSFIELD_SEEDANCE_VIDEO_MODELS: VideoGenerationModelOption[] = [{
-  id: HIGGSFIELD_SEEDANCE_MODEL_ID,
-  label: "Seedance 2.0 · Higgsfield",
-  provider: "higgsfield",
-  qualities: ["720p"],
-  aspectRatios: ["16:9", "9:16", "4:3", "3:4", "1:1", "21:9"],
-  minDurationSec: 5,
-  maxDurationSec: 15,
-  supportedDurationsSec: [5, 10, 15],
-  supportsMultiShot: false,
-  supportsAudio: true,
-  supportsOffPeak: false,
-  maxReferenceImages: 9,
-  maxCount: 1,
-  promptMaxLength: HIGGSFIELD_SEEDANCE_VIDEO_PROMPT_MAX_CHARS,
-}];
+const HIGGSFIELD_VIDEO_MODELS: VideoGenerationModelOption[] = [
+  {
+    id: HIGGSFIELD_SEEDANCE_MODEL_ID,
+    label: "Seedance 2.0 · Higgsfield",
+    provider: "higgsfield",
+    qualities: ["720p"],
+    aspectRatios: ["16:9", "9:16", "4:3", "3:4", "1:1", "21:9"],
+    minDurationSec: 5,
+    maxDurationSec: 15,
+    supportedDurationsSec: [5, 10, 15],
+    supportsMultiShot: false,
+    supportsAudio: true,
+    supportsOffPeak: false,
+    maxReferenceImages: 9,
+    maxCount: 1,
+    promptMaxLength: HIGGSFIELD_SEEDANCE_VIDEO_PROMPT_MAX_CHARS,
+  },
+  {
+    id: HIGGSFIELD_WAN_3_MODEL_ID,
+    label: "Wan 3.0 · Higgsfield",
+    provider: "higgsfield",
+    qualities: ["720p"],
+    aspectRatios: ["16:9", "9:16", "1:1", "4:3", "3:4"],
+    minDurationSec: 2,
+    maxDurationSec: 30,
+    supportsMultiShot: false,
+    supportsAudio: true,
+    supportsOffPeak: false,
+    maxReferenceImages: 10,
+    maxCount: 1,
+    promptMaxLength: HIGGSFIELD_WAN_3_VIDEO_PROMPT_MAX_CHARS,
+  },
+];
 
 function sleep(milliseconds: number, signal?: AbortSignal) {
   if (signal?.aborted) return Promise.reject(signal.reason || new Error("Operation aborted"));
@@ -770,7 +788,7 @@ const modelCatalogRequests = new Map<string, Promise<MediaModelCatalog>>();
 /** Fetch only the model capabilities needed by the project settings UI. */
 export async function getMaiVideoModelCatalog(userIdOverride?: string): Promise<MediaModelCatalog> {
   const defaults = defaultMediaGenerationSettings();
-  const emptyCatalog = (): MediaModelCatalog => ({ defaults, imageModels: [MUSE_IMAGE_MODEL_OPTION, ...FLOW_IMAGE_MODEL_OPTIONS], videoModels: [...MAIVIDEO_VIDEO_MODEL_FALLBACKS, ...PIXVERSE_SEEDANCE_VIDEO_MODELS, ...HIGGSFIELD_SEEDANCE_VIDEO_MODELS, ...SEEDANCE_VIDEO_MODELS, ...MUSE_VIDEO_MODELS, ...FLOW_VIDEO_MODELS] });
+  const emptyCatalog = (): MediaModelCatalog => ({ defaults, imageModels: [MUSE_IMAGE_MODEL_OPTION, ...FLOW_IMAGE_MODEL_OPTIONS], videoModels: [...MAIVIDEO_VIDEO_MODEL_FALLBACKS, ...PIXVERSE_SEEDANCE_VIDEO_MODELS, ...HIGGSFIELD_VIDEO_MODELS, ...SEEDANCE_VIDEO_MODELS, ...MUSE_VIDEO_MODELS, ...FLOW_VIDEO_MODELS] });
   const userId = userIdOverride?.trim() || await getCurrentUserId();
   const apiKey = await getMaiVideoApiKey(userId);
   const cacheKey = createHash("sha256").update(userId).update("\0").update(apiKey).digest("hex");
@@ -882,7 +900,7 @@ export async function getMaiVideoModelCatalog(userIdOverride?: string): Promise<
       ...videoModels,
       ...MAIVIDEO_VIDEO_MODEL_FALLBACKS.filter((model) => !catalogModelKeys.has(`${model.provider || "maivideo"}:${model.id}`)),
       ...PIXVERSE_SEEDANCE_VIDEO_MODELS.filter((model) => !catalogModelKeys.has(`${model.provider || "maivideo"}:${model.id}`)),
-      ...HIGGSFIELD_SEEDANCE_VIDEO_MODELS.filter((model) => !catalogModelKeys.has(`${model.provider || "maivideo"}:${model.id}`)),
+      ...HIGGSFIELD_VIDEO_MODELS.filter((model) => !catalogModelKeys.has(`${model.provider || "maivideo"}:${model.id}`)),
       ...SEEDANCE_VIDEO_MODELS.filter((model) => !catalogModelKeys.has(`${model.provider || "maivideo"}:${model.id}`)),
       ...MUSE_VIDEO_MODELS.filter((model) => !catalogModelKeys.has(`${model.provider || "maivideo"}:${model.id}`)),
       ...FLOW_VIDEO_MODELS.filter((model) => !catalogModelKeys.has(`${model.provider || "maivideo"}:${model.id}`)),
@@ -1192,6 +1210,7 @@ async function generateMaiVideoImage(
   if (isFlowImageModel(settings.imageModel)) {
     return generateFlowImage(prompt, outputPath, aspectRatio, referenceImageUrls, referenceImageNames, settings, userId, existingJobId, onJobCreated, providerAuthToken);
   }
+  prompt = normalizeMaiVideoReferenceTokens(prompt);
   const apiKey = await getMaiVideoApiKey(userId);
   if (!apiKey) throw new Error("MAIVIDEO_IMAGE_API_KEY_REQUIRED");
   const base = baseUrl();
@@ -1609,6 +1628,12 @@ function foldPromptDiacriticsPreservingCase(value: string) {
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+export function normalizeMaiVideoReferenceTokens(prompt: string): string {
+  return String(prompt || "")
+    .replace(/(^|[^\w])@Image([1-9]\d*)\b/gi, "$1@image$2")
+    .replace(/(^|[^\w])@Video([1-9]\d*)\b/gi, "$1@video$2");
 }
 
 export function injectCharacterImageTokensIntoPrompt(
@@ -2251,6 +2276,7 @@ async function generateMaiVideoVideo(
 ): Promise<SceneMediaAsset> {
   const settings = resolveMediaGenerationSettings(mediaGeneration);
   const catalogPromptLimit = videoModelOption?.promptMaxLength || MAIVIDEO_VIDEO_PROMPT_DEFAULT_MAX_CHARS;
+  prompt = normalizeMaiVideoReferenceTokens(prompt);
   prompt = truncateVideoPrompt(prompt, catalogPromptLimit);
   prompt = requireVideoPromptWithinLimit(prompt, "MaiVideo", catalogPromptLimit);
   const apiKey = await getMaiVideoApiKey(userId);
@@ -2659,14 +2685,24 @@ async function generateHiggsfieldVideo(
   signal?: AbortSignal,
   speedMode: "fast" | "std" = "fast",
 ): Promise<SceneMediaAsset> {
-  prompt = requireVideoPromptWithinLimit(prompt, "Higgsfield Seedance 2.0", HIGGSFIELD_SEEDANCE_VIDEO_PROMPT_MAX_CHARS);
+  const isWan3 = isHiggsfieldWanModel(settings.videoModel);
+  const modelConfig = HIGGSFIELD_VIDEO_MODELS.find((item) => item.id === (isWan3 ? HIGGSFIELD_WAN_3_MODEL_ID : HIGGSFIELD_SEEDANCE_MODEL_ID))
+    || HIGGSFIELD_VIDEO_MODELS[0];
+  const apiModel = isWan3 ? "wan3_0" : "seedance_2_0";
+  const modelLabel = isWan3 ? "Higgsfield Wan 3.0" : "Higgsfield Seedance 2.0";
+  const maxPromptChars = modelConfig.promptMaxLength || (isWan3 ? HIGGSFIELD_WAN_3_VIDEO_PROMPT_MAX_CHARS : HIGGSFIELD_SEEDANCE_VIDEO_PROMPT_MAX_CHARS);
+  prompt = requireVideoPromptWithinLimit(prompt, modelLabel, maxPromptChars);
   if (!authToken.trim()) throw new Error("HIGGSFIELD_SESSION_REQUIRED");
   let jobId = existingJobId?.trim() || "";
   const base = baseUrl();
   const headers: Record<string, string> = { "X-Auth-Token": authToken.trim(), Accept: "application/json" };
   const higgsfieldAccess = process.env.HIGGSFIELD_ACCESS_TOKEN?.trim();
   if (higgsfieldAccess) headers["X-Higgsfield-Access"] = higgsfieldAccess;
-  const durationSec = normalizeVideoDuration(settings.videoDurationSec, HIGGSFIELD_SEEDANCE_VIDEO_MODELS[0], settings.videoQuality);
+  const resolution = "720p";
+  const durationSec = normalizeVideoDuration(settings.videoDurationSec, modelConfig, resolution);
+  const supportedAspectRatios = isWan3
+    ? ["auto", "16:9", "9:16", "1:1", "4:3", "3:4"]
+    : ["auto", "16:9", "9:16", "4:3", "3:4", "1:1", "21:9"];
 
   if (!jobId) {
     const preparedReferenceImages = await prepareGatewayReferenceImageDataUrls(referenceImageUrls, "Higgsfield");
@@ -2679,11 +2715,11 @@ async function generateHiggsfieldVideo(
     }
     const form = new FormData();
     form.append("prompt", prompt);
-    form.append("model", "seedance_2_0");
-    form.append("aspect_ratio", ["auto", "16:9", "9:16", "4:3", "3:4", "1:1", "21:9"].includes(aspectRatio) ? aspectRatio : "auto");
+    form.append("model", apiModel);
+    form.append("aspect_ratio", supportedAspectRatios.includes(aspectRatio) ? aspectRatio : "auto");
     form.append("duration", String(durationSec));
-    form.append("resolution", settings.videoQuality || "720p");
-    form.append("mode", speedMode);
+    form.append("resolution", resolution);
+    if (!isWan3) form.append("mode", speedMode);
     form.append("sound", String(settings.videoAudio));
     for (let index = 0; index < preparedReferenceImages.length; index += 1) {
       appendReferenceImage(form, preparedReferenceImages[index], referenceImageNames[index] || "reference-" + (index + 1));
@@ -2732,8 +2768,8 @@ async function generateHiggsfieldVideo(
     localPath: relativePath(outputPath),
     sourceUrl: resolved,
     query: prompt,
-    model: HIGGSFIELD_SEEDANCE_MODEL_ID,
-    quality: "720p",
+    model: modelConfig.id,
+    quality: resolution,
     durationSec,
   };
 }
@@ -2876,7 +2912,7 @@ export async function generateMaiVideoVideoForScene({
   const providerReferenceLimit = settings.videoProvider === "seedance" || settings.videoProvider === "muse" || settings.videoProvider === "flow"
     ? (settings.videoProvider === "muse" ? MUSE_VIDEO_MODELS[0]?.maxReferenceImages : settings.videoProvider === "flow" ? FLOW_VIDEO_MODEL_OPTION.maxReferenceImages : seedanceModel?.maxReferenceImages) || SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES
     : settings.videoProvider === "higgsfield"
-      ? HIGGSFIELD_SEEDANCE_VIDEO_MODELS[0].maxReferenceImages || 9
+      ? (HIGGSFIELD_VIDEO_MODELS.find((item) => item.id === model)?.maxReferenceImages || (isHiggsfieldWanModel(model) ? 10 : 9))
     : maiVideoModelOption?.maxReferenceImages || (isMaiVideoSeedanceModel(model) ? 9 : 7);
   const referenceLimit = Number.isInteger(configuredReferenceLimit) && configuredReferenceLimit > 0
     ? Math.min(providerReferenceLimit, configuredReferenceLimit)
@@ -3065,7 +3101,7 @@ export async function generateMaiVideoVideoForScene({
       : settings.videoProvider === "flow"
         ? FLOW_VIDEO_MODEL_OPTION.promptMaxLength || 12_000
       : settings.videoProvider === "higgsfield"
-        ? HIGGSFIELD_SEEDANCE_VIDEO_PROMPT_MAX_CHARS
+        ? (isHiggsfieldWanModel(model) ? HIGGSFIELD_WAN_3_VIDEO_PROMPT_MAX_CHARS : HIGGSFIELD_SEEDANCE_VIDEO_PROMPT_MAX_CHARS)
       : maiVideoModelOption?.promptMaxLength || MAIVIDEO_VIDEO_PROMPT_DEFAULT_MAX_CHARS;
   const promptMaxLength = providerPromptMaxLength;
   const compaction = videoPromptCompactionReport(presetId === "ai-drama", promptMaxLength);
@@ -3073,8 +3109,11 @@ export async function generateMaiVideoVideoForScene({
     compaction.sceneEdits.push({ before: scenePrompt, after: naturalScenePrompt, reason: "Bỏ câu giữ hình 0.5s do mẫu cũ chèn; giữ nguyên timecode sự kiện, camera và VFX." });
   }
   requireReferenceIdentityOnly(naturalScenePrompt, picturedCharacters.map((character) => character.name));
+  const preparedScenePrompt = usesLowercaseImageTokens
+    ? normalizeMaiVideoReferenceTokens(naturalScenePrompt)
+    : naturalScenePrompt;
   const indexedScenePrompt = injectCharacterImageTokensIntoPrompt(
-    naturalScenePrompt,
+    preparedScenePrompt,
     references.flatMap((reference, index) =>
       reference.kind === "character" && reference.character
         ? [{ name: reference.character.name, token: imageToken(index + 1) }]
@@ -3082,11 +3121,16 @@ export async function generateMaiVideoVideoForScene({
     ),
     { allOccurrences: true },
   );
-  const safePrompt = composeVideoApiPrompt(id, `DURATION: ${settings.videoDurationSec}s.\n${indexedScenePrompt}`, promptNotes, presetId === "ai-drama", promptMaxLength, compaction);
+  const composedPrompt = composeVideoApiPrompt(id, `DURATION: ${settings.videoDurationSec}s.\n${indexedScenePrompt}`, promptNotes, presetId === "ai-drama", promptMaxLength, compaction);
+  const safePrompt = usesLowercaseImageTokens
+    ? normalizeMaiVideoReferenceTokens(composedPrompt)
+    : composedPrompt;
   onPromptCompactionComposed?.(compaction);
   if (onPromptComposed) await onPromptComposed(safePrompt);
   if (settings.videoProvider === "higgsfield") {
-    if (model !== HIGGSFIELD_SEEDANCE_MODEL_ID) throw new Error("Model Higgsfield Seedance 2.0 không được hỗ trợ.");
+    if (model !== HIGGSFIELD_SEEDANCE_MODEL_ID && model !== HIGGSFIELD_WAN_3_MODEL_ID) {
+      throw new Error(`Model Higgsfield không được hỗ trợ: ${model}`);
+    }
     const referenceImageUrls: string[] = [];
     for (const reference of references) {
       if (reference.kind === "scene" && sceneReference) referenceImageUrls.push(await localSceneReferenceDataUrl(projectSlug, id, sceneReference));
@@ -3472,12 +3516,16 @@ export async function generateSalesVideoSegment(input: {
   signal: AbortSignal;
   audio?: boolean;
   referenceNames?: string[];
+  model?: VideoGenerationModelOption;
+  quality?: string;
 }) {
   const checkpoint = await videoCheckpoint();
+  const modelId = input.model?.id || HIGGSFIELD_SEEDANCE_MODEL_ID;
+  const quality = "720p";
   const settings = resolveMediaGenerationSettings({
     videoProvider: "higgsfield",
-    videoModel: HIGGSFIELD_SEEDANCE_MODEL_ID,
-    videoQuality: "720p",
+    videoModel: modelId,
+    videoQuality: quality,
     videoDurationMode: "fixed",
     videoDurationSec: input.durationSec,
     videoAudio: input.audio ?? true,
@@ -3579,8 +3627,9 @@ export async function generateMaiVideoPixverseV6ReferenceSegment(input: {
   if (!authToken) throw new Error("MAIVIDEO_SESSION_REQUIRED");
   const headers = { "X-Auth-Token": authToken };
   const base = baseUrl();
+  const normalizedPrompt = normalizeMaiVideoReferenceTokens(input.prompt).slice(0, input.model.promptMaxLength || 5_000);
   const form = new FormData();
-  form.append("prompt", input.prompt.slice(0, input.model.promptMaxLength || 5_000));
+  form.append("prompt", normalizedPrompt);
   form.append("model", "v6");
   form.append("quality", input.quality && input.model.qualities.includes(input.quality) ? input.quality : "720p");
   form.append("duration", String(Math.min(15, Math.max(1, Math.ceil(input.durationSec)))));
@@ -3631,5 +3680,5 @@ export async function generateMaiVideoPixverseV6ReferenceSegment(input: {
   const resolved = resolveUrl(mediaUrl, base);
   if (new URL(resolved).origin !== new URL(base).origin) throw new Error("MaiVideo trả về địa chỉ video không hợp lệ.");
   const savedPath = await downloadAsset(resolved, input.outputPath, "video", headers, undefined, input.signal, "MaiVideo PixVerse V6 Reference");
-  return { kind: "video", provider: "maivideo-video", status: "ready", localPath: relativePath(savedPath), sourceUrl: resolved, query: input.prompt, model: "v6", quality: input.quality || "720p", durationSec: input.durationSec } satisfies SceneMediaAsset;
+  return { kind: "video", provider: "maivideo-video", status: "ready", localPath: relativePath(savedPath), sourceUrl: resolved, query: normalizedPrompt, model: "v6", quality: input.quality || "720p", durationSec: input.durationSec } satisfies SceneMediaAsset;
 }

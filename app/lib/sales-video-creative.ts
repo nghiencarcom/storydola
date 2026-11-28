@@ -8,8 +8,8 @@ import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { createFalClient } from "@fal-ai/client";
 import sharp, { type OverlayOptions } from "sharp";
-import { generateMaiVideoPixverseV6ReferenceSegment, generateMaiVideoSalesSegment, generateSalesVideoSegment, generateSeedanceGatewaySalesSegment } from "./media-provider";
-import { videoDurationOptions } from "./media-generation-settings";
+import { generateMaiVideoPixverseV6ReferenceSegment, generateMaiVideoSalesSegment, generateSalesVideoSegment, generateSeedanceGatewaySalesSegment, normalizeMaiVideoReferenceTokens } from "./media-provider";
+import { isHiggsfieldWanModel, normalizeVideoDuration, videoDurationOptions } from "./media-generation-settings";
 import type { VideoGenerationModelOption } from "./project-types";
 import { pixverseSalesClient } from "./pixverse-sales-video";
 import { salesVideoPath, salesVideoSegmentPath, type SalesVideoPostProcessing } from "./sales-video-storage";
@@ -277,6 +277,7 @@ async function renderCreativeSalesVideo(input: {
   videoQuality?: string;
   videoOffPeak?: boolean;
   model: "higgsfield" | "pixverse-avatar";
+  higgsfieldVideoModel?: VideoGenerationModelOption;
   maiVideoModel?: VideoGenerationModelOption;
   gatewayVideoModel?: VideoGenerationModelOption;
   pixverseKey?: string;
@@ -337,9 +338,9 @@ async function renderCreativeSalesVideo(input: {
       await download((result.data as { audio?: { url?: string } }).audio?.url, soundtrack, signal);
     }
 
-    const activeVideoModel = input.maiVideoModel || input.gatewayVideoModel;
+    const activeVideoModel = input.maiVideoModel || input.gatewayVideoModel || input.higgsfieldVideoModel;
     const durationOptions = activeVideoModel ? videoDurationOptions(activeVideoModel, activeVideoModel.qualities.includes("720p") ? "720p" : activeVideoModel.qualities[0]) : [];
-    const modelLimit = input.splitDialogue ? 15 : activeVideoModel?.id === "wan-3.0" ? 30 : durationOptions.at(-1) || 15;
+    const modelLimit = input.splitDialogue ? 15 : activeVideoModel?.id === "wan-3.0" || isHiggsfieldWanModel(activeVideoModel?.id) ? 30 : durationOptions.at(-1) || 15;
     const isPairedImageWorkflow = template.workflow === "poses" || template.workflow === "narration";
     const imagePairCount = isPairedImageWorkflow ? Math.ceil(images.length / 2) : 0;
     const plannedDurations = imagePairCount
@@ -411,13 +412,13 @@ async function renderCreativeSalesVideo(input: {
         : "";
       const productReferenceLockInPrompt = template.workflow === "prompt"
         && template.files.length === 0
-        && prompt.startsWith("REFERENCE LOCK — @Image1 is the only presenter");
+        && /^REFERENCE LOCK — @image1 is the only presenter/i.test(prompt);
       const splitProductAd = Boolean(dialogue && durations.length > 1 && template.workflow === "prompt");
       const assignedPrompt = input.promptSegments?.[index];
       const segmentPrompt = assignedPrompt?.prompt || (splitProductAd
         ? [
           `UGC CLIP ${index + 1}/${durations.length}: create only seconds ${start}–${start + length} of the ${seconds}-second ad. This clip is ${length} seconds, aspect ratio ${ratio}. Use only the scene beats below; do not replay scenes from another clip.`,
-          salesVideoProductReferenceLock(productImageCount),
+          salesVideoProductReferenceLock(productImageCount, { lowercaseTokens: Boolean(input.maiVideoModel) }),
           "CAMERA: Keep the same room, eye-level camera axis, natural perspective and soft light across clips. Use a stable medium shot, one clear product close-up and at most one restrained camera move per beat. Keep the product unobstructed and hands natural; no spins, complex moves, focus pumping or glossy CGI.",
           `SCENE BEATS FOR THIS CLIP:\n${scenePlanForSegment(prompt, start, start + length)}`,
           continuity,
@@ -429,7 +430,10 @@ async function renderCreativeSalesVideo(input: {
           continuity,
           segmentDialogue,
         ].filter(Boolean).join("\n\n"));
-      generatedSegments[index] = { start, duration: length, prompt: segmentPrompt };
+      const effectiveSegmentPrompt = input.maiVideoModel
+        ? normalizeMaiVideoReferenceTokens(segmentPrompt)
+        : segmentPrompt;
+      generatedSegments[index] = { start, duration: length, prompt: effectiveSegmentPrompt };
       const rendered = path.join(work, `rendered-${index}.mp4`);
       if (pixverse) {
         await download(await pixverse.generate({
@@ -438,14 +442,14 @@ async function renderCreativeSalesVideo(input: {
         }), rendered, signal);
       } else if (input.maiVideoModel && usesMaiVideoReference && sourceVideoReference) {
         await generateMaiVideoPixverseV6ReferenceSegment({
-          prompt: segmentPrompt, outputPath: rendered, aspectRatio: ratio,
+          prompt: effectiveSegmentPrompt, outputPath: rendered, aspectRatio: ratio,
           durationSec: length, references: referenceImages, referenceVideo: sourceVideoReference,
           authToken: input.providerAuthToken, model: input.maiVideoModel,
           quality: input.videoQuality, signal,
         });
       } else if (input.maiVideoModel) {
         await generateMaiVideoSalesSegment({
-          userId, prompt: segmentPrompt, outputPath: rendered, aspectRatio: ratio,
+          userId, prompt: effectiveSegmentPrompt, outputPath: rendered, aspectRatio: ratio,
           durationSec: length, references: referenceImages, model: input.maiVideoModel,
           quality: input.videoQuality, offPeak: input.videoOffPeak,
           signal, audio: template.workflow === "prompt",
@@ -460,9 +464,13 @@ async function renderCreativeSalesVideo(input: {
       } else {
         await generateSalesVideoSegment({
           prompt: segmentPrompt, outputPath: rendered, aspectRatio: ratio,
-          durationSec: [5, 10, 15].find((value) => value >= length) ?? 15,
+          durationSec: input.higgsfieldVideoModel
+            ? normalizeVideoDuration(length, input.higgsfieldVideoModel, input.videoQuality)
+            : [5, 10, 15].find((value) => value >= length) ?? 15,
           references: referenceImages, referenceNames: referenceImages.map((_, index) => `Image${index + 1}`),
           providerAuthToken: input.providerAuthToken, signal, audio: template.workflow === "prompt",
+          model: input.higgsfieldVideoModel,
+          quality: input.videoQuality,
         });
       }
       const segment = `segment-${index}.mp4`;

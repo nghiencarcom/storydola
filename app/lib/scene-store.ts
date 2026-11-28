@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { MediaGenerationSettings, ProjectChunk, SceneContinuityReference, StoryProject } from "./project-types";
-import { resolveMediaGenerationSettings } from "./media-generation-settings";
+import { isRemakeProject, resolveMediaGenerationSettings } from "./media-generation-settings";
 import { isFlowStoryOnlyPreset } from "./story-presets";
 import { readChunkOutput, saveChunkOutput } from "./server-store";
 
@@ -167,7 +167,7 @@ export async function persistSceneMediaSettingsInChunks(
         ...project.mediaGeneration,
         ...(recordValue(record.mediaGeneration || record.media_generation) || {}),
         ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
-      });
+      }, { remake: isRemakeProject(project) });
       const currentMedia = recordValue(record.media);
       const currentReference = recordValue(record.videoReferenceImage || record.video_reference_image)
         || (currentMedia?.kind === "image" ? currentMedia : null);

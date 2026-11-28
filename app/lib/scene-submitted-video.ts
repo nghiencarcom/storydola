@@ -3,6 +3,7 @@ import {
   DEFAULT_MUSE_VIDEO_MODEL_ID,
   FLOW_VIDEO_MODEL_OPTION,
   isHiggsfieldSeedanceModel,
+  isHiggsfieldWanModel,
   isKlingVideoModel,
   MINIMAX_H3_VIDEO_MODEL_ID,
   PIXVERSE_SEEDANCE_2_FAST_MODEL_ID,
@@ -190,6 +191,9 @@ export function submittedVideoModelDisplayName(input: {
     }
   }
 
+  if (isHiggsfieldWanModel(rawModel)) {
+    return "Wan 3.0 · Higgsfield";
+  }
   if (normalizedProvider === "higgsfield" || isHiggsfieldSeedanceModel(rawModel, normalizedProvider || undefined)) {
     return "Seedance 2.0 · Higgsfield";
   }

@@ -535,6 +535,7 @@ export type Activity = {
 export type StoryProject = {
   id: string;
   slug: string;
+  remakeJobId?: string;
   title: string;
   videoTitle?: string;
   sourceUrl: string;
@@ -599,7 +600,7 @@ export type DramaProjectPlan = {
   continuityRules: string;
 };
 
-export type CreateProjectInput = Pick<StoryProject, "title" | "sourceUrl" | "sourceText" | "presetId" | "durationMinutes" | "chunkSize" | "language" | "contentGenre" | "secondaryGenres" | "storySetting" | "settingNotes" | "visualStyle" | "imageStyle" | "aspectRatio" | "mediaSource" | "voiceProvider" | "voiceId" | "voiceName" | "voiceLanguage"> & Partial<Pick<StoryProject, "scriptMode" | "scriptFormat" | "durationMode" | "durationSeconds" | "mediaGeneration">> & { deferSourceIngest?: boolean; dramaPlan?: DramaProjectPlan };
+export type CreateProjectInput = Pick<StoryProject, "title" | "sourceUrl" | "sourceText" | "presetId" | "durationMinutes" | "chunkSize" | "language" | "contentGenre" | "secondaryGenres" | "storySetting" | "settingNotes" | "visualStyle" | "imageStyle" | "aspectRatio" | "mediaSource" | "voiceProvider" | "voiceId" | "voiceName" | "voiceLanguage"> & Partial<Pick<StoryProject, "scriptMode" | "scriptFormat" | "durationMode" | "durationSeconds" | "mediaGeneration" | "remakeJobId">> & { deferSourceIngest?: boolean; dramaPlan?: DramaProjectPlan };
 
 export type UpdateProjectInput = Partial<Pick<StoryProject, "title" | "sourceUrl" | "sourceText" | "presetId" | "durationMinutes" | "chunkSize" | "language" | "contentGenre" | "secondaryGenres" | "storySetting" | "settingNotes" | "visualStyle" | "imageStyle" | "aspectRatio" | "mediaSource" | "mediaGeneration" | "voiceProvider" | "voiceId" | "voiceName" | "voiceLanguage" | "status" | "scriptMode" | "scriptFormat" | "durationMode" | "durationSeconds" | "dramaPlan">>;
 

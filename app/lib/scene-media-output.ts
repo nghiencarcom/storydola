@@ -1,5 +1,5 @@
 import type { MediaGenerationSettings, SceneMediaAsset } from "./project-types";
-import { HIGGSFIELD_SEEDANCE_MODEL_ID, KLING_VIDEO_MODEL_ID, PIXVERSE_SEEDANCE_2_FAST_MODEL_ID, videoModelDisplayName } from "./media-generation-settings";
+import { HIGGSFIELD_SEEDANCE_MODEL_ID, HIGGSFIELD_WAN_3_MODEL_ID, KLING_VIDEO_MODEL_ID, PIXVERSE_SEEDANCE_2_FAST_MODEL_ID, videoModelDisplayName } from "./media-generation-settings";
 import { readProjectScenes, sceneMediaPreviewUrl } from "./scene-store";
 import { getProjectOrThrow, makeActivity, markRenderStale, now, readChunkOutput, saveChunkOutput, updateData, updateDataForUser } from "./server-store";
 
@@ -131,7 +131,7 @@ export async function saveGeneratedSceneMedia({
     }
     project.updatedAt = now();
     const providerName = media.provider?.includes("muse") ? "Muse.ai"
-      : media.provider?.includes("higgsfield") || media.model === HIGGSFIELD_SEEDANCE_MODEL_ID ? videoModelDisplayName(media.model || HIGGSFIELD_SEEDANCE_MODEL_ID, "higgsfield")
+      : media.provider?.includes("higgsfield") || media.model === HIGGSFIELD_SEEDANCE_MODEL_ID || media.model === HIGGSFIELD_WAN_3_MODEL_ID ? videoModelDisplayName(media.model || HIGGSFIELD_SEEDANCE_MODEL_ID, "higgsfield")
         : media.model === PIXVERSE_SEEDANCE_2_FAST_MODEL_ID ? videoModelDisplayName(media.model, "maivideo")
           : media.model?.toLowerCase() === KLING_VIDEO_MODEL_ID ? videoModelDisplayName(media.model, "maivideo")
           : media.provider?.includes("seedance") ? "Seedance" : "MaiVideo";

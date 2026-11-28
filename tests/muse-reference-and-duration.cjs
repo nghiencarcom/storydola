@@ -56,6 +56,7 @@ const settings = loadTs("app/lib/media-generation-settings.ts");
 const provider = loadTs("app/lib/media-provider.ts");
 const policy = loadTs("app/lib/video-prompt-policy.ts");
 const safety = loadTs("app/lib/visual-prompt-safety.ts");
+const salesTemplates = loadTs("app/lib/sales-video-templates.ts");
 
 (async () => {
   // 1. Muse 15s duration support
@@ -286,7 +287,55 @@ const safety = loadTs("app/lib/visual-prompt-safety.ts");
     assert.equal(safety.sanitizeDramaVisualPrompt(raw), expected, `sanitizeDramaVisualPrompt parity mismatch for: ${raw}`);
   }
 
-  console.log("Passed: Muse 15s duration, @ImageN indexing, voice cues, mouth-closure lock, safety exclusions, PixVerse parity, and off-screen reference filtering.");
+  // 8. Seedance · PixVerse & MaiVideo lowercase @imageN / @videoN token normalization
+  assert.equal(
+    provider.normalizeMaiVideoReferenceTokens("Use @Image1, @Image2, @IMAGE3–@Image5, (@Video1 and @VIDEO2), keep contact@Image1.com untouched."),
+    "Use @image1, @image2, @image3–@image5, (@video1 and @video2), keep contact@Image1.com untouched.",
+  );
+  const seedancePixverseScene = {
+    id: "S099",
+    start_sec: 0,
+    end_sec: 10,
+    duration_sec: 10,
+    characters: ["Khoang Nâu"],
+    character_ids: ["char-ai-1"],
+    location_id: "loc-1",
+    video_prompt: "Match motion from @Video1 while @Image1 stays centered; Khoang Nâu steps forward.",
+    dialogue_segments: [{ speaker_character: "Khoang Nâu", speaker_character_id: "char-ai-1", text: "Đi thôi!", start_sec: 1.0, end_sec: 2.5 }],
+    videoReferenceImage: { kind: "image", status: "ready", localPath: "scene/S099.png" },
+  };
+  const seedancePixversePrompt = await provider.previewMaiVideoVideoPromptForScene({
+    projectSlug: "test-project",
+    chunkId: "A01",
+    scene: seedancePixverseScene,
+    projectScenes: [seedancePixverseScene],
+    characters,
+    locations,
+    sceneIndex: 0,
+    aspectRatio: "16:9",
+    presetId: "ai-drama",
+    videoSpokenLanguage: "vi",
+    mediaGeneration: {
+      videoProvider: "maivideo",
+      videoModel: settings.PIXVERSE_SEEDANCE_2_FAST_MODEL_ID,
+      videoDurationMode: "scene",
+      videoUseSceneImageReference: true,
+      videoUseCharacterReferences: true,
+      videoUseLocationReferences: true,
+    },
+  });
+  assert(seedancePixversePrompt.includes("@video1"), "Seedance PixVerse preview must normalize @Video1 -> @video1");
+  assert(seedancePixversePrompt.includes("@image1"), "Seedance PixVerse preview must normalize @Image1 -> @image1");
+  assert(!/@Image\d+|@Video\d+/.test(seedancePixversePrompt), "Seedance PixVerse preview must not contain uppercase @ImageN or @VideoN");
+
+  const lowerLock = salesTemplates.salesVideoProductReferenceLock(2, { lowercaseTokens: true });
+  const lowerInstruction = salesTemplates.salesVideoProductInstructionForImages(2, { lowercaseTokens: true });
+  assert(lowerLock.includes("@image1") && lowerLock.includes("@image2") && lowerLock.includes("@image3"), "Lowercase sales lock must include @image1..@image3");
+  assert(!/@Image\d+/.test(lowerLock), "Lowercase sales lock must not include @Image");
+  assert(lowerInstruction.includes("@image1") && lowerInstruction.includes("@image2") && lowerInstruction.includes("@image3"), "Lowercase sales instruction must include @image1..@image3");
+  assert(!/@Image\d+/.test(lowerInstruction), "Lowercase sales instruction must not include @Image");
+
+  console.log("Passed: Muse 15s duration, @ImageN indexing, voice cues, mouth-closure lock, safety exclusions, PixVerse parity, Seedance PixVerse @image/@video tokens, and off-screen reference filtering.");
 })().catch((error) => {
   console.error(error);
   process.exit(1);

@@ -32,7 +32,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   });
   const higgsfieldAuthToken = mediaGeneration.videoProvider === "higgsfield" ? readMaiVideoAuthCookie(request.headers.get("cookie")) : "";
   if (mediaGeneration.videoProvider === "higgsfield" && !higgsfieldAuthToken) {
-    return NextResponse.json({ code: "HIGGSFIELD_SESSION_REQUIRED", message: "Hãy đăng nhập MaiVideo để dùng Seedance 2.0 · Higgsfield." }, { status: 401 });
+    return NextResponse.json({ code: "HIGGSFIELD_SESSION_REQUIRED", message: "Hãy đăng nhập MaiVideo để dùng model Higgsfield." }, { status: 401 });
   }
   const providerAuthToken = mediaGeneration.videoProvider === "muse" || mediaGeneration.videoProvider === "flow"
     ? readMaiVideoAuthCookie(request.headers.get("cookie"))

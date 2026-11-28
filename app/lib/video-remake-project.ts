@@ -63,9 +63,11 @@ export async function createRemakeProject(owner: string, job: RemakeJob & { resu
     if (data.projects.some((item) => item.slug === slug)) return slug;
     const project = makeProject({
       title: draft.title, sourceUrl: job.localSource ? "" : job.input.url, presetId: "ai-drama", scriptMode: "ai",
+      remakeJobId: job.id,
       durationMinutes, chunkSize, language: job.input.language, aspectRatio,
       contentGenre, secondaryGenres: [], storySetting, settingNotes: "",
       visualStyle, imageStyle,
+      mediaGeneration: { videoUseSceneImageReference: false },
       sourceText: dramaPlanSourceText(dramaPlan, {
         projectTitle: draft.title, brief: job.input.direction || draft.logline,
         durationMinutes, chunkSize, language: job.input.language,

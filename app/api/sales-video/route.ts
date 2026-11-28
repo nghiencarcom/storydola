@@ -13,7 +13,7 @@ import { getSeedanceApiKey, getSeedanceApiSessionToken } from "../../lib/seedanc
 import { createCreativeSalesVideo, ensureSalesVideoSegmentFile, SalesVideoInputError, SalesVideoSegmentError } from "../../lib/sales-video-creative";
 import { deleteSalesVideoProject, getSalesVideoProject, listSalesVideoProjects, salesVideoSegmentPath, salesVideoWatermarkLogoPath, saveSalesVideoProject as persistSalesVideoProject, type SalesVideoProject } from "../../lib/sales-video-storage";
 import { enqueueSalesVideoTask, salesVideoWorkerId } from "../../lib/sales-video-runtime";
-import { HIGGSFIELD_SEEDANCE_MODEL_ID, isVideoOffPeakRequired } from "../../lib/media-generation-settings";
+import { isHiggsfieldSeedanceModel, isHiggsfieldVideoModel, isHiggsfieldWanModel, isVideoOffPeakRequired } from "../../lib/media-generation-settings";
 import { stat } from "node:fs/promises";
 import {
   salesVideoDurationOptions, salesVideoProductSegments, salesVideoImageLimit, salesVideoLanguages, salesVideoNameLimit,
@@ -231,24 +231,27 @@ export async function POST(request: Request) {
   }
   if (requestedModel.startsWith("higgsfield:")) {
     const modelId = requestedModel.slice("higgsfield:".length);
-    if (modelId !== HIGGSFIELD_SEEDANCE_MODEL_ID) {
-      return NextResponse.json({ message: "Model Higgsfield Seedance 2.0 không được hỗ trợ." }, { status: 400 });
+    if (!isHiggsfieldVideoModel(modelId, "higgsfield")) {
+      return NextResponse.json({ message: "Model Higgsfield không được hỗ trợ." }, { status: 400 });
     }
     const catalog = await getMaiVideoModelCatalog(userId).catch(() => null);
     higgsfieldVideoModel = catalog?.videoModels.find((item) => item.provider === "higgsfield" && item.id === modelId);
-    if (!higgsfieldVideoModel) return NextResponse.json({ message: "Không lấy được cấu hình Seedance 2.0 · Higgsfield." }, { status: 503 });
+    if (!higgsfieldVideoModel) return NextResponse.json({ message: "Không lấy được cấu hình model Higgsfield." }, { status: 503 });
   }
   const model = maiVideoModel || gatewayVideoModel || higgsfieldVideoModel ? "higgsfield" : models.find((item) => item === requestedModel);
   if (!model) return NextResponse.json({ message: "Model không hỗ trợ đầu vào hoặc khung hình của mẫu này." }, { status: 400 });
   const selectedVideoModel = maiVideoModel || gatewayVideoModel || higgsfieldVideoModel;
-  const higgsfieldSpeed = higgsfieldVideoModel || (!selectedVideoModel && model === "higgsfield") ? "fast" as const : undefined;
+  const higgsfieldSpeed = (higgsfieldVideoModel && isHiggsfieldSeedanceModel(higgsfieldVideoModel.id, higgsfieldVideoModel.provider))
+    || (!selectedVideoModel && model === "higgsfield")
+    ? "fast" as const
+    : undefined;
   const fixedPixverseQuality = !maiVideoModel && model !== "higgsfield" ? "720p" : "";
   const videoQuality = higgsfieldSpeed ? "720p" : fixedPixverseQuality || (selectedVideoModel?.qualities.includes("720p") ? "720p" : selectedVideoModel?.qualities[0] || "");
   const videoOffPeak = Boolean(maiVideoModel && isVideoOffPeakRequired(maiVideoModel.id, maiVideoModel.label));
   const durationOptions = salesVideoDurationOptions(selectedVideoModel, creative, Boolean(productTemplate), selectedVideoModel?.id || requestedModel, videoQuality);
   const seconds = durationOptions.find((item) => item === durationValue);
   if (!seconds) {
-    const maxDuration = selectedVideoModel?.id === "wan-3.0" ? 30 : Math.min(15, selectedVideoModel?.maxDurationSec || 15);
+    const maxDuration = selectedVideoModel?.id === "wan-3.0" || isHiggsfieldWanModel(selectedVideoModel?.id) ? 30 : Math.min(15, selectedVideoModel?.maxDurationSec || 15);
     return NextResponse.json({ message: `Thời lượng video không hợp lệ với model đã chọn (tối đa ${maxDuration} giây).` }, { status: 400 });
   }
   const speaksInVideo = salesVideoSupportsDialogue(selectedVideoModel);
@@ -395,7 +398,7 @@ export async function POST(request: Request) {
           postProcessing: pendingDraft?.postProcessing,
           postProcessingLogoPath: pendingDraft?.postProcessing?.logo?.enabled ? salesVideoWatermarkLogoPath(userId, project.id) : undefined,
           splitDialogue: isStitched ? { script: scriptForVideo, language: language!, audio: speaksInVideo, segments: productSegments!, scriptSegments: effectiveScriptSegments } : undefined,
-          pixverseKey, voiceKey, model, maiVideoModel, gatewayVideoModel, providerAuthToken: token, sourceStart,
+          pixverseKey, voiceKey, model, higgsfieldVideoModel, maiVideoModel, gatewayVideoModel, providerAuthToken: token, sourceStart,
           onlySegmentIndex: retrySegmentIndex, signal: AbortSignal.timeout(60 * 60_000),
           audio: files.find(({ kind }) => kind === "audio")?.file as File | undefined,
           video: files.find(({ kind }) => kind === "video")?.file as File | undefined,

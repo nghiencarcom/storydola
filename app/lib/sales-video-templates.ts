@@ -1,4 +1,5 @@
 import type { VideoGenerationModelOption } from "./project-types";
+import { isHiggsfieldSeedanceModel, isHiggsfieldWanModel } from "./media-generation-settings";
 
 export const salesVideoTemplates = [
   { id: "general", name: "Mọi sản phẩm", direction: "Giới thiệu sản phẩm trực diện, xen cảnh cận để người xem nhận ra hình dáng và bao bì." },
@@ -242,7 +243,8 @@ export function salesVideoDurationOptions(
   fallbackModelId = "",
   requestedQuality?: string,
 ) {
-  const isWan = (model?.id || fallbackModelId) === "wan-3.0";
+  const effectiveModelId = model?.id || fallbackModelId;
+  const isWan = effectiveModelId === "wan-3.0" || isHiggsfieldWanModel(effectiveModelId);
   const quality = requestedQuality && model?.qualities.includes(requestedQuality) ? requestedQuality : model?.qualities[0] || "";
   const configuredMax = model?.maxDurationByQuality?.[quality] || model?.maxDurationSec || (isWan ? 30 : 15);
   const max = isWan ? 30 : Math.min(15, configuredMax);
@@ -323,20 +325,45 @@ export function salesVideoGatewayVideoModels(
     && salesVideoDurationOptions(model, template, productTemplate, model.id).length > 0);
 }
 
-export function salesVideoProductReferenceLock(productImageCount = 1) {
-  const count = Math.max(1, Math.floor(productImageCount));
-  const supplementary = count > 1
-    ? ` @Image3–@Image${count + 1} are optional secondary references for matching details or a separate cutaway only; they must not replace, override, or be combined with the primary product in @Image2.`
-    : " No secondary product references were supplied.";
-  return `REFERENCE LOCK — @Image1 is the only presenter. @Image2 is the one primary product image and the single source of truth for the product held by the presenter.${supplementary} Preserve the same presenter's identity in every frame: face, skin tone, hair, body proportions, age appearance, and outfit. Keep the hero product unchanged with the exact silhouette, dimensions, materials, colors, components, logo, label layout, and visible text shown in @Image2. Secondary references may support a separate cutaway of a detail, included accessory, or context that is actually visible in that image; never invent an item, combine separate objects, or let a secondary view change the hero product. Do not morph, replace, duplicate, redesign, remove, or invent details on any reference. Keep hands and product contact anatomically plausible; maintain realistic scale, perspective, lighting, and continuity from shot to shot.`;
+export function salesVideoHiggsfieldModels(
+  models: VideoGenerationModelOption[],
+  template?: CreativeTemplate,
+  ratio?: string,
+  productTemplate = false,
+) {
+  if (template && !["prompt", "poses", "narration"].includes(template.workflow)) return [];
+  const imageCount = productTemplate
+    ? 2
+    : template ? template.files.filter((file) => file.kind === "image").length : 2;
+  return models.filter((model) => model.provider === "higgsfield"
+    && !isHiggsfieldSeedanceModel(model.id, model.provider)
+    && (model.maxReferenceImages || 0) >= imageCount
+    && (!ratio || !model.aspectRatios?.length || model.aspectRatios.includes(ratio))
+    && salesVideoDurationOptions(model, template, productTemplate, model.id).length > 0);
 }
 
-export function salesVideoProductInstructionForImages(productImageCount = 1) {
+export function salesVideoProductReferenceLock(
+  productImageCount = 1,
+  options?: { lowercaseTokens?: boolean },
+) {
   const count = Math.max(1, Math.floor(productImageCount));
+  const img = (index: number) => `${options?.lowercaseTokens ? "@image" : "@Image"}${index}`;
   const supplementary = count > 1
-    ? ` Use @Image3–@Image${count + 1} only for a separate cutaway of details, included accessories or context actually visible in those images; do not substitute a secondary object for @Image2 or put it in the presenter's hand.`
-    : " Keep every product shot grounded in @Image2.";
-  return `${salesVideoProductReferenceLock(count)} VISUAL DIRECTION: Establish a believable medium shot at eye level with a natural 35–50mm equivalent perspective. Keep the presenter eyes near the upper third and the entire primary product from @Image2 unobstructed within the central safe area, with breathing room around its edges. The presenter may hold/show only the exact item from @Image2; use a relaxed stable grip, keep fingers away from the lens, screen, labels and controls, and do not rotate it beyond views supported by the image.${supplementary} Use a stable camera or one slow, short push-in per shot; never combine orbit, zoom and handheld motion. For details, cut to a steady close-up of a surface actually visible in @Image2; keep sufficient depth of field for the whole product, with no focus pumping. Do not reveal an unseen rear, underside, ports or internal parts, spin it 360 degrees, or invent controls and screen content. Demonstrate one simple action at a time with a stable grip. Preserve rigid geometry, component count, relative component positions and label orientation throughout movement. Use soft directional daylight, consistent shadows and reflections, true material texture and natural skin detail. Avoid glossy CGI surfaces, artificial beauty smoothing, exaggerated bokeh, ultrawide distortion, floating objects and sudden scale changes. Prefer a clean cut between supported views over a complex product rotation. Across generated clips keep camera height, lens perspective, room, lighting direction, wardrobe and product orientation consistent; plan an intentional cutaway at the join instead of claiming a seamless continuous take.`;
+    ? ` ${img(3)}–${img(count + 1)} are optional secondary references for matching details or a separate cutaway only; they must not replace, override, or be combined with the primary product in ${img(2)}.`
+    : " No secondary product references were supplied.";
+  return `REFERENCE LOCK — ${img(1)} is the only presenter. ${img(2)} is the one primary product image and the single source of truth for the product held by the presenter.${supplementary} Preserve the same presenter's identity in every frame: face, skin tone, hair, body proportions, age appearance, and outfit. Keep the hero product unchanged with the exact silhouette, dimensions, materials, colors, components, logo, label layout, and visible text shown in ${img(2)}. Secondary references may support a separate cutaway of a detail, included accessory, or context that is actually visible in that image; never invent an item, combine separate objects, or let a secondary view change the hero product. Do not morph, replace, duplicate, redesign, remove, or invent details on any reference. Keep hands and product contact anatomically plausible; maintain realistic scale, perspective, lighting, and continuity from shot to shot.`;
+}
+
+export function salesVideoProductInstructionForImages(
+  productImageCount = 1,
+  options?: { lowercaseTokens?: boolean },
+) {
+  const count = Math.max(1, Math.floor(productImageCount));
+  const img = (index: number) => `${options?.lowercaseTokens ? "@image" : "@Image"}${index}`;
+  const supplementary = count > 1
+    ? ` Use ${img(3)}–${img(count + 1)} only for a separate cutaway of details, included accessories or context actually visible in those images; do not substitute a secondary object for ${img(2)} or put it in the presenter's hand.`
+    : ` Keep every product shot grounded in ${img(2)}.`;
+  return `${salesVideoProductReferenceLock(count, options)} VISUAL DIRECTION: Establish a believable medium shot at eye level with a natural 35–50mm equivalent perspective. Keep the presenter eyes near the upper third and the entire primary product from ${img(2)} unobstructed within the central safe area, with breathing room around its edges. The presenter may hold/show only the exact item from ${img(2)}; use a relaxed stable grip, keep fingers away from the lens, screen, labels and controls, and do not rotate it beyond views supported by the image.${supplementary} Use a stable camera or one slow, short push-in per shot; never combine orbit, zoom and handheld motion. For details, cut to a steady close-up of a surface actually visible in ${img(2)}; keep sufficient depth of field for the whole product, with no focus pumping. Do not reveal an unseen rear, underside, ports or internal parts, spin it 360 degrees, or invent controls and screen content. Demonstrate one simple action at a time with a stable grip. Preserve rigid geometry, component count, relative component positions and label orientation throughout movement. Use soft directional daylight, consistent shadows and reflections, true material texture and natural skin detail. Avoid glossy CGI surfaces, artificial beauty smoothing, exaggerated bokeh, ultrawide distortion, floating objects and sudden scale changes. Prefer a clean cut between supported views over a complex product rotation. Across generated clips keep camera height, lens perspective, room, lighting direction, wardrobe and product orientation consistent; plan an intentional cutaway at the join instead of claiming a seamless continuous take.`;
 }
 
 export const salesVideoProductInstruction = salesVideoProductInstructionForImages(1);

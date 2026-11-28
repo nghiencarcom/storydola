@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { headers } from "next/headers";
 import { MAX_SCENE_DURATION_SEC, normalizeProjectChunkSize, type Activity, type CreateProjectInput, type DurationMode, type ProjectChunk, type RenderState, type ScriptFormat, type ScriptMode, type StoryAIData, type StoryProject, type UpdateProjectInput } from "./project-types";
-import { resolveMediaGenerationSettings } from "./media-generation-settings";
+import { isRemakeProject, resolveMediaGenerationSettings } from "./media-generation-settings";
 import { isFlowStoryOnlyPreset } from "./story-presets";
 import { getManualScriptMetrics } from "./script-utils";
 import { continuityContextFromOutput } from "./story-context";
@@ -53,7 +53,7 @@ function normalizeWorkspaceData(value: unknown): StoryAIData {
         mediaGeneration: resolveMediaGenerationSettings({
           ...project.mediaGeneration,
           ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
-        }),
+        }, { remake: isRemakeProject(project) }),
       };
     }),
     activities: Array.isArray(parsed.activities) ? parsed.activities : [],
@@ -307,7 +307,7 @@ export function makeProject(input: CreateProjectInput, slug: string): StoryProje
     mediaGeneration: resolveMediaGenerationSettings({
       ...input.mediaGeneration,
       ...(isFlowStoryOnlyPreset(input.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
-    }),
+    }, { remake: isRemakeProject({ slug, remakeJobId: input.remakeJobId }) }),
     voiceProvider: input.voiceProvider || "omnivoice",
     voiceId: input.voiceId || "",
     voiceName: input.voiceName || "",
@@ -349,7 +349,7 @@ export function updateProjectRecord(project: StoryProject, patch: UpdateProjectI
         ...project.mediaGeneration,
         ...patch.mediaGeneration,
         ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
-      }),
+      }, { remake: isRemakeProject(project) }),
     } : {}),
   };
   const durationChanged = patch.durationMinutes !== undefined && patch.durationMinutes !== project.durationMinutes;

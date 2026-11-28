@@ -141,7 +141,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   }
   const higgsfieldAuthToken = higgsfieldJobsRequested ? readMaiVideoAuthCookie(request.headers.get("cookie")) : "";
   if (higgsfieldJobsRequested && !higgsfieldAuthToken) {
-    return NextResponse.json({ code: "HIGGSFIELD_SESSION_REQUIRED", message: "Hãy đăng nhập MaiVideo để dùng Seedance 2.0 · Higgsfield." }, { status: 401 });
+    return NextResponse.json({ code: "HIGGSFIELD_SESSION_REQUIRED", message: "Hãy đăng nhập MaiVideo để dùng model Higgsfield." }, { status: 401 });
   }
   if (higgsfieldJobsRequested && !higgsfieldSessionEncryptionReady()) {
     return NextResponse.json({ code: "HIGGSFIELD_SESSION_ENCRYPTION_KEY_REQUIRED", message: "Máy chủ chưa cấu hình khóa mã hóa để chạy và tiếp tục job Higgsfield." }, { status: 503 });
