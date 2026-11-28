@@ -9,7 +9,7 @@ import { useProjects } from "../lib/project-store";
 import { FALLBACK_VIDEO_LANGUAGES, voiceLanguageLabel, type OmniVoiceCatalog, type OmniVoiceOption } from "../lib/omnivoice";
 import { DEFAULT_RENDER_SETTINGS, normalizeRenderSettings } from "../lib/render-effects";
 import { DEFAULT_MEDIA_GENERATION_SETTINGS, IMAGE_DETAIL_LEVEL_LABELS, type DialogueSegment, type ImageGenerationModelOption, type MediaGenerationSettings, type MediaModelCatalog, type ProjectCharacter, type ProjectLocation, type RenderSettings, type SceneAiReview, type SceneMediaJob, type StoryProject, type VideoGenerationModelOption, type VideoPublishingSet } from "../lib/project-types";
-import { availableImageModels as filterAvailableImageModels, DEFAULT_FLOW_VIDEO_DURATION_SEC, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, DEFAULT_SEEDANCE_VIDEO_MODEL_ID, HIGGSFIELD_SEEDANCE_MODEL_ID, imageDetailLevelsForModel, imageModelDisplayName, isFlowImageModel, isHiggsfieldWanModel, isMuseImageModel, isPixverseVideoSettings, isTemporarilyHiddenMaiVideoSeedance25, isVideoOffPeakRequired, normalizeVideoDuration, preferredVideoQuality, resolveMediaGenerationSettings, videoDurationBoundsForModel, videoDurationOptions, videoModelDisplayName, videoQualitiesForModel, visibleVideoModels } from "../lib/media-generation-settings";
+import { availableImageModels as filterAvailableImageModels, DEFAULT_FLOW_VIDEO_DURATION_SEC, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, DEFAULT_SEEDANCE_VIDEO_MODEL_ID, HIGGSFIELD_SEEDANCE_MODEL_ID, imageDetailLevelsForModel, imageModelDisplayName, isFlowImageModel, isHiggsfieldWanModel, isMuseImageModel, isPixverseVideoSettings, isRemakeProject, isTemporarilyHiddenMaiVideoSeedance25, isVideoOffPeakRequired, normalizeVideoDuration, preferredVideoQuality, resolveMediaGenerationSettings, videoDurationBoundsForModel, videoDurationOptions, videoModelDisplayName, videoQualitiesForModel, visibleVideoModels } from "../lib/media-generation-settings";
 import { estimateDialogueDurationMs, hasExplicitDialogueSegments, isTemplateDialogueText, readDialogueSegments } from "../lib/dialogue-segments";
 import { useSeedanceAccounts } from "../lib/seedance-accounts-client";
 import { isTemplateEntityName, normalizeEntityName } from "../lib/entity-name";
@@ -400,7 +400,7 @@ function mediaSettingsForScene(scene: ScenePreview | undefined, project: StoryPr
     ...overrides,
     ...(project.presetId === "ai-drama" ? { videoDurationMode: "scene" } : {}),
     ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
-  });
+  }, { remake: isRemakeProject(project) });
 }
 
 function sceneVideoDurationLimit(model: VideoGenerationModelOption | undefined, quality: string) {
@@ -610,7 +610,14 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   const [voiceCatalogLoading, setVoiceCatalogLoading] = useState(false);
   const [sceneTtsSaving, setSceneTtsSaving] = useState(false);
   const [sceneMediaSettingsSaving, setSceneMediaSettingsSaving] = useState(false);
-  const [batchMediaSettings, setBatchMediaSettings] = useState<MediaGenerationSettings>(DEFAULT_MEDIA_GENERATION_SETTINGS);
+  const [batchMediaSettings, setBatchMediaSettings] = useState<MediaGenerationSettings>(() =>
+    project
+      ? resolveMediaGenerationSettings({
+          ...project.mediaGeneration,
+          ...(project.presetId === "ai-drama" ? { videoDurationMode: "scene" } : {}),
+        }, { remake: isRemakeProject(project) })
+      : DEFAULT_MEDIA_GENERATION_SETTINGS,
+  );
   const [batchMediaBusy, setBatchMediaBusy] = useState(false);
   const [batchMediaProgress, setBatchMediaProgress] = useState("");
   const [batchRegenerateImages, setBatchRegenerateImages] = useState(false);
@@ -745,8 +752,11 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   }, [project?.slug, project?.presetId, project?.render?.updatedAt]);
 
   useEffect(() => {
-    if (project) setBatchMediaSettings(resolveMediaGenerationSettings({ ...DEFAULT_MEDIA_GENERATION_SETTINGS, ...project.mediaGeneration, ...(project.presetId === "ai-drama" ? { videoDurationMode: "scene" } : {}) }));
-  }, [project?.slug, project?.mediaGeneration?.imageModel, project?.mediaGeneration?.imageQuality, project?.mediaGeneration?.imageDetailLevel, project?.mediaGeneration?.seedanceAccountId, project?.mediaGeneration?.videoModel, project?.mediaGeneration?.videoQuality, project?.mediaGeneration?.videoDurationMode, project?.mediaGeneration?.videoDurationSec, project?.mediaGeneration?.seedanceChatMode, project?.mediaGeneration?.videoMultiShot, project?.mediaGeneration?.videoAudio, project?.mediaGeneration?.videoOffPeak, project?.mediaGeneration?.imageUseCharacterReferences, project?.mediaGeneration?.videoUseCharacterReferences, project?.mediaGeneration?.videoUseLocationReferences, project?.mediaGeneration?.videoUseSceneImageReference, project?.mediaGeneration?.flowReferenceMode]);
+    if (project) setBatchMediaSettings(resolveMediaGenerationSettings({
+      ...project.mediaGeneration,
+      ...(project.presetId === "ai-drama" ? { videoDurationMode: "scene" } : {}),
+    }, { remake: isRemakeProject(project) }));
+  }, [project?.slug, project?.remakeJobId, project?.mediaGeneration?.imageModel, project?.mediaGeneration?.imageQuality, project?.mediaGeneration?.imageDetailLevel, project?.mediaGeneration?.seedanceAccountId, project?.mediaGeneration?.videoModel, project?.mediaGeneration?.videoQuality, project?.mediaGeneration?.videoDurationMode, project?.mediaGeneration?.videoDurationSec, project?.mediaGeneration?.seedanceChatMode, project?.mediaGeneration?.videoMultiShot, project?.mediaGeneration?.videoAudio, project?.mediaGeneration?.videoOffPeak, project?.mediaGeneration?.imageUseCharacterReferences, project?.mediaGeneration?.videoUseCharacterReferences, project?.mediaGeneration?.videoUseLocationReferences, project?.mediaGeneration?.videoUseSceneImageReference, project?.mediaGeneration?.flowReferenceMode]);
 
   useEffect(() => {
     if (!project || publishingScope !== "series" || project.publishingPackage?.series) return;
@@ -2412,10 +2422,12 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   }
 
   function updateBatchMediaSettings(patch: Partial<MediaGenerationSettings>) {
+    const wasFlowFrames = batchMediaSettings.videoProvider === "flow" && batchMediaSettings.flowReferenceMode === "frames";
     const next = { ...batchMediaSettings, ...patch };
     if (project?.presetId === "ai-drama") next.videoDurationMode = "scene";
     if (project && isFlowStoryOnlyPreset(project.presetId)) next.flowReferenceMode = "ingredients";
     if (next.videoProvider === "flow" && next.flowReferenceMode === "frames") next.videoUseSceneImageReference = true;
+    else if (wasFlowFrames && isRemakeProject(project) && patch.videoUseSceneImageReference === undefined) next.videoUseSceneImageReference = false;
     if (patch.videoProvider && patch.videoProvider !== batchMediaSettings.videoProvider) {
       const providerModels = visibleVideoModels(mediaCatalog?.videoModels || [], patch.videoProvider);
       const defaultModelId = patch.videoProvider === "seedance" ? DEFAULT_SEEDANCE_VIDEO_MODEL_ID : patch.videoProvider === "higgsfield" ? HIGGSFIELD_SEEDANCE_MODEL_ID : patch.videoProvider === "muse" ? DEFAULT_MUSE_VIDEO_MODEL_ID : patch.videoProvider === "flow" ? DEFAULT_FLOW_VIDEO_MODEL_ID : DEFAULT_MEDIA_GENERATION_SETTINGS.videoModel;
@@ -2573,10 +2585,12 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   function updateSelectedSceneMediaSettings(patch: Partial<MediaGenerationSettings>) {
     if (!selectedScene || !project || sceneMediaSettingsSaving || sceneHasActiveMediaJob(selectedScene)) return;
     const currentSettings = mediaSettingsForScene(selectedScene, project);
+    const wasFlowFrames = currentSettings.videoProvider === "flow" && currentSettings.flowReferenceMode === "frames";
     const next = { ...currentSettings, ...patch };
     if (project.presetId === "ai-drama") next.videoDurationMode = "scene";
     if (isFlowStoryOnlyPreset(project.presetId)) next.flowReferenceMode = "ingredients";
     if (next.videoProvider === "flow" && next.flowReferenceMode === "frames") next.videoUseSceneImageReference = true;
+    else if (wasFlowFrames && isRemakeProject(project) && patch.videoUseSceneImageReference === undefined) next.videoUseSceneImageReference = false;
     if (patch.videoModel) {
       const maiVideoProviders = currentSettings.videoProvider === "maivideo" || currentSettings.videoProvider === "higgsfield";
       const selectedModel = allVideoModels.find((item) => item.id === patch.videoModel && (

@@ -7,7 +7,7 @@ import { useProjects } from "../lib/project-store";
 import { FALLBACK_VIDEO_LANGUAGES, voiceLanguageLabel, type OmniVoiceCatalog, type OmniVoiceOption } from "../lib/omnivoice";
 import { formatDurationLabel, getManualScriptMetrics } from "../lib/script-utils";
 import { DEFAULT_MEDIA_GENERATION_SETTINGS, IMAGE_DETAIL_LEVEL_LABELS, MAX_PROJECT_CHUNK_SIZE, MAX_SCENE_DURATION_SEC, MIN_PROJECT_CHUNK_SIZE, PROJECT_CHUNK_SIZE_PRESETS, slugify, type DurationMode, type MediaGenerationSettings, type MediaModelCatalog, type MediaSource, type ScriptFormat, type ScriptMode, type VideoGenerationModelOption } from "../lib/project-types";
-import { availableImageModels, DEFAULT_FLOW_VIDEO_DURATION_SEC, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, DEFAULT_SEEDANCE_VIDEO_MODEL_ID, HIGGSFIELD_SEEDANCE_MODEL_ID, imageDetailLevelsForModel, isFlowImageModel, isHiggsfieldWanModel, isMuseImageModel, isPixverseVideoSettings, isTemporarilyHiddenMaiVideoSeedance25, isTemporarilyHiddenSeedanceProvider, isVideoOffPeakRequired, normalizeVideoDuration, preferredVideoQuality, resolveMediaGenerationSettings, videoDurationBoundsForModel, videoDurationOptions, videoModelDisplayName, videoQualitiesForModel, visibleVideoModels } from "../lib/media-generation-settings";
+import { availableImageModels, DEFAULT_FLOW_VIDEO_DURATION_SEC, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, DEFAULT_SEEDANCE_VIDEO_MODEL_ID, HIGGSFIELD_SEEDANCE_MODEL_ID, imageDetailLevelsForModel, isFlowImageModel, isHiggsfieldWanModel, isMuseImageModel, isPixverseVideoSettings, isRemakeProject, isTemporarilyHiddenMaiVideoSeedance25, isTemporarilyHiddenSeedanceProvider, isVideoOffPeakRequired, normalizeVideoDuration, preferredVideoQuality, resolveMediaGenerationSettings, videoDurationBoundsForModel, videoDurationOptions, videoModelDisplayName, videoQualitiesForModel, visibleVideoModels } from "../lib/media-generation-settings";
 import { useSeedanceAccounts } from "../lib/seedance-accounts-client";
 import { DEFAULT_IMAGE_STYLE, DEFAULT_VISUAL_STYLE, IMAGE_STYLE_OPTIONS, IMAGE_STYLE_PRESETS } from "../lib/visual-styles";
 import { CONTENT_GENRES, contentGenresLabel, storySettingLabel, DEFAULT_CONTENT_GENRE, DEFAULT_STORY_SETTING, normalizeContentGenre, normalizeSecondaryGenres, normalizeStorySetting, STORY_SETTING_OPTIONS } from "../lib/content-genres";
@@ -253,7 +253,7 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
         aspectRatio: existing.aspectRatio,
         mediaSource: existing.mediaSource || "stock-mixed",
         mediaGeneration: {
-          ...resolveMediaGenerationSettings(existing.mediaGeneration),
+          ...resolveMediaGenerationSettings(existing.mediaGeneration, { remake: isRemakeProject(existing) }),
           ...(existing.presetId === "ai-drama" ? { videoDurationMode: "scene" as const } : {}),
         },
       });
@@ -271,8 +271,14 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
 
   useEffect(() => {
     if (!existing || existing.mediaGeneration || !mediaCatalog || mediaGenerationTouched.current) return;
-    setForm((current) => ({ ...current, mediaGeneration: mediaCatalog.defaults }));
-  }, [existing?.slug, existing?.mediaGeneration, mediaCatalog]);
+    setForm((current) => ({
+      ...current,
+      mediaGeneration: {
+        ...mediaCatalog.defaults,
+        ...(isRemakeProject(existing) ? { videoUseSceneImageReference: false } : {}),
+      },
+    }));
+  }, [existing?.slug, existing?.remakeJobId, existing?.mediaGeneration, mediaCatalog]);
 
   function setField<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -299,6 +305,7 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
   function setMediaSettings(patch: Partial<MediaGenerationSettings>) {
     mediaGenerationTouched.current = true;
     setForm((current) => {
+      const wasFlowFrames = current.mediaGeneration.videoProvider === "flow" && current.mediaGeneration.flowReferenceMode === "frames";
       const mediaGeneration = {
         ...current.mediaGeneration,
         ...patch,
@@ -306,6 +313,7 @@ export function NewProjectView({ projectSlug, fixedPresetId }: { projectSlug?: s
         ...(isFlowStoryOnlyPreset(current.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
       };
       if (mediaGeneration.videoProvider === "flow" && mediaGeneration.flowReferenceMode === "frames") mediaGeneration.videoUseSceneImageReference = true;
+      else if (wasFlowFrames && isRemakeProject(existing) && patch.videoUseSceneImageReference === undefined) mediaGeneration.videoUseSceneImageReference = false;
       if (isPixverseVideoSettings(mediaGeneration)) {
         mediaGeneration.videoMultiShot = true;
         mediaGeneration.videoAudio = true;
