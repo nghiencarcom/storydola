@@ -67,27 +67,36 @@ const safety = loadTs("app/lib/visual-prompt-safety.ts");
   assert.equal(settings.resolveMediaGenerationSettings({ videoProvider: "muse", videoDurationSec: 10 }).videoDurationSec, 10);
   assert.equal(settings.resolveMediaGenerationSettings({ videoProvider: "muse", videoDurationSec: 5 }).videoDurationSec, 5);
 
-  // 2. Character @ImageN injection + idempotence + safety
-  const rawShot = "Khoang Nâu shifts paws while Mực Đen listens and Bánh Bao watches from behind.";
-  const boundShot = provider.injectCharacterImageTokensIntoPrompt(rawShot, [
+  // 2. Character @ImageN / @imageN injection + allOccurrences + idempotence + safety
+  const rawShot = "Khoang Nâu shifts paws while Mực Đen listens and Bánh Bao watches. Khoang Nâu later grins at Mực Đen.";
+  const boundFirst = provider.injectCharacterImageTokensIntoPrompt(rawShot, [
     { name: "Khoang Nâu", token: "@Image2" },
     { name: "Mực Đen", token: "@Image3" },
     { name: "Bánh Bao", token: "@Image4" },
   ]);
   assert.equal(
-    boundShot,
-    "Khoang Nâu (@Image2) shifts paws while Mực Đen (@Image3) listens and Bánh Bao (@Image4) watches from behind.",
+    boundFirst,
+    "Khoang Nâu (@Image2) shifts paws while Mực Đen (@Image3) listens and Bánh Bao (@Image4) watches. Khoang Nâu later grins at Mực Đen.",
+  );
+  const boundAll = provider.injectCharacterImageTokensIntoPrompt(rawShot, [
+    { name: "Khoang Nâu", token: "@image2" },
+    { name: "Mực Đen", token: "@image3" },
+    { name: "Bánh Bao", token: "@image4" },
+  ], { allOccurrences: true });
+  assert.equal(
+    boundAll,
+    "Khoang Nâu (@image2) shifts paws while Mực Đen (@image3) listens and Bánh Bao (@image4) watches. Khoang Nâu (@image2) later grins at Mực Đen (@image3).",
   );
   assert.equal(
-    provider.injectCharacterImageTokensIntoPrompt(boundShot, [
-      { name: "Khoang Nâu", token: "@Image2" },
-      { name: "Mực Đen", token: "@Image3" },
-      { name: "Bánh Bao", token: "@Image4" },
-    ]),
-    boundShot,
-    "Token injection must be idempotent",
+    provider.injectCharacterImageTokensIntoPrompt(boundAll, [
+      { name: "Khoang Nâu", token: "@image2" },
+      { name: "Mực Đen", token: "@image3" },
+      { name: "Bánh Bao", token: "@image4" },
+    ], { allOccurrences: true }),
+    boundAll,
+    "allOccurrences token injection must be idempotent",
   );
-  assert.equal(policy.requireReferenceIdentityOnly(boundShot, ["Khoang Nâu", "Mực Đen", "Bánh Bao"]), boundShot);
+  assert.equal(policy.requireReferenceIdentityOnly(boundAll, ["Khoang Nâu", "Mực Đen", "Bánh Bao"]), boundAll);
 
   // 3. Voice cue extraction without leaking age/appearance prose
   assert.equal(
@@ -135,6 +144,12 @@ const safety = loadTs("app/lib/visual-prompt-safety.ts");
   const locations = [
     { id: "loc-1", name: "Haystack Field Ridge", description: "Golden dry hay mound beside green crop fields.", referenceImagePath: "locs/1.png" },
   ];
+  const prevScene = {
+    id: "S000",
+    location_id: "loc-1",
+    videoReferenceImage: { kind: "image", status: "ready", localPath: "scene/S000.png" },
+  };
+  const continuityReference = { sceneId: "S000", image: prevScene.videoReferenceImage, persisted: true };
   for (const videoProvider of ["muse", "seedance", "flow", "maivideo"]) {
     const videoModel = videoProvider === "muse"
       ? "muse-video"
@@ -142,18 +157,23 @@ const safety = loadTs("app/lib/visual-prompt-safety.ts");
         ? "seedance-2.5"
         : videoProvider === "flow"
           ? "flow-omni-1.2-flash"
-          : "v6";
+          : "minimax-h3";
+    const composedRefs = [];
     const composed = await provider.previewMaiVideoVideoPromptForScene({
       projectSlug: "test-project",
       chunkId: "A01",
       scene: s001,
-      projectScenes: [s001],
+      projectScenes: [prevScene, s001],
       characters,
       locations,
-      sceneIndex: 0,
+      sceneIndex: 1,
       aspectRatio: "16:9",
       presetId: "ai-drama",
       videoSpokenLanguage: "vi",
+      continuityReference,
+      onVideoReferencesComposed: async (refs) => {
+        composedRefs.push(...refs);
+      },
       mediaGeneration: {
         videoProvider,
         videoModel,
@@ -163,6 +183,18 @@ const safety = loadTs("app/lib/visual-prompt-safety.ts");
         videoUseLocationReferences: true,
       },
     });
+    const isMaiVideo = videoProvider === "maivideo";
+    const tokPrefix = isMaiVideo ? "@image" : "@Image";
+    // When Scene Frame is active on maivideo, Previous scene is omitted so character indices start at 2 instead of 3.
+    const khoangToken = `${tokPrefix}${isMaiVideo ? 2 : 3}`;
+    const mucToken = `${tokPrefix}${isMaiVideo ? 3 : 4}`;
+    const banhBaoToken = `${tokPrefix}${isMaiVideo ? 4 : 5}`;
+    if (isMaiVideo) {
+      assert(!composed.includes("PREVIOUS SCENE S000"), "Scene-anchored MaiVideo must skip Previous scene reference");
+      assert(!composedRefs.some((r) => r.name.includes("Previous scene")), "MaiVideo must not attach Previous scene image");
+    } else {
+      assert(composed.includes("PREVIOUS SCENE S000"), `${videoProvider} should retain persisted continuity scene`);
+    }
     if (videoProvider === "muse") {
       assert(composed.startsWith("SCENE VIDEO PROMPT (action and timing):\nDURATION: 15s."), "Muse must keep 15s scene duration");
       assert(
@@ -174,16 +206,65 @@ const safety = loadTs("app/lib/visual-prompt-safety.ts");
         "Muse prompt must use clean non-graphic cast guidance",
       );
     }
-    assert(composed.includes("Khoang Nâu (@Image2)"), `${videoProvider} shot description should bind @Image2`);
-    assert(composed.includes("Mực Đen (@Image3)"), `${videoProvider} shot description should bind @Image3`);
-    assert(composed.includes("Bánh Bao (@Image4)"), `${videoProvider} shot description should bind @Image4`);
+    assert(composed.includes(`Khoang Nâu (${khoangToken})`), `${videoProvider} shot description should bind ${khoangToken}`);
+    assert(composed.includes(`Mực Đen (${mucToken})`), `${videoProvider} shot description should bind ${mucToken}`);
+    assert(composed.includes(`Bánh Bao (${banhBaoToken})`), `${videoProvider} shot description should bind ${banhBaoToken}`);
     assert(!composed.includes("CHARACTER Thảo Mây"), `${videoProvider} must not attach off-screen Thảo Mây reference`);
-    assert(composed.includes("Khoang Nâu [@Image2] (Male, earnest youthful voice; on-camera; lip-sync ONLY on @Image2, keep other characters' mouths/muzzles closed)"));
-    assert(composed.includes("Mực Đen [@Image3] (Male, cautious steady mid-range voice; on-camera; lip-sync ONLY on @Image3, keep other characters' mouths/muzzles closed)"));
+    assert(
+      composed.includes(`Khoang Nâu [${khoangToken}] (Male, earnest youthful voice; on-camera; animate mouth/muzzle speech ONLY on ${khoangToken}; keep Mực Đen (${mucToken}), Bánh Bao (${banhBaoToken}) mouths/muzzles strictly closed`),
+      `${videoProvider} missing explicit named silence lock for Khoang Nâu cue`,
+    );
+    assert(
+      composed.includes(`Mực Đen [${mucToken}] (Male, cautious steady mid-range voice; on-camera; animate mouth/muzzle speech ONLY on ${mucToken}; keep Khoang Nâu (${khoangToken}), Bánh Bao (${banhBaoToken}) mouths/muzzles strictly closed`),
+      `${videoProvider} missing explicit named silence lock for Mực Đen cue`,
+    );
     assert(composed.includes("language: vi"));
-    const expectedMapEntry = videoProvider === "seedance" ? "@Image2: CHARACTER Khoang Nâu" : "@Image2 (Image 2): CHARACTER Khoang Nâu";
+    const expectedMapEntry = videoProvider === "seedance" ? `${khoangToken}: CHARACTER Khoang Nâu` : `${khoangToken} (Image ${isMaiVideo ? 2 : 3}): CHARACTER Khoang Nâu`;
     assert(composed.includes(expectedMapEntry), `${videoProvider} visual reference map entry missing`);
   }
+
+  // 5b. Off-camera & distant-background cues on MaiVideo (S015 / S028 patterns) + kneel parity
+  const s015AndS028Scene = {
+    id: "S015",
+    start_sec: 0,
+    end_sec: 10,
+    duration_sec: 10,
+    characters: ["Khoang Nâu", "Mực Đen", "Bánh Bao"],
+    character_ids: ["char-ai-1", "char-ai-2", "char-ai-3"],
+    location_id: "loc-1",
+    video_prompt: "0.0-4.6s: Bánh Bao speaks cheerfully (0.5-2.0s) while Khoang Nâu listens. 4.6-7.2s: Camera pushes in rapidly to a tight close-up of Khoang Nâu as Bánh Bao calls out inside (4.9-6.4s). 7.2-10.0s: Sudden barks echo off-screen; Khoang Nâu reacts (7.4-8.0s) while Mực Đen shouts urgently (8.2-9.4s) and bolts with Bánh Bao behind the outer brick wall.",
+    dialogue_segments: [
+      { speaker_character: "Bánh Bao", speaker_character_id: "char-ai-3", text: "Câu một.", start_sec: 0.5, end_sec: 2.0 },
+      { speaker_character: "Bánh Bao", speaker_character_id: "char-ai-3", text: "Câu gọi từ trong nhà.", start_sec: 4.9, end_sec: 6.4 },
+      { speaker_character: "Khoang Nâu", speaker_character_id: "char-ai-1", text: "Ôi trời!", start_sec: 7.4, end_sec: 8.0 },
+      { speaker_character: "Mực Đen", speaker_character_id: "char-ai-2", text: "Mau nấp thôi!", start_sec: 8.2, end_sec: 9.4 },
+    ],
+    videoReferenceImage: { kind: "image", status: "ready", localPath: "scene/S015.png" },
+  };
+  const offCamPrompt = await provider.previewMaiVideoVideoPromptForScene({
+    projectSlug: "test-project",
+    chunkId: "A01",
+    scene: s015AndS028Scene,
+    projectScenes: [s015AndS028Scene],
+    characters,
+    locations,
+    sceneIndex: 0,
+    aspectRatio: "16:9",
+    presetId: "ai-drama",
+    videoSpokenLanguage: "vi",
+    mediaGeneration: {
+      videoProvider: "maivideo",
+      videoModel: "minimax-h3",
+      videoDurationMode: "scene",
+      videoUseSceneImageReference: true,
+      videoUseCharacterReferences: true,
+      videoUseLocationReferences: true,
+    },
+  });
+  assert(offCamPrompt.includes("0.500–2.000s · Bánh Bao [@image4] (Male, gruff deadpan low baritone voice; on-camera; animate mouth/muzzle speech ONLY on @image4"));
+  assert(offCamPrompt.includes("4.900–6.400s · Bánh Bao [@image4] (Male, gruff deadpan low baritone voice; off-camera/distant voice; NO lip-sync on foreground frame"));
+  assert(offCamPrompt.includes("7.400–8.000s · Khoang Nâu [@image2] (Male, earnest youthful voice; on-camera; animate mouth/muzzle speech ONLY on @image2"));
+  assert(offCamPrompt.includes("8.200–9.400s · Mực Đen [@image3] (Male, cautious steady mid-range voice; off-camera/distant voice; NO lip-sync on foreground frame"));
 
   // 6. Safety exclusion regex must preserve "without blood or gore" cleanly
   const safeExclusion = "Keep the action intense without blood or gore during the chase.";
@@ -198,6 +279,7 @@ const safety = loadTs("app/lib/visual-prompt-safety.ts");
     ["Pixar style animation with a blood orange under a shooting star.", "cinematic 3D animation style animation with a red-fleshed orange under a meteor streak."],
     ["She wears no underwear and has apparent age and body proportions.", "She wears fully dressed in casual attire and has character styling and character proportions."],
     ["Khoang Nâu (@Image1) runs past a sheer shirt shop.", "Khoang Nâu (@Image1) runs past a lightweight opaque shirt shop."],
+    ["Trio faces kneeling Chị Lan who kneels smoothly.", "Trio faces crouching Chị Lan who crouches gently."],
   ];
   for (const [raw, expected] of pixverseCases) {
     assert.equal(safety.normalizePixversePrompt(raw).prompt, expected, `normalizePixversePrompt parity mismatch for: ${raw}`);

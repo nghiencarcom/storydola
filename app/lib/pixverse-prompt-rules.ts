@@ -119,6 +119,130 @@ export const DEFAULT_CONTEXTUAL_REPLACEMENTS: ReadonlyArray<readonly [string, st
     "content rating"
   ],
   [
+    "age-appropriate",
+    "context-appropriate"
+  ],
+  [
+    "age–appropriate",
+    "context-appropriate"
+  ],
+  [
+    "character styling-appropriate",
+    "context-appropriate"
+  ],
+  [
+    "consistent adult age",
+    "consistent adult maturity"
+  ],
+  [
+    "age-lock",
+    "visual-lock"
+  ],
+  [
+    "de-age",
+    "restyle"
+  ],
+  [
+    "golden age",
+    "classic era"
+  ],
+  [
+    "bronze age",
+    "ancient bronze era"
+  ],
+  [
+    "stone age",
+    "prehistoric era"
+  ],
+  [
+    "ice age",
+    "glacial era"
+  ],
+  [
+    "middle-age",
+    "midlife"
+  ],
+  [
+    "middle age",
+    "midlife"
+  ],
+  [
+    "old age",
+    "later life"
+  ],
+  [
+    "coming-of-age",
+    "personal growth"
+  ],
+  [
+    "coming of age",
+    "personal growth"
+  ],
+  [
+    "age appearance",
+    "maturity appearance"
+  ],
+  [
+    "age groups",
+    "generation groups"
+  ],
+  [
+    "age group",
+    "generation group"
+  ],
+  [
+    "age gap",
+    "generation gap"
+  ],
+  [
+    "age range",
+    "maturity range"
+  ],
+  [
+    "same age",
+    "similar generation"
+  ],
+  [
+    "re-age",
+    "restyle"
+  ],
+  [
+    "re-character styling",
+    "restyle"
+  ],
+  [
+    "youthen",
+    "restyle"
+  ],
+  [
+    "of its own age",
+    "of its own design"
+  ],
+  [
+    "of that age",
+    "of that design"
+  ],
+  [
+    "as their age gives",
+    "as their design gives"
+  ],
+  [
+    "beautify, age,",
+    "beautify, alter,"
+  ],
+  [
+    "re-interpret, age,",
+    "re-interpret, alter,"
+  ],
+  [
+    "dead silence",
+    "complete silence"
+  ],
+  [
+    "dead end",
+    "cul-de-sac"
+  ],
+  [
     "identity crisis",
     "personal journey"
   ],
@@ -659,6 +783,30 @@ export const DEFAULT_CONTEXTUAL_REPLACEMENTS: ReadonlyArray<readonly [string, st
     "duck fillet"
   ],
   [
+    "chicken thighs",
+    "chicken drumsticks"
+  ],
+  [
+    "chicken thigh",
+    "chicken drumstick"
+  ],
+  [
+    "turkey thighs",
+    "turkey drumsticks"
+  ],
+  [
+    "turkey thigh",
+    "turkey drumstick"
+  ],
+  [
+    "duck thighs",
+    "duck drumsticks"
+  ],
+  [
+    "duck thigh",
+    "duck drumstick"
+  ],
+  [
     "breast cancer",
     "health awareness"
   ],
@@ -673,6 +821,58 @@ export const DEFAULT_CONTEXTUAL_REPLACEMENTS: ReadonlyArray<readonly [string, st
   [
     "non-sheer",
     "opaque"
+  ],
+  [
+    "blade of grass",
+    "stalk of grass"
+  ],
+  [
+    "blades of grass",
+    "stalks of grass"
+  ],
+  [
+    "grass-blades",
+    "grass-stalks"
+  ],
+  [
+    "grass-blade",
+    "grass-stalk"
+  ],
+  [
+    "razor-blade",
+    "thin metallic"
+  ],
+  [
+    "shoulder blade",
+    "upper back"
+  ],
+  [
+    "shoulder blades",
+    "upper back"
+  ],
+  [
+    "fan blade",
+    "fan vane"
+  ],
+  [
+    "fan blades",
+    "fan vanes"
+  ],
+  [
+    "roller blades",
+    "inline skates"
+  ],
+  [
+    "hot-swap",
+    "modular"
+  ],
+  [
+    "swap-meet",
+    "flea-market"
+  ],
+  [
+    "swap meet",
+    "flea market"
   ],
   [
     "đo huyết áp",
@@ -838,6 +1038,130 @@ export const DEFAULT_LITERAL_REPLACEMENTS: ReadonlyArray<readonly [string, strin
     "content rating"
   ],
   [
+    "age-appropriate",
+    "context-appropriate"
+  ],
+  [
+    "age–appropriate",
+    "context-appropriate"
+  ],
+  [
+    "character styling-appropriate",
+    "context-appropriate"
+  ],
+  [
+    "consistent adult age",
+    "consistent adult maturity"
+  ],
+  [
+    "age-lock",
+    "visual-lock"
+  ],
+  [
+    "de-age",
+    "restyle"
+  ],
+  [
+    "golden age",
+    "classic era"
+  ],
+  [
+    "bronze age",
+    "ancient bronze era"
+  ],
+  [
+    "stone age",
+    "prehistoric era"
+  ],
+  [
+    "ice age",
+    "glacial era"
+  ],
+  [
+    "middle-age",
+    "midlife"
+  ],
+  [
+    "middle age",
+    "midlife"
+  ],
+  [
+    "old age",
+    "later life"
+  ],
+  [
+    "coming-of-age",
+    "personal growth"
+  ],
+  [
+    "coming of age",
+    "personal growth"
+  ],
+  [
+    "age appearance",
+    "maturity appearance"
+  ],
+  [
+    "age groups",
+    "generation groups"
+  ],
+  [
+    "age group",
+    "generation group"
+  ],
+  [
+    "age gap",
+    "generation gap"
+  ],
+  [
+    "age range",
+    "maturity range"
+  ],
+  [
+    "same age",
+    "similar generation"
+  ],
+  [
+    "re-age",
+    "restyle"
+  ],
+  [
+    "re-character styling",
+    "restyle"
+  ],
+  [
+    "youthen",
+    "restyle"
+  ],
+  [
+    "of its own age",
+    "of its own design"
+  ],
+  [
+    "of that age",
+    "of that design"
+  ],
+  [
+    "as their age gives",
+    "as their design gives"
+  ],
+  [
+    "beautify, age,",
+    "beautify, alter,"
+  ],
+  [
+    "re-interpret, age,",
+    "re-interpret, alter,"
+  ],
+  [
+    "dead silence",
+    "complete silence"
+  ],
+  [
+    "dead end",
+    "cul-de-sac"
+  ],
+  [
     "identity crisis",
     "personal journey"
   ],
@@ -1378,6 +1702,30 @@ export const DEFAULT_LITERAL_REPLACEMENTS: ReadonlyArray<readonly [string, strin
     "duck fillet"
   ],
   [
+    "chicken thighs",
+    "chicken drumsticks"
+  ],
+  [
+    "chicken thigh",
+    "chicken drumstick"
+  ],
+  [
+    "turkey thighs",
+    "turkey drumsticks"
+  ],
+  [
+    "turkey thigh",
+    "turkey drumstick"
+  ],
+  [
+    "duck thighs",
+    "duck drumsticks"
+  ],
+  [
+    "duck thigh",
+    "duck drumstick"
+  ],
+  [
     "breast cancer",
     "health awareness"
   ],
@@ -1392,6 +1740,58 @@ export const DEFAULT_LITERAL_REPLACEMENTS: ReadonlyArray<readonly [string, strin
   [
     "non-sheer",
     "opaque"
+  ],
+  [
+    "blade of grass",
+    "stalk of grass"
+  ],
+  [
+    "blades of grass",
+    "stalks of grass"
+  ],
+  [
+    "grass-blades",
+    "grass-stalks"
+  ],
+  [
+    "grass-blade",
+    "grass-stalk"
+  ],
+  [
+    "razor-blade",
+    "thin metallic"
+  ],
+  [
+    "shoulder blade",
+    "upper back"
+  ],
+  [
+    "shoulder blades",
+    "upper back"
+  ],
+  [
+    "fan blade",
+    "fan vane"
+  ],
+  [
+    "fan blades",
+    "fan vanes"
+  ],
+  [
+    "roller blades",
+    "inline skates"
+  ],
+  [
+    "hot-swap",
+    "modular"
+  ],
+  [
+    "swap-meet",
+    "flea-market"
+  ],
+  [
+    "swap meet",
+    "flea market"
   ],
   [
     "đo huyết áp",
@@ -1534,6 +1934,46 @@ export const DEFAULT_LITERAL_REPLACEMENTS: ReadonlyArray<readonly [string, strin
     "character references"
   ],
   [
+    "consistent character facial identities",
+    "consistent facial character designs"
+  ],
+  [
+    "consistent character facial identity",
+    "consistent facial character design"
+  ],
+  [
+    "characters' identities",
+    "characters' visual designs"
+  ],
+  [
+    "character's identity",
+    "character's visual design"
+  ],
+  [
+    "character identities",
+    "character designs"
+  ],
+  [
+    "character identity",
+    "character design"
+  ],
+  [
+    "identity-lock",
+    "appearance-lock"
+  ],
+  [
+    "identity lock",
+    "appearance lock"
+  ],
+  [
+    "identity drifting",
+    "appearance drift"
+  ],
+  [
+    "identity drift",
+    "appearance drift"
+  ],
+  [
     "not a celebrity, not a public figure, not based on any real person",
     "an original fictional character concept"
   ],
@@ -1586,6 +2026,22 @@ export const DEFAULT_LITERAL_REPLACEMENTS: ReadonlyArray<readonly [string, strin
     "financial document"
   ],
   [
+    "master bedrooms",
+    "main bedrooms"
+  ],
+  [
+    "master bedroom",
+    "main bedroom"
+  ],
+  [
+    "master bathrooms",
+    "main bathrooms"
+  ],
+  [
+    "master bathroom",
+    "main bathroom"
+  ],
+  [
     "apparent age",
     "character styling"
   ],
@@ -1612,6 +2068,130 @@ export const DEFAULT_LITERAL_REPLACEMENTS: ReadonlyArray<readonly [string, strin
   [
     "bloodstained",
     "paint-stained"
+  ],
+  [
+    "freshly wounded",
+    "visibly shaken"
+  ],
+  [
+    "cutting remarks",
+    "sharp remarks"
+  ],
+  [
+    "cutting remark",
+    "sharp remark"
+  ],
+  [
+    "cloth-wrapped bare torso",
+    "cloth-wrapped tunic"
+  ],
+  [
+    "bare torso",
+    "fitted tunic"
+  ],
+  [
+    "bare chest",
+    "fitted top"
+  ],
+  [
+    "unclad animals",
+    "natural-coat animals"
+  ],
+  [
+    "no de-aging",
+    "consistent adult character styling"
+  ],
+  [
+    "de-aging",
+    "character restyling"
+  ],
+  [
+    "faces kneeling",
+    "faces crouching"
+  ],
+  [
+    "kneels smoothly",
+    "crouches gently"
+  ],
+  [
+    "medical shears opening her uniform",
+    "medical kit beside her uniform"
+  ],
+  [
+    "opening her uniform",
+    "adjusting her uniform collar"
+  ],
+  [
+    "opening his uniform",
+    "adjusting his uniform collar"
+  ],
+  [
+    "cut open at the front, revealing",
+    "parted at the collar, showing"
+  ],
+  [
+    "cut open at the front",
+    "parted at the collar"
+  ],
+  [
+    "across her upper chest",
+    "near her collarbone"
+  ],
+  [
+    "healed surgical scars",
+    "faint healed marks"
+  ],
+  [
+    "surgical scars",
+    "faint healed marks"
+  ],
+  [
+    "surgical scar",
+    "faint healed mark"
+  ],
+  [
+    "stainless-steel trauma shears",
+    "compact medical tool"
+  ],
+  [
+    "trauma shears",
+    "medical tool"
+  ],
+  [
+    "medical shears",
+    "medical tool"
+  ],
+  [
+    "dead grandmother",
+    "late grandmother"
+  ],
+  [
+    "dead grandfather",
+    "late grandfather"
+  ],
+  [
+    "dead mother",
+    "late mother"
+  ],
+  [
+    "dead father",
+    "late father"
+  ],
+  [
+    "dead husband",
+    "late husband"
+  ],
+  [
+    "dead wife",
+    "late wife"
+  ],
+  [
+    "dead son",
+    "late son"
+  ],
+  [
+    "dead daughter",
+    "late daughter"
   ],
   [
     "graphic violence",
@@ -1966,6 +2546,46 @@ export const DEFAULT_LITERAL_REPLACEMENTS: ReadonlyArray<readonly [string, strin
     "các nhân vật"
   ],
   [
+    "mấy đứa trẻ",
+    "nhóm nhân vật"
+  ],
+  [
+    "mấy đứa nhỏ",
+    "nhóm nhân vật"
+  ],
+  [
+    "mấy đứa con nít",
+    "nhóm nhân vật"
+  ],
+  [
+    "mấy đứa",
+    "mấy bạn"
+  ],
+  [
+    "tụi nhỏ",
+    "nhóm bạn"
+  ],
+  [
+    "sấp nhỏ",
+    "nhóm bạn"
+  ],
+  [
+    "bọn trẻ",
+    "các nhân vật trẻ"
+  ],
+  [
+    "lũ trẻ",
+    "các nhân vật trẻ"
+  ],
+  [
+    "đám trẻ",
+    "các nhân vật trẻ"
+  ],
+  [
+    "con nít",
+    "nhân vật"
+  ],
+  [
     "thiếu nhi",
     "gia đình"
   ],
@@ -2020,6 +2640,26 @@ export const DEFAULT_LITERAL_REPLACEMENTS: ReadonlyArray<readonly [string, strin
   [
     "bé trai",
     "chàng trai trẻ"
+  ],
+  [
+    "người con gái",
+    "cô gái trưởng thành"
+  ],
+  [
+    "cô con gái",
+    "cô gái trưởng thành"
+  ],
+  [
+    "con gái lớn",
+    "con trưởng thành"
+  ],
+  [
+    "con gái của",
+    "người con của"
+  ],
+  [
+    "con trai của",
+    "người con của"
   ],
   [
     "con gái",
@@ -2088,6 +2728,34 @@ export const DEFAULT_LITERAL_REPLACEMENTS: ReadonlyArray<readonly [string, strin
   [
     "no children, teenagers, babies, or anyone under eighteen",
     "only mature adults"
+  ],
+  [
+    "only mature adults or teenagers anywhere",
+    "only mature adults anywhere"
+  ],
+  [
+    "only mature adults or teens anywhere",
+    "only mature adults anywhere"
+  ],
+  [
+    "only mature adults or minors anywhere",
+    "only mature adults anywhere"
+  ],
+  [
+    "only mature adults or children anywhere",
+    "only mature adults anywhere"
+  ],
+  [
+    "only mature adults or young adults anywhere",
+    "only mature adults anywhere"
+  ],
+  [
+    "do not depict, mention, or imply any characters or young adults",
+    "depict only mature adults"
+  ],
+  [
+    "do not include red paint, non-graphic character detail, medical equipment, hospital imagery, fictional stage props, or physical dramatic action",
+    "keep the scene calm and everyday"
   ],
   [
     "no children, teenagers, or minors",
@@ -2304,6 +2972,38 @@ export const DEFAULT_LITERAL_REPLACEMENTS: ReadonlyArray<readonly [string, strin
   [
     "little boy",
     "young adult male character"
+  ],
+  [
+    "small girls",
+    "young adult women"
+  ],
+  [
+    "small girl",
+    "young adult woman"
+  ],
+  [
+    "small boys",
+    "young adult men"
+  ],
+  [
+    "small boy",
+    "young adult man"
+  ],
+  [
+    "small children",
+    "young adult characters"
+  ],
+  [
+    "small child",
+    "young adult character"
+  ],
+  [
+    "small kids",
+    "young adult characters"
+  ],
+  [
+    "small kid",
+    "young adult character"
   ],
   [
     "young girl",
@@ -2614,6 +3314,42 @@ export const DEFAULT_LITERAL_REPLACEMENTS: ReadonlyArray<readonly [string, strin
     "3D contoured shape"
   ],
   [
+    "unnatural body deformation",
+    "unnatural body warping"
+  ],
+  [
+    "no body deformation",
+    "no body warping"
+  ],
+  [
+    "without body deformation",
+    "without body warping"
+  ],
+  [
+    "body deformation",
+    "body warping"
+  ],
+  [
+    "facial deformation",
+    "facial warping"
+  ],
+  [
+    "hand deformation",
+    "hand warping"
+  ],
+  [
+    "mesh deformation",
+    "mesh warping"
+  ],
+  [
+    "no deformation",
+    "no warping"
+  ],
+  [
+    "without deformation",
+    "without warping"
+  ],
+  [
     "cup-hugging",
     "cup-cradling"
   ],
@@ -2668,6 +3404,78 @@ export const DEFAULT_LITERAL_REPLACEMENTS: ReadonlyArray<readonly [string, strin
   [
     "no one is hurt",
     "everyone is safe and calm"
+  ],
+  [
+    "do not include blood, injury, medical equipment, hospital imagery, weapons, or physical violence",
+    "keep the scene calm and everyday"
+  ],
+  [
+    "bound and gagged",
+    "restrained in silence"
+  ],
+  [
+    "taped and bound",
+    "restrained in silence"
+  ],
+  [
+    "gagged with black tape",
+    "silenced with dark fabric"
+  ],
+  [
+    "gagged with tape",
+    "silenced with dark fabric"
+  ],
+  [
+    "pins her wrists behind her back",
+    "holds her hands behind her back"
+  ],
+  [
+    "pins his wrists behind his back",
+    "holds his hands behind his back"
+  ],
+  [
+    "binds them with a white cloth",
+    "wraps them with a white cloth"
+  ],
+  [
+    "wrists bound behind her back",
+    "hands held behind her"
+  ],
+  [
+    "wrists bound behind her",
+    "hands held behind her"
+  ],
+  [
+    "wrists bound behind him",
+    "hands held behind him"
+  ],
+  [
+    "black tape over her mouth",
+    "dark scarf covering her mouth"
+  ],
+  [
+    "strip of dark tape across her mouth",
+    "dark scarf across her mouth"
+  ],
+  [
+    "tape across her mouth",
+    "scarf across her mouth"
+  ],
+  [
+    "taped mouth",
+    "closed mouth"
+  ],
+  [
+    "mouth taped",
+    "mouth closed"
+  ],
+  [
+    "shoved onto her rumpled bed",
+    "falls back onto her rumpled bed"
+  ],
+  [
+    "struggling against the binding",
+    "reacting tensely in the dramatic scene"
   ],
   [
     "cake wreckage",
@@ -2780,6 +3588,170 @@ export const DEFAULT_LITERAL_REPLACEMENTS: ReadonlyArray<readonly [string, strin
   [
     "henley neckline",
     "buttoned henley shirt"
+  ],
+  [
+    "with no nudity",
+    "fully clothed"
+  ],
+  [
+    "no nudity",
+    "fully clothed"
+  ],
+  [
+    "no blood or gore",
+    "clean non-graphic styling"
+  ],
+  [
+    "no gore or blood",
+    "clean non-graphic styling"
+  ],
+  [
+    "without blood",
+    "clean non-graphic styling"
+  ],
+  [
+    "no blood",
+    "clean non-graphic styling"
+  ],
+  [
+    "no gore",
+    "clean non-graphic styling"
+  ],
+  [
+    "no violence",
+    "calm non-graphic tone"
+  ],
+  [
+    "without violence",
+    "calm non-graphic tone"
+  ],
+  [
+    "without weapons",
+    "unarmed empty hands"
+  ],
+  [
+    "no weapons",
+    "unarmed empty hands"
+  ],
+  [
+    "no guns",
+    "unarmed empty hands"
+  ],
+  [
+    "no gun",
+    "unarmed empty hands"
+  ],
+  [
+    "no knives",
+    "unarmed empty hands"
+  ],
+  [
+    "no knife",
+    "unarmed empty hands"
+  ],
+  [
+    "no shirtless men",
+    "all men wearing modest tops"
+  ],
+  [
+    "no shirtless people",
+    "everyone wearing modest tops"
+  ],
+  [
+    "no shirtless",
+    "wearing modest tops"
+  ],
+  [
+    "without a bra",
+    "wearing a modest layered top"
+  ],
+  [
+    "without bra",
+    "wearing a modest layered top"
+  ],
+  [
+    "no bra",
+    "wearing a modest layered top"
+  ],
+  [
+    "no bikinis",
+    "modest everyday attire"
+  ],
+  [
+    "no bikini",
+    "modest everyday attire"
+  ],
+  [
+    "no lingerie",
+    "modest everyday attire"
+  ],
+  [
+    "after stripping",
+    "after changing outfits"
+  ],
+  [
+    "stripping off",
+    "changing out of"
+  ],
+  [
+    "strip off",
+    "change out of"
+  ],
+  [
+    "lets the black nightie fall",
+    "changes into loungewear"
+  ],
+  [
+    "slip nightie, no robe",
+    "modest satin lounge dress, fully covered"
+  ],
+  [
+    "nightie, no robe",
+    "modest satin lounge dress, fully covered"
+  ],
+  [
+    "slip nightie",
+    "satin lounge dress"
+  ],
+  [
+    "nighties",
+    "lounge dresses"
+  ],
+  [
+    "nightie",
+    "lounge dress"
+  ],
+  [
+    "no robe",
+    "modest lounge style"
+  ],
+  [
+    "without a robe",
+    "modest lounge style"
+  ],
+  [
+    "after her shower",
+    "in the evening"
+  ],
+  [
+    "after his shower",
+    "in the evening"
+  ],
+  [
+    "after a shower",
+    "in the evening"
+  ],
+  [
+    "after the shower",
+    "in the evening"
+  ],
+  [
+    "near-kiss",
+    "close tender moment"
+  ],
+  [
+    "near kiss",
+    "close tender moment"
   ],
   [
     "after the wedding gown falls away",
@@ -3225,6 +4197,22 @@ export const DEFAULT_WORD_REPLACEMENTS: ReadonlyArray<readonly [string, string]>
     "fully clothed"
   ],
   [
+    "unclad",
+    "fully clothed"
+  ],
+  [
+    "kneeling",
+    "crouching"
+  ],
+  [
+    "kneels",
+    "crouches"
+  ],
+  [
+    "kneel",
+    "crouch"
+  ],
+  [
     "nsfw",
     "safe-for-work"
   ],
@@ -3253,6 +4241,10 @@ export const DEFAULT_WORD_REPLACEMENTS: ReadonlyArray<readonly [string, string]>
     "paint-stained"
   ],
   [
+    "bloody",
+    "crimson-stained"
+  ],
+  [
     "bleeding",
     "dramatic red paint detail"
   ],
@@ -3271,6 +4263,10 @@ export const DEFAULT_WORD_REPLACEMENTS: ReadonlyArray<readonly [string, string]>
   [
     "wound",
     "non-graphic character detail"
+  ],
+  [
+    "wounded",
+    "weathered"
   ],
   [
     "injuries",
@@ -3311,6 +4307,10 @@ export const DEFAULT_WORD_REPLACEMENTS: ReadonlyArray<readonly [string, string]>
   [
     "hurt",
     "upset"
+  ],
+  [
+    "gagged",
+    "silenced"
   ],
   [
     "carnage",
@@ -3382,7 +4382,15 @@ export const DEFAULT_WORD_REPLACEMENTS: ReadonlyArray<readonly [string, string]>
   ],
   [
     "violent",
-    "dramatic action"
+    "intense"
+  ],
+  [
+    "brutal",
+    "grueling"
+  ],
+  [
+    "cruelty",
+    "harshness"
   ],
   [
     "decapitation",
@@ -3483,6 +4491,34 @@ export const DEFAULT_WORD_REPLACEMENTS: ReadonlyArray<readonly [string, string]>
   [
     "swords",
     "fantasy stage props"
+  ],
+  [
+    "swordsmen",
+    "martial artists"
+  ],
+  [
+    "swordsman",
+    "martial artist"
+  ],
+  [
+    "blades",
+    "stage props"
+  ],
+  [
+    "blade",
+    "stage prop"
+  ],
+  [
+    "cleavers",
+    "heavy stage props"
+  ],
+  [
+    "cleaver",
+    "heavy stage prop"
+  ],
+  [
+    "butcher",
+    "heavy warrior"
   ],
   [
     "knife",
