@@ -63,19 +63,9 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
                 ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
               }, { remake: isRemakeProject(project) })
             : settings;
-          const currentMedia = asRecord(record.media);
-          const currentReference = asRecord(record.videoReferenceImage || record.video_reference_image)
-            || (currentMedia?.kind === "image" ? currentMedia : null);
-          const imageSettingsChanged = ["imageModel", "imageQuality", "imageDetailLevel", "imageUseCharacterReferences"]
-            .some((key) => currentSettings[key as keyof MediaGenerationSettings] !== sceneSettings[key as keyof MediaGenerationSettings]);
-          const videoSettingsChanged = ["videoProvider", "seedanceAccountId", "seedanceChatMode", "videoModel", "videoQuality", "videoDurationMode", "videoDurationSec", "videoMultiShot", "videoAudio", "videoOffPeak", "videoUseCharacterReferences", "videoUseLocationReferences", "videoUseSceneImageReference", "flowReferenceMode"]
-            .some((key) => currentSettings[key as keyof MediaGenerationSettings] !== sceneSettings[key as keyof MediaGenerationSettings]);
           return {
             ...record,
             mediaGeneration: sceneSettings,
-            ...(imageSettingsChanged && currentMedia?.kind === "image" ? { media: { ...currentMedia, stale: true } } : {}),
-            ...(videoSettingsChanged && currentMedia?.kind === "video" ? { media: { ...currentMedia, stale: true } } : {}),
-            ...(imageSettingsChanged && currentReference?.kind === "image" ? { videoReferenceImage: { ...currentReference, stale: true } } : {}),
           };
         });
         if (foundIds.size !== sceneIds.size) throw new Error("SCENE_OUTPUT_NOT_FOUND");

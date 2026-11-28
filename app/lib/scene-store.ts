@@ -112,30 +112,6 @@ export function chunkForScene(project: StoryProject, scene: StoredScene): Projec
   return project.chunks.find((chunk) => chunk.id === scene.chunkId);
 }
 
-const IMAGE_SETTINGS_KEYS: (keyof MediaGenerationSettings)[] = [
-  "imageModel",
-  "imageQuality",
-  "imageDetailLevel",
-  "imageUseCharacterReferences",
-];
-
-const VIDEO_SETTINGS_KEYS: (keyof MediaGenerationSettings)[] = [
-  "videoProvider",
-  "seedanceAccountId",
-  "seedanceChatMode",
-  "videoModel",
-  "videoQuality",
-  "videoDurationMode",
-  "videoDurationSec",
-  "videoMultiShot",
-  "videoAudio",
-  "videoOffPeak",
-  "videoUseCharacterReferences",
-  "videoUseLocationReferences",
-  "videoUseSceneImageReference",
-  "flowReferenceMode",
-];
-
 /** Persist mediaGeneration settings onto matching scenes in their chunk output files. */
 export async function persistSceneMediaSettingsInChunks(
   project: StoryProject,
@@ -168,17 +144,10 @@ export async function persistSceneMediaSettingsInChunks(
         ...(recordValue(record.mediaGeneration || record.media_generation) || {}),
         ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
       }, { remake: isRemakeProject(project) });
-      const currentMedia = recordValue(record.media);
-      const currentReference = recordValue(record.videoReferenceImage || record.video_reference_image)
-        || (currentMedia?.kind === "image" ? currentMedia : null);
-      const imageChanged = IMAGE_SETTINGS_KEYS.some((key) => currentSettings[key] !== nextSettings[key]);
-      const videoChanged = VIDEO_SETTINGS_KEYS.some((key) => currentSettings[key] !== nextSettings[key]);
+      void currentSettings;
       return {
         ...record,
         mediaGeneration: nextSettings,
-        ...(imageChanged && currentMedia?.kind === "image" ? { media: { ...currentMedia, stale: true } } : {}),
-        ...(videoChanged && currentMedia?.kind === "video" ? { media: { ...currentMedia, stale: true } } : {}),
-        ...(imageChanged && currentReference?.kind === "image" ? { videoReferenceImage: { ...currentReference, stale: true } } : {}),
       };
     });
     if (foundIds.size !== sceneIds.size) throw new Error("SCENE_OUTPUT_NOT_FOUND");

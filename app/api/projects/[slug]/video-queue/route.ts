@@ -11,7 +11,7 @@ import { readMaiVideoAuthCookie } from "../../../../lib/maivideo-auth-shared";
 import { higgsfieldSessionEncryptionReady, saveHiggsfieldSessionToken } from "../../../../lib/higgsfield-session-store";
 import { providerSessionEncryptionReady, saveProviderSessionToken } from "../../../../lib/provider-session-store";
 import { getProjectOrThrow, makeActivity, now, readData, updateData } from "../../../../lib/server-store";
-import { dataPath } from "../../../../lib/data-directory";
+import { dataPath, resolveStoredDataPath } from "../../../../lib/data-directory";
 
 export const runtime = "nodejs";
 
@@ -25,9 +25,9 @@ function mediaRecord(value: unknown) {
 
 function isAlreadyAiVideo(scene: Record<string, unknown>, projectSlug: string) {
   const media = mediaRecord(scene.media);
-  if (media.kind !== "video" || media.status !== "ready" || media.stale === true || !["maivideo-video", "flow-video"].some((provider) => String(media.provider || "").startsWith(provider))) return false;
+  if (media.kind !== "video" || media.status !== "ready" || !["maivideo-video", "seedance", "flow-video", "upload"].some((provider) => String(media.provider || "").startsWith(provider))) return false;
   const localPath = typeof media.localPath === "string" ? media.localPath.trim() : "";
-  const resolved = localPath ? path.resolve(process.cwd(), localPath) : "";
+  const resolved = localPath ? (resolveStoredDataPath(localPath) || path.resolve(process.cwd(), localPath)) : "";
   const projectRoot = dataPath("media", projectSlug);
   if (!resolved || !resolved.startsWith(`${projectRoot}${path.sep}`)) return false;
   try { return statSync(resolved).isFile(); } catch { return false; }

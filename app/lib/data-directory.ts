@@ -17,3 +17,20 @@ export function relativeDataPath(...segments: string[]) {
   const relativeRoot = path.relative(process.cwd(), DATA_DIR) || ".";
   return path.join(relativeRoot, ...segments).split(path.sep).join("/");
 }
+
+/**
+ * Resolves a stored data path (such as `data/media/...` or `../../data/media/...`)
+ * into `DATA_DIR` regardless of whether the process runs from the repo root
+ * or `.next/standalone`. Rejects traversal outside `DATA_DIR`.
+ */
+export function resolveStoredDataPath(localPath: string): string | undefined {
+  const trimmed = String(localPath || "").trim();
+  if (!trimmed) return undefined;
+  const direct = path.resolve(process.cwd(), trimmed);
+  if (direct === DATA_DIR || direct.startsWith(`${DATA_DIR}${path.sep}`)) return direct;
+  const normalized = trimmed.replace(/\\/g, "/");
+  const match = normalized.match(/^(?:(?:\.\.\/)+|\.?\/)?data(?:\/(.*))?$/);
+  if (!match) return undefined;
+  const candidate = path.resolve(DATA_DIR, match[1] || ".");
+  return candidate === DATA_DIR || candidate.startsWith(`${DATA_DIR}${path.sep}`) ? candidate : undefined;
+}

@@ -9,7 +9,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function isReadySceneMedia(value: unknown, expectedKind?: "image" | "video") {
   const media = asRecord(value);
-  return (media?.kind === "image" || media?.kind === "video") && (!expectedKind || media.kind === expectedKind) && media.status === "ready" && media.stale !== true;
+  return (media?.kind === "image" || media?.kind === "video") && (!expectedKind || media.kind === expectedKind) && media.status === "ready";
 }
 
 export async function saveGeneratedSceneMedia({

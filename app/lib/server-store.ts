@@ -9,7 +9,7 @@ import { getManualScriptMetrics } from "./script-utils";
 import { continuityContextFromOutput } from "./story-context";
 import { DEFAULT_IMAGE_STYLE, DEFAULT_VISUAL_STYLE, normalizeProjectStyleSettings } from "./visual-styles";
 import { DEFAULT_CONTENT_GENRE, DEFAULT_STORY_SETTING, normalizeContentGenre, normalizeSecondaryGenres, normalizeStorySetting } from "./content-genres";
-import { DATA_DIR } from "./data-directory";
+import { DATA_DIR, resolveStoredDataPath } from "./data-directory";
 
 const DATA_FILE = path.join(DATA_DIR, "storyai.json");
 const OUTPUT_DIR = path.join(DATA_DIR, "outputs");
@@ -444,7 +444,7 @@ export async function saveChunkOutput(slug: string, chunkId: string, payload: un
 export async function readChunkOutput(chunk: ProjectChunk): Promise<unknown | undefined> {
   if (!chunk.outputPath) return undefined;
   const outputRoot = path.resolve(OUTPUT_DIR);
-  const outputPath = path.resolve(process.cwd(), chunk.outputPath);
+  const outputPath = resolveStoredDataPath(chunk.outputPath) || path.resolve(process.cwd(), chunk.outputPath);
   if (outputPath !== outputRoot && !outputPath.startsWith(`${outputRoot}${path.sep}`)) return undefined;
   try {
     return JSON.parse(await readFile(outputPath, "utf8")) as unknown;

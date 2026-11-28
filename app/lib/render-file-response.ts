@@ -2,6 +2,7 @@ import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
+import { resolveStoredDataPath } from "./data-directory";
 
 export type RenderFileKind = "video" | "subtitle" | "manifest" | "blend";
 
@@ -67,7 +68,7 @@ export async function renderFileResponse(request: Request, options: {
   if (!options.localPath) return NextResponse.json({ message: options.missingMessage }, { status: 404 });
 
   const resolvedRoot = path.resolve(options.outputRoot);
-  const resolvedPath = path.resolve(process.cwd(), options.localPath);
+  const resolvedPath = resolveStoredDataPath(options.localPath) || path.resolve(process.cwd(), options.localPath);
   if (resolvedPath !== resolvedRoot && !resolvedPath.startsWith(`${resolvedRoot}${path.sep}`)) {
     return NextResponse.json({ message: "File render không thuộc project này." }, { status: 403 });
   }

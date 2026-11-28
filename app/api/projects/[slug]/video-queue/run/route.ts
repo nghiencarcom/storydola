@@ -250,7 +250,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     });
     const ready = updatedScenes.filter((value) => {
       const media = asRecord(asRecord(value)?.media);
-      return media?.kind === "video" && media.status === "ready" && media.stale !== true;
+      return media?.kind === "video" && media.status === "ready";
     }).length;
     const fallback = updatedScenes.filter((value) => asRecord(value)?.mediaFallback === true).length;
     const updatedPayload = {

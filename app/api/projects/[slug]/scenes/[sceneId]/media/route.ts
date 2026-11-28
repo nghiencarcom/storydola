@@ -7,7 +7,7 @@ import { findProjectScene, sceneMediaLocalPath, sceneReferenceImageLocalPath } f
 import { isRemakeProject, resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
 import { MAX_SCENE_MEDIA_UPLOAD_BYTES } from "../../../../../../lib/scene-media-upload-config";
 import { saveGeneratedSceneMedia } from "../../../../../../lib/scene-media-output";
-import { dataPath, relativeDataPath } from "../../../../../../lib/data-directory";
+import { dataPath, relativeDataPath, resolveStoredDataPath } from "../../../../../../lib/data-directory";
 import { imageThumbnailResponse } from "../../../../../../lib/image-thumbnail";
 
 export const runtime = "nodejs";
@@ -129,7 +129,7 @@ export async function GET(request: Request, context: { params: Promise<{ slug: s
   const isReference = kind === "reference";
   const localPath = isReference ? sceneReferenceImageLocalPath(scene) : sceneMediaLocalPath(scene);
   if (!localPath) return NextResponse.json({ message: "Cảnh chưa có media." }, { status: 404 });
-  const resolvedPath = path.resolve(process.cwd(), localPath);
+  const resolvedPath = resolveStoredDataPath(localPath) || path.resolve(process.cwd(), localPath);
   const projectMediaRoot = dataPath("media", project.slug);
   if (resolvedPath !== projectMediaRoot && !resolvedPath.startsWith(`${projectMediaRoot}${path.sep}`)) {
     return NextResponse.json({ message: "Media không thuộc project này." }, { status: 403 });

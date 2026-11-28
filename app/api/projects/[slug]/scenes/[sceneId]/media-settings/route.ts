@@ -30,11 +30,6 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
         ...requestedSettings,
         ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
       }, { remake: isRemakeProject(project) });
-      const currentSettings = resolveMediaGenerationSettings({ ...project.mediaGeneration, ...(asRecord(scene.mediaGeneration || scene.media_generation) || {}) }, { remake: isRemakeProject(project) });
-      const imageSettingsChanged = ["imageModel", "imageQuality", "imageDetailLevel", "imageUseCharacterReferences"]
-        .some((key) => currentSettings[key as keyof MediaGenerationSettings] !== settings[key as keyof MediaGenerationSettings]);
-      const videoSettingsChanged = ["videoProvider", "seedanceAccountId", "seedanceChatMode", "videoModel", "videoQuality", "videoDurationMode", "videoDurationSec", "videoMultiShot", "videoAudio", "videoOffPeak", "videoUseCharacterReferences", "videoUseLocationReferences", "videoUseSceneImageReference", "flowReferenceMode"]
-        .some((key) => currentSettings[key as keyof MediaGenerationSettings] !== settings[key as keyof MediaGenerationSettings]);
       const payload = asRecord(await readChunkOutput(chunk));
       const rawScenes = payload && Array.isArray(payload.scenes) ? payload.scenes : [];
       const targetIndex = rawScenes.findIndex((value) => {
@@ -45,15 +40,9 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       const updatedScenes = rawScenes.map((value, index) => {
         if (index !== targetIndex) return value;
         const record = asRecord(value) || {};
-        const currentMedia = asRecord(record.media);
-        const currentReference = asRecord(record.videoReferenceImage || record.video_reference_image)
-          || (currentMedia?.kind === "image" ? currentMedia : null);
         return {
           ...record,
           mediaGeneration: settings,
-          ...(imageSettingsChanged && currentMedia?.kind === "image" ? { media: { ...currentMedia, stale: true } } : {}),
-          ...(videoSettingsChanged && currentMedia?.kind === "video" ? { media: { ...currentMedia, stale: true } } : {}),
-          ...(imageSettingsChanged && currentReference?.kind === "image" ? { videoReferenceImage: { ...currentReference, stale: true } } : {}),
         };
       });
       const outputPath = await saveChunkOutput(slug, chunk.id, { ...(payload || {}), scenes: updatedScenes });

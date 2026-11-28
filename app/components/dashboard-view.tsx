@@ -450,7 +450,7 @@ function sceneNeedsImage(scene: ScenePreview, project: StoryProject) {
 }
 
 function sceneNeedsAiVideo(scene: ScenePreview) {
-  return !(scene.media?.status === "ready" && scene.media.kind === "video" && !scene.media.stale && ["maivideo-video", "seedance", "flow-video", "upload"].some((provider) => String(scene.media?.provider || "").startsWith(provider)));
+  return !(scene.media?.status === "ready" && scene.media.kind === "video" && ["maivideo-video", "seedance", "flow-video", "upload"].some((provider) => String(scene.media?.provider || "").startsWith(provider)));
 }
 
 function sceneHasExistingAiVideo(scene: ScenePreview) {
@@ -458,7 +458,6 @@ function sceneHasExistingAiVideo(scene: ScenePreview) {
   const provider = String(media?.provider || "");
   return media?.status === "ready"
     && media.kind === "video"
-    && !media.stale
     && (provider.startsWith("maivideo-video") || provider.startsWith("seedance") || provider.startsWith("flow-video"));
 }
 
@@ -516,18 +515,26 @@ function sceneMatchesAiReviewFilter(scene: ScenePreview, filter: SceneAiReviewFi
 }
 
 function sceneMediaReady(media?: SceneMediaPreview, aiDrama = false) {
-  return Boolean(media && media.status === "ready" && !media.stale && (!aiDrama || media.kind === "video"));
+  return Boolean(media && media.status === "ready" && (!aiDrama || media.kind === "video"));
 }
 
 function sceneMediaKindLabel(media?: SceneMediaPreview, aiDrama = false) {
-  if (media?.stale) return "Cần tạo lại";
-  if (!media || media.status !== "ready") return "Thiếu media";
+  if (!media || media.status !== "ready") return media?.stale ? "Cần tạo lại" : "Thiếu media";
   if (aiDrama && media.kind !== "video") return "Sai loại media";
-  if (media.provider?.includes("muse")) return "Muse.ai";
-  if (media.provider?.includes("higgsfield")) return isHiggsfieldMagi2Model(media.model) ? "MAGI-2 · Higgsfield" : isHiggsfieldWanModel(media.model) ? "Wan 3.0 · Higgsfield" : "Seedance 2.0 · Higgsfield";
-  if (media.model === "seedance-2.0-fast") return "Seedance 2.0 · PixVerse";
-  if (media.provider?.includes("seedance")) return "Seedance AI";
-  return media.provider?.startsWith("maivideo") ? "MaiVideo AI" : media.provider?.startsWith("pexels") ? "Stock" : "Có media";
+  const label = media.provider?.includes("muse")
+    ? "Muse.ai"
+    : media.provider?.includes("higgsfield")
+      ? (isHiggsfieldMagi2Model(media.model) ? "MAGI-2 · Higgsfield" : isHiggsfieldWanModel(media.model) ? "Wan 3.0 · Higgsfield" : "Seedance 2.0 · Higgsfield")
+      : media.model === "seedance-2.0-fast"
+        ? "Seedance 2.0 · PixVerse"
+        : media.provider?.includes("seedance")
+          ? "Seedance AI"
+          : media.provider?.startsWith("maivideo")
+            ? "MaiVideo AI"
+            : media.provider?.startsWith("pexels")
+              ? "Stock"
+              : "Có media";
+  return media.stale ? `${label} · giữ bản trước` : label;
 }
 
 function sceneMatchesMediaFilter(scene: ScenePreview, filter: SceneMediaFilter, aiDrama = false) {
@@ -4136,6 +4143,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                       <pre>{submittedVideoPrompt}</pre>
                     </details>}
                     {scene.media?.kind === "video" && scene.media.status === "ready" && scene.previewUrl && <div className="ai-drama-scene-video-preview">
+                      {scene.media.stale === true && <small className="scene-stale-reference-note" role="status">Đang giữ video trước đó · có thể ghép ngay hoặc bấm Tạo lại nếu muốn cập nhật</small>}
                       <div className="ai-drama-scene-video-links">
                         <a href={scene.previewUrl} target="_blank" rel="noreferrer">Mở video ↗</a>
                         <a href={scene.previewUrl} download={`${sceneNumberLabel(scene)}.mp4`}>Tải video</a>

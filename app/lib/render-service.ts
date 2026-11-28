@@ -10,7 +10,7 @@ import { resolveProjectDialogueVoice } from "./project-tts-voice";
 import { normalizeAiDramaSceneDuration } from "./ai-drama-scene-timing";
 import type { RenderSettings, StoryProject } from "./project-types";
 import { readProjectScenes, sceneMediaLocalPath, type StoredScene } from "./scene-store";
-import { DATA_DIR } from "./data-directory";
+import { DATA_DIR, resolveStoredDataPath } from "./data-directory";
 
 const OUTPUT_DIR = path.join(DATA_DIR, "outputs");
 const RENDER_DIR = path.join(DATA_DIR, "renders");
@@ -99,17 +99,15 @@ function dimensions(aspectRatio: string) {
 
 function safeProjectPath(project: StoryProject, localPath: string) {
   if (!localPath) return undefined;
-  const resolved = path.resolve(process.cwd(), localPath);
+  const resolved = resolveStoredDataPath(localPath);
+  if (!resolved) return undefined;
   const projectRoot = path.resolve(DATA_DIR, "media", project.slug);
   if (resolved !== projectRoot && !resolved.startsWith(`${projectRoot}${path.sep}`)) return undefined;
   return resolved;
 }
 
 function safeDataPath(localPath: string) {
-  if (!localPath) return undefined;
-  const resolved = path.resolve(process.cwd(), localPath);
-  if (resolved !== DATA_DIR && !resolved.startsWith(`${DATA_DIR}${path.sep}`)) return undefined;
-  return resolved;
+  return resolveStoredDataPath(localPath);
 }
 
 async function existingProjectMedia(project: StoryProject, localPath: string | undefined) {
@@ -152,10 +150,6 @@ export async function assertAiDramaVideosReady(project: StoryProject, scenes: St
     }
     if (media.status !== "ready") {
       issues.push(`${id}: video chưa sẵn sàng${media.error ? ` (${String(media.error).slice(0, 100)})` : ""}.`);
-      continue;
-    }
-    if (media.stale === true) {
-      issues.push(`${id}: video đã stale sau khi prompt hoặc tham chiếu thay đổi.`);
       continue;
     }
     const mediaPath = typeof media.localPath === "string" ? media.localPath.trim() : "";
@@ -300,7 +294,7 @@ export async function buildRenderManifest(project: StoryProject, scenes?: Stored
       : Math.max(1, Math.min(15, Number.isFinite(requestedDuration) && requestedDuration > 0 ? requestedDuration : 15));
     const media = asRecord(scene.media);
     const requestedKind = String(media.kind || record.media_type || record.mediaType || "image").toLowerCase() === "video" ? "video" : "image";
-    const mediaIsUsable = (media.kind === "image" || media.kind === "video") && media.status === "ready" && media.stale !== true;
+    const mediaIsUsable = (media.kind === "image" || media.kind === "video") && media.status === "ready";
     const currentPath = mediaIsUsable ? await existingProjectMedia(project, sceneMediaLocalPath(scene)) : undefined;
     const provider = media.provider ? String(media.provider) : undefined;
     const sceneAudio = asRecord(record.audio);
@@ -358,7 +352,7 @@ export async function buildRenderManifest(project: StoryProject, scenes?: Stored
       resolvedProvider = previousMedia.provider;
     }
     const sourceHasAudio = mediaKind === "video" && mediaPath
-      ? await hasAudioStream(path.resolve(process.cwd(), mediaPath))
+      ? await hasAudioStream(resolveStoredDataPath(mediaPath) || path.resolve(process.cwd(), mediaPath))
       : false;
     manifestScenes.push({
       index,
@@ -430,7 +424,7 @@ async function createDialogueMix(ffmpeg: string, scene: RenderManifestScene, tem
   const outputPath = path.join(tempDir, `dialogue-mix-${String(scene.index + 1).padStart(4, "0")}.wav`);
   const duration = scene.durationSec.toFixed(3);
   const args = ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-t", duration, "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"];
-  cues.forEach((cue) => args.push("-i", path.resolve(process.cwd(), String(cue.audioPath))));
+  cues.forEach((cue) => args.push("-i", resolveStoredDataPath(String(cue.audioPath)) || path.resolve(process.cwd(), String(cue.audioPath))));
   const filters = cues.map((cue, index) => {
     const delay = Math.max(0, Math.round(cue.startMs));
     const srtWindowMs = Number(cue.endMs) - Number(cue.startMs);
@@ -731,7 +725,7 @@ export async function renderProjectVideo(project: StoryProject, manifest: Render
     for (const scene of manifest.scenes) {
       const segmentPath = path.join(segmentDir, `${String(scene.index + 1).padStart(4, "0")}.mp4`);
       segmentPaths.push(segmentPath);
-      const sourcePath = scene.mediaPath ? path.resolve(process.cwd(), scene.mediaPath) : undefined;
+      const sourcePath = scene.mediaPath ? (resolveStoredDataPath(scene.mediaPath) || path.resolve(process.cwd(), scene.mediaPath)) : undefined;
       const validSource = sourcePath && await (async () => {
         try { return (await stat(sourcePath)).isFile(); } catch { return false; }
       })();
