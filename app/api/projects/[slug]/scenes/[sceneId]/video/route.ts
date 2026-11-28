@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { generateMaiVideoVideoForScene } from "../../../../../../lib/media-provider";
-import { resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
+import { isRemakeProject, resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
 import { isFlowStoryOnlyPreset } from "../../../../../../lib/story-presets";
 import { chunkForScene, findProjectScene, previousSceneContinuityReference, sceneReferenceImage } from "../../../../../../lib/scene-store";
 import { saveGeneratedSceneMedia } from "../../../../../../lib/scene-media-output";
@@ -29,7 +29,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     ...project.mediaGeneration,
     ...sceneSettings,
     ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
-  });
+  }, { remake: isRemakeProject(project) });
   const higgsfieldAuthToken = mediaGeneration.videoProvider === "higgsfield" ? readMaiVideoAuthCookie(request.headers.get("cookie")) : "";
   if (mediaGeneration.videoProvider === "higgsfield" && !higgsfieldAuthToken) {
     return NextResponse.json({ code: "HIGGSFIELD_SESSION_REQUIRED", message: "Hãy đăng nhập MaiVideo để dùng model Higgsfield." }, { status: 401 });

@@ -9,7 +9,7 @@ import { useProjects } from "../lib/project-store";
 import { FALLBACK_VIDEO_LANGUAGES, voiceLanguageLabel, type OmniVoiceCatalog, type OmniVoiceOption } from "../lib/omnivoice";
 import { DEFAULT_RENDER_SETTINGS, normalizeRenderSettings } from "../lib/render-effects";
 import { DEFAULT_MEDIA_GENERATION_SETTINGS, IMAGE_DETAIL_LEVEL_LABELS, type DialogueSegment, type ImageGenerationModelOption, type MediaGenerationSettings, type MediaModelCatalog, type ProjectCharacter, type ProjectLocation, type RenderSettings, type SceneAiReview, type SceneMediaJob, type StoryProject, type VideoGenerationModelOption, type VideoPublishingSet } from "../lib/project-types";
-import { availableImageModels as filterAvailableImageModels, DEFAULT_FLOW_VIDEO_DURATION_SEC, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, DEFAULT_SEEDANCE_VIDEO_MODEL_ID, HIGGSFIELD_SEEDANCE_MODEL_ID, imageDetailLevelsForModel, imageModelDisplayName, isFlowImageModel, isHiggsfieldWanModel, isMuseImageModel, isPixverseVideoSettings, isRemakeProject, isTemporarilyHiddenMaiVideoSeedance25, isVideoOffPeakRequired, normalizeVideoDuration, preferredVideoQuality, resolveMediaGenerationSettings, videoDurationBoundsForModel, videoDurationOptions, videoModelDisplayName, videoQualitiesForModel, visibleVideoModels } from "../lib/media-generation-settings";
+import { availableImageModels as filterAvailableImageModels, DEFAULT_FLOW_VIDEO_DURATION_SEC, DEFAULT_FLOW_VIDEO_MODEL_ID, DEFAULT_MUSE_VIDEO_MODEL_ID, DEFAULT_SEEDANCE_VIDEO_MODEL_ID, HIGGSFIELD_SEEDANCE_MODEL_ID, imageDetailLevelsForModel, imageModelDisplayName, isFlowImageModel, isHiggsfieldMagi2Model, isHiggsfieldWanModel, isMuseImageModel, isPixverseVideoSettings, isRemakeProject, isTemporarilyHiddenMaiVideoSeedance25, isVideoOffPeakRequired, normalizeVideoDuration, preferredVideoQuality, resolveMediaGenerationSettings, videoDurationBoundsForModel, videoDurationOptions, videoModelDisplayName, videoQualitiesForModel, visibleVideoModels } from "../lib/media-generation-settings";
 import { estimateDialogueDurationMs, hasExplicitDialogueSegments, isTemplateDialogueText, readDialogueSegments } from "../lib/dialogue-segments";
 import { useSeedanceAccounts } from "../lib/seedance-accounts-client";
 import { isTemplateEntityName, normalizeEntityName } from "../lib/entity-name";
@@ -524,7 +524,7 @@ function sceneMediaKindLabel(media?: SceneMediaPreview, aiDrama = false) {
   if (!media || media.status !== "ready") return "Thiếu media";
   if (aiDrama && media.kind !== "video") return "Sai loại media";
   if (media.provider?.includes("muse")) return "Muse.ai";
-  if (media.provider?.includes("higgsfield")) return isHiggsfieldWanModel(media.model) ? "Wan 3.0 · Higgsfield" : "Seedance 2.0 · Higgsfield";
+  if (media.provider?.includes("higgsfield")) return isHiggsfieldMagi2Model(media.model) ? "MAGI-2 · Higgsfield" : isHiggsfieldWanModel(media.model) ? "Wan 3.0 · Higgsfield" : "Seedance 2.0 · Higgsfield";
   if (media.model === "seedance-2.0-fast") return "Seedance 2.0 · PixVerse";
   if (media.provider?.includes("seedance")) return "Seedance AI";
   return media.provider?.startsWith("maivideo") ? "MaiVideo AI" : media.provider?.startsWith("pexels") ? "Stock" : "Có media";
@@ -714,6 +714,13 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   const scenesMutationEpochRef = useRef(0);
   const episodeScriptLoadTokenRef = useRef(0);
   const batchMediaPersistTimerRef = useRef<number | undefined>(undefined);
+  const pendingSceneRefPatchRef = useRef<Partial<MediaGenerationSettings>>({});
+  const pendingOverriddenSceneIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    pendingSceneRefPatchRef.current = {};
+    pendingOverriddenSceneIdsRef.current.clear();
+  }, [project?.slug]);
 
   useEffect(() => () => {
     if (batchMediaPersistTimerRef.current !== undefined) {
@@ -2463,6 +2470,28 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
     if (isVideoOffPeakRequired(next.videoModel, videoModel?.label)) next.videoOffPeak = true;
     else if (videoModel?.supportsOffPeak === false) next.videoOffPeak = false;
     setBatchMediaSettings(next);
+    const referenceFlagsChanged = patch.imageUseCharacterReferences !== undefined
+      || patch.videoUseCharacterReferences !== undefined
+      || patch.videoUseLocationReferences !== undefined
+      || patch.videoUseSceneImageReference !== undefined;
+    if (project && referenceFlagsChanged) {
+      const refPatch: Partial<MediaGenerationSettings> = {
+        ...(patch.imageUseCharacterReferences !== undefined ? { imageUseCharacterReferences: next.imageUseCharacterReferences } : {}),
+        ...(patch.videoUseCharacterReferences !== undefined ? { videoUseCharacterReferences: next.videoUseCharacterReferences } : {}),
+        ...(patch.videoUseLocationReferences !== undefined ? { videoUseLocationReferences: next.videoUseLocationReferences } : {}),
+        ...(patch.videoUseSceneImageReference !== undefined ? { videoUseSceneImageReference: next.videoUseSceneImageReference } : {}),
+      };
+      pendingSceneRefPatchRef.current = { ...pendingSceneRefPatchRef.current, ...refPatch };
+      for (const scene of scenes) {
+        if (scene.mediaGeneration || scene.media_generation) {
+          pendingOverriddenSceneIdsRef.current.add(scene.id);
+        }
+      }
+      setScenes((current) => current.map((scene) => (scene.mediaGeneration || scene.media_generation)
+        ? { ...scene, mediaGeneration: { ...mediaSettingsForScene(scene, project), ...refPatch } }
+        : scene));
+      setSceneVideoPromptPreviews({});
+    }
     if (project?.slug) {
       const targetSlug = project.slug;
       if (batchMediaPersistTimerRef.current !== undefined) {
@@ -2470,11 +2499,22 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
       }
       batchMediaPersistTimerRef.current = window.setTimeout(() => {
         batchMediaPersistTimerRef.current = undefined;
+        const scenePatch = pendingSceneRefPatchRef.current;
+        const overriddenIds = [...pendingOverriddenSceneIdsRef.current];
+        pendingSceneRefPatchRef.current = {};
+        pendingOverriddenSceneIdsRef.current.clear();
         void fetch(`/api/projects/${encodeURIComponent(targetSlug)}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ mediaGeneration: next, silent: true }),
         }).catch(() => undefined);
+        if (overriddenIds.length && Object.keys(scenePatch).length) {
+          void fetch(`/api/projects/${encodeURIComponent(targetSlug)}/scenes/media-settings-batch`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sceneIds: overriddenIds, mediaGeneration: scenePatch, patch: true, silent: true }),
+          }).catch(() => undefined);
+        }
       }, 400);
     }
   }
@@ -3569,7 +3609,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
   }, [project?.slug, videoQueue?.status, videoQueueSummary.queued, videoQueueRunning, scriptBlocksIndependentTasks, ttsRunning, batchMediaBusy, generatingSceneId]);
 
   const continuityQa = project.continuityQa;
-  const mediaGeneration = resolveMediaGenerationSettings({ ...DEFAULT_MEDIA_GENERATION_SETTINGS, ...project.mediaGeneration });
+  const mediaGeneration = resolveMediaGenerationSettings(project.mediaGeneration, { remake: isRemakeProject(project) });
   const projectMuseImageSelected = isMuseImageModel(mediaGeneration.imageModel);
   const projectFlowImageSelected = isFlowImageModel(mediaGeneration.imageModel);
   const projectImageDetailLevels = imageDetailLevelsForModel(mediaCatalog?.imageModels.find((item) => item.id === mediaGeneration.imageModel));
@@ -3706,6 +3746,17 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
         && [...savedImageCharacterIds].sort().join("|") === [...expectedImageCharacterIds].sort().join("|")
         && String(sceneImage.referenceLocationId || "") === sceneReferenceLocationId(scene, "image")
       ));
+    const activeCharacterIds = mediaLabel === "ảnh"
+      ? (sceneMediaSettings.imageUseCharacterReferences ? selectedIds : [])
+      : (sceneMediaSettings.videoUseCharacterReferences ? selectedIds : []);
+    const matchedLocationName = locationProfiles.find((location) => location.id === selectedLocationId)?.name;
+    const locationSummary = !matchedLocationName
+      ? undefined
+      : mediaLabel === "video" && !sceneMediaSettings.videoUseLocationReferences
+        ? undefined
+        : mediaLabel === "video" && sceneImageSelected
+          ? `${matchedLocationName} · chỉ mô tả chữ`
+          : matchedLocationName;
     const selectedNames = flowFramesMode ? [
       sceneImage?.status === "ready" && !sceneImage.stale ? "Khung đầu · sẵn sàng" : "Khung đầu · cần ảnh mới",
       flowFrameEndScene && flowFrameEndImage?.status === "ready" && !flowFrameEndImage.stale
@@ -3715,8 +3766,8 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
       ...(sceneImageSelected
         ? [sceneImageIsCurrent ? "Ảnh cảnh chính" : sceneImage?.status === "ready" ? "Ảnh cảnh chính · ảnh cũ" : "Ảnh cảnh chính · chưa có ảnh"]
         : mediaLabel === "video" && sceneImage?.status === "ready" ? ["Ảnh cảnh · không gửi video"] : []),
-      ...selectedIds.map((id) => characterProfiles.find((character) => character.id === id)?.name).filter(Boolean),
-      locationProfiles.find((location) => location.id === selectedLocationId)?.name,
+      ...activeCharacterIds.map((id) => characterProfiles.find((character) => character.id === id)?.name).filter(Boolean),
+      locationSummary,
     ].filter(Boolean);
     return <details className="ai-drama-row-reference-picker" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
       <summary aria-label={`Chọn ảnh tham chiếu cho tạo ${mediaLabel} ${sceneNumberLabel(scene)}`}>
@@ -3760,7 +3811,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
           </select>
         </label>
         <small className="ai-drama-row-reference-note">{mediaLabel === "video"
-          ? "Bối cảnh đã chọn sẽ thêm mô tả vào prompt video và gửi ảnh hồ sơ nếu có. Khi bật ảnh cảnh chính, video nhận cả ảnh cảnh và hồ sơ bối cảnh."
+          ? "Bối cảnh đã chọn sẽ thêm mô tả vào prompt video; ảnh ghép bối cảnh chỉ gửi kèm khi tắt ảnh cảnh chính để tránh xung đột khung hình."
           : "Ban đầu lấy hồ sơ đã gán cho cảnh. Mô tả bối cảnh sẽ được thêm vào prompt; nếu hồ sơ có ảnh tải lên sẵn, ảnh đó cũng được gửi làm tham chiếu."}</small>
         </>}
       </div>
@@ -3877,7 +3928,7 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
               <label><input type="checkbox" checked={batchVideoOffPeakRequired || (selectedBatchVideoModel?.supportsOffPeak === false ? false : batchMediaSettings.videoOffPeak)} disabled={batchMediaBusy || videoQueueRunning || batchVideoOffPeakRequired || selectedBatchVideoModel?.supportsOffPeak === false} onChange={(event) => updateBatchMediaSettings({ videoOffPeak: event.target.checked })} /><span>{batchVideoOffPeakRequired ? "Off-peak · bắt buộc với PixVerse" : selectedBatchVideoModel?.supportsOffPeak === false ? "Off-peak · không hỗ trợ" : "Off-peak"}</span></label>
             </>}
             <label><input type="checkbox" checked={batchMediaSettings.videoUseCharacterReferences} disabled={batchFlowFramesSelected || batchMediaBusy || videoQueueRunning} onChange={(event) => updateBatchMediaSettings({ videoUseCharacterReferences: event.target.checked })} /><span>{batchFlowFramesSelected ? "Ảnh nhân vật · chỉ Ingredients" : "Ảnh nhân vật cho video"}</span></label>
-            <label><input type="checkbox" checked={batchMediaSettings.videoUseLocationReferences} disabled={batchFlowFramesSelected || batchMediaBusy || videoQueueRunning} onChange={(event) => updateBatchMediaSettings({ videoUseLocationReferences: event.target.checked })} /><span>{batchFlowFramesSelected ? "Ảnh bối cảnh · chỉ Ingredients" : project.presetId === "ai-drama" ? "Ảnh & mô tả bối cảnh cho video" : "Ảnh bối cảnh (chỉ dùng khi tắt ảnh cảnh)"}</span></label>
+            <label><input type="checkbox" checked={batchMediaSettings.videoUseLocationReferences} disabled={batchFlowFramesSelected || batchMediaBusy || videoQueueRunning} onChange={(event) => updateBatchMediaSettings({ videoUseLocationReferences: event.target.checked })} /><span>{batchFlowFramesSelected ? "Ảnh bối cảnh · chỉ Ingredients" : "Ảnh bối cảnh (chỉ gửi ảnh khi tắt ảnh cảnh)"}</span></label>
             <label><input type="checkbox" checked={batchMediaSettings.videoUseSceneImageReference} disabled={batchFlowFramesSelected || batchMediaBusy || videoQueueRunning} onChange={(event) => updateBatchMediaSettings({ videoUseSceneImageReference: event.target.checked })} /><span>{batchFlowFramesSelected ? "Ảnh cảnh làm khung đầu Flow · bắt buộc" : "Ảnh cảnh làm tham chiếu"}</span></label>
           </div>
           <div className="ai-drama-panel-heading ai-drama-scenes-heading"><div><div className="section-kicker">SCENE WORKFLOW</div><h3 id="ai-drama-scenes-title">Cảnh thoại & tạo media</h3><span>{filteredScenes.length} cảnh · {filteredScenes.reduce((sum, scene) => sum + sceneDialogueSegments(scene, characterProfiles).length, 0)} lượt thoại{filteredScenesNeedingDialogueTimeline.length ? ` · ${filteredScenesNeedingDialogueTimeline.length} cảnh chưa có timeline tách` : ""}</span></div>
@@ -4696,12 +4747,10 @@ function DashboardProjectContent({ project }: { project: StoryProject }) {
                     <label><input type="checkbox" checked={sceneVideoOffPeakRequired || (selectedVideoModel?.supportsOffPeak === false ? false : selectedSceneMediaSettings.videoOffPeak)} disabled={sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive || sceneVideoOffPeakRequired || selectedVideoModel?.supportsOffPeak === false} onChange={(event) => updateSelectedSceneMediaSettings({ videoOffPeak: event.target.checked })} /><span>{sceneVideoOffPeakRequired ? "Off-peak · bắt buộc với PixVerse" : selectedVideoModel?.supportsOffPeak === false ? "Off-peak · không hỗ trợ" : "Off-peak"}</span></label>
                   </>}
                   <label><input type="checkbox" checked={selectedSceneMediaSettings.videoUseCharacterReferences} disabled={sceneFlowFramesSelected || batchFlowFramesSelected || sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive} onChange={(event) => updateSelectedSceneMediaSettings({ videoUseCharacterReferences: event.target.checked })} /><span>{sceneFlowFramesSelected || batchFlowFramesSelected ? "Ảnh nhân vật · chỉ Ingredients" : "Ảnh nhân vật cho video"}</span></label>
-                  <label><input type="checkbox" checked={selectedSceneMediaSettings.videoUseLocationReferences} disabled={sceneFlowFramesSelected || batchFlowFramesSelected || sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive} onChange={(event) => updateSelectedSceneMediaSettings({ videoUseLocationReferences: event.target.checked })} /><span>{sceneFlowFramesSelected || batchFlowFramesSelected ? "Ảnh bối cảnh · chỉ Ingredients" : project.presetId === "ai-drama" ? "Ảnh & mô tả bối cảnh cho video" : "Ảnh bối cảnh (chỉ dùng khi tắt ảnh cảnh)"}</span></label>
+                  <label><input type="checkbox" checked={selectedSceneMediaSettings.videoUseLocationReferences} disabled={sceneFlowFramesSelected || batchFlowFramesSelected || sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive} onChange={(event) => updateSelectedSceneMediaSettings({ videoUseLocationReferences: event.target.checked })} /><span>{sceneFlowFramesSelected || batchFlowFramesSelected ? "Ảnh bối cảnh · chỉ Ingredients" : "Ảnh bối cảnh (chỉ gửi ảnh khi tắt ảnh cảnh)"}</span></label>
                   <label><input type="checkbox" checked={selectedSceneMediaSettings.videoUseSceneImageReference} disabled={sceneFlowFramesSelected || sceneMediaSettingsSaving || Boolean(generatingSceneId) || selectedSceneMediaJobActive} onChange={(event) => updateSelectedSceneMediaSettings({ videoUseSceneImageReference: event.target.checked })} /><span>{sceneFlowFramesSelected ? "Ảnh cảnh làm khung đầu Flow · bắt buộc" : "Ảnh cảnh làm tham chiếu"}</span></label>
                   </div>
-                  <small className="scene-media-settings-help">{project.presetId === "ai-drama"
-                    ? "Khi bật tham chiếu bối cảnh, mô tả hồ sơ được thêm vào prompt video và ảnh hồ sơ được gửi kèm, kể cả khi video cũng dùng ảnh cảnh làm frame đầu."
-                    : "Khi bật ảnh cảnh làm tham chiếu, ảnh đó đã mang thông tin bối cảnh nên hệ thống không gửi thêm ảnh hồ sơ bối cảnh. Tắt ảnh cảnh nếu muốn dùng ảnh bối cảnh thay thế."}</small>
+                  <small className="scene-media-settings-help">Khi bật ảnh cảnh làm tham chiếu, ảnh đó đã mang thông tin bối cảnh nên hệ thống chỉ giữ mô tả chữ và không gửi trùng ảnh hồ sơ bối cảnh. Tắt ảnh cảnh nếu muốn gửi ảnh bối cảnh thay thế.</small>
                   <small className="scene-media-settings-help">{sceneProviderAccountSelected ? `${sceneFlowSelected ? "Flow" : sceneMuseSelected ? "Muse.ai" : "Seedance"} · clip ${selectedSceneRequestedVideoDuration}s · dùng các ảnh tham chiếu đã bật.` : mediaCatalogError || (selectedSceneMediaSettings.videoProvider === "maivideo" && mediaCatalog?.videoError) ? "Không tải được danh sách model; đang dùng lựa chọn đã lưu." : `Cảnh ${Math.ceil(selectedSceneDuration)}s · clip ${selectedSceneRequestedVideoDuration}s${selectedSceneMediaSettings.videoDurationMode === "scene" && selectedSceneDuration > sceneVideoMaxDuration ? ` · giới hạn ${sceneVideoMaxDuration}s, phần dư lặp khi ghép` : ""}.`}</small>
                 </section>
               </details>

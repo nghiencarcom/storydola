@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { createFalClient } from "@fal-ai/client";
 import sharp, { type OverlayOptions } from "sharp";
 import { generateMaiVideoPixverseV6ReferenceSegment, generateMaiVideoSalesSegment, generateSalesVideoSegment, generateSeedanceGatewaySalesSegment, normalizeMaiVideoReferenceTokens } from "./media-provider";
-import { isHiggsfieldWanModel, normalizeVideoDuration, videoDurationOptions } from "./media-generation-settings";
+import { isHiggsfieldMagi2Model, isHiggsfieldWanModel, normalizeVideoDuration, videoDurationOptions } from "./media-generation-settings";
 import type { VideoGenerationModelOption } from "./project-types";
 import { pixverseSalesClient } from "./pixverse-sales-video";
 import { salesVideoPath, salesVideoSegmentPath, type SalesVideoPostProcessing } from "./sales-video-storage";
@@ -340,7 +340,7 @@ async function renderCreativeSalesVideo(input: {
 
     const activeVideoModel = input.maiVideoModel || input.gatewayVideoModel || input.higgsfieldVideoModel;
     const durationOptions = activeVideoModel ? videoDurationOptions(activeVideoModel, activeVideoModel.qualities.includes("720p") ? "720p" : activeVideoModel.qualities[0]) : [];
-    const modelLimit = input.splitDialogue ? 15 : activeVideoModel?.id === "wan-3.0" || isHiggsfieldWanModel(activeVideoModel?.id) ? 30 : durationOptions.at(-1) || 15;
+    const modelLimit = input.splitDialogue ? 15 : activeVideoModel?.id === "wan-3.0" || isHiggsfieldWanModel(activeVideoModel?.id) || isHiggsfieldMagi2Model(activeVideoModel?.id) ? 30 : durationOptions.at(-1) || 15;
     const isPairedImageWorkflow = template.workflow === "poses" || template.workflow === "narration";
     const imagePairCount = isPairedImageWorkflow ? Math.ceil(images.length / 2) : 0;
     const plannedDurations = imagePairCount

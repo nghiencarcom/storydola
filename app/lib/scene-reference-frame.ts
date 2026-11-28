@@ -1,7 +1,7 @@
 import { access } from "node:fs/promises";
 import path from "node:path";
 import type { MediaGenerationSettings, SceneMediaAsset, StoryProject } from "./project-types";
-import { resolveMediaGenerationSettings } from "./media-generation-settings";
+import { isRemakeProject, resolveMediaGenerationSettings } from "./media-generation-settings";
 import { generateMaiVideoImageForScene } from "./media-provider";
 import { previousSceneContinuityReference, readProjectScenes, sceneReferenceImage, type StoredScene } from "./scene-store";
 import { saveGeneratedSceneReferenceImage } from "./scene-media-output";
@@ -59,7 +59,7 @@ export async function ensureSceneReferenceFrame({
   scene: SceneRecord;
   mediaGeneration: MediaGenerationSettings;
 }) {
-  const settings = resolveMediaGenerationSettings(mediaGeneration);
+  const settings = resolveMediaGenerationSettings(mediaGeneration, { remake: isRemakeProject(project) });
   const continuityReference = previousSceneContinuityReference(await readProjectScenes(project), scene);
   const ids = settings.imageUseCharacterReferences ? assignedCharacterIds(scene) : [];
   const locationId = assignedLocationId(scene);

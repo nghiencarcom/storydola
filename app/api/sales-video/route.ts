@@ -13,7 +13,7 @@ import { getSeedanceApiKey, getSeedanceApiSessionToken } from "../../lib/seedanc
 import { createCreativeSalesVideo, ensureSalesVideoSegmentFile, SalesVideoInputError, SalesVideoSegmentError } from "../../lib/sales-video-creative";
 import { deleteSalesVideoProject, getSalesVideoProject, listSalesVideoProjects, salesVideoSegmentPath, salesVideoWatermarkLogoPath, saveSalesVideoProject as persistSalesVideoProject, type SalesVideoProject } from "../../lib/sales-video-storage";
 import { enqueueSalesVideoTask, salesVideoWorkerId } from "../../lib/sales-video-runtime";
-import { isHiggsfieldSeedanceModel, isHiggsfieldVideoModel, isHiggsfieldWanModel, isVideoOffPeakRequired } from "../../lib/media-generation-settings";
+import { isHiggsfieldMagi2Model, isHiggsfieldSeedanceModel, isHiggsfieldVideoModel, isHiggsfieldWanModel, isVideoOffPeakRequired } from "../../lib/media-generation-settings";
 import { stat } from "node:fs/promises";
 import {
   salesVideoDurationOptions, salesVideoProductSegments, salesVideoImageLimit, salesVideoLanguages, salesVideoNameLimit,
@@ -251,7 +251,7 @@ export async function POST(request: Request) {
   const durationOptions = salesVideoDurationOptions(selectedVideoModel, creative, Boolean(productTemplate), selectedVideoModel?.id || requestedModel, videoQuality);
   const seconds = durationOptions.find((item) => item === durationValue);
   if (!seconds) {
-    const maxDuration = selectedVideoModel?.id === "wan-3.0" || isHiggsfieldWanModel(selectedVideoModel?.id) ? 30 : Math.min(15, selectedVideoModel?.maxDurationSec || 15);
+    const maxDuration = selectedVideoModel?.id === "wan-3.0" || isHiggsfieldWanModel(selectedVideoModel?.id) || isHiggsfieldMagi2Model(selectedVideoModel?.id) ? 30 : Math.min(15, selectedVideoModel?.maxDurationSec || 15);
     return NextResponse.json({ message: `Thời lượng video không hợp lệ với model đã chọn (tối đa ${maxDuration} giây).` }, { status: 400 });
   }
   const speaksInVideo = salesVideoSupportsDialogue(selectedVideoModel);

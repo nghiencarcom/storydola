@@ -1,6 +1,6 @@
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
-import { isFlowImageModel, isMuseImageModel, resolveMediaGenerationSettings } from "../../../../lib/media-generation-settings";
+import { isFlowImageModel, isMuseImageModel, isRemakeProject, resolveMediaGenerationSettings } from "../../../../lib/media-generation-settings";
 import { isFlowStoryOnlyPreset } from "../../../../lib/story-presets";
 import { readMaiVideoAuthCookie } from "../../../../lib/maivideo-auth-shared";
 import { cancelSceneMediaJobs, createSceneMediaJob, startSceneMediaQueue } from "../../../../lib/scene-media-queue";
@@ -95,7 +95,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     ...settingsRecord(scene.mediaGeneration || scene.media_generation),
     ...explicitSettings,
     ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
-  }));
+  }, { remake: isRemakeProject(project) }));
   if (kind === "video") {
     const missingFrames = requestedScenes.flatMap((scene, index) => {
       if (!scene || requestedMediaSettings[index]?.videoProvider !== "flow" || requestedMediaSettings[index]?.flowReferenceMode !== "frames") return [];
@@ -176,7 +176,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       current.mediaGeneration = resolveMediaGenerationSettings({
         ...current.mediaGeneration,
         ...explicitSettings,
-      });
+      }, { remake: isRemakeProject(current) });
     }
     current.sceneMediaJobs ||= [];
     const created: SceneMediaJob[] = [];
@@ -218,7 +218,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
         ...settingsRecord(savedSceneSettings),
         ...explicitSettings,
         ...(isFlowStoryOnlyPreset(current.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
-      });
+      }, { remake: isRemakeProject(current) });
       const job = createSceneMediaJob({ sceneId: scene.id, chunkId: chunk.id, sceneIndex: scene.sceneIndex, kind, settings });
       current.sceneMediaJobs.push(job);
       created.push(job);
@@ -264,7 +264,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     const gatewayJobIds = queued
       .filter((job) => {
         if (job.status !== "queued" && job.status !== "running") return false;
-        const settings = resolveMediaGenerationSettings({ ...project.mediaGeneration, ...settingsRecord(job.mediaGeneration) });
+        const settings = resolveMediaGenerationSettings({ ...project.mediaGeneration, ...settingsRecord(job.mediaGeneration) }, { remake: isRemakeProject(project) });
         return job.kind === "image"
           ? isMuseImageModel(settings.imageModel) || isFlowImageModel(settings.imageModel)
           : settings.videoProvider === "muse" || settings.videoProvider === "flow";

@@ -6,7 +6,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { NextResponse } from "next/server";
 import { findProjectScene } from "../../../../../../../lib/scene-store";
-import { resolveMediaGenerationSettings } from "../../../../../../../lib/media-generation-settings";
+import { isRemakeProject, resolveMediaGenerationSettings } from "../../../../../../../lib/media-generation-settings";
 import { MAX_SCENE_MEDIA_UPLOAD_BYTES, SCENE_MEDIA_UPLOAD_CHUNK_BYTES, SCENE_MEDIA_UPLOAD_TTL_MS } from "../../../../../../../lib/scene-media-upload-config";
 import { saveGeneratedSceneMedia } from "../../../../../../../lib/scene-media-output";
 import { readData } from "../../../../../../../lib/server-store";
@@ -247,7 +247,7 @@ async function completeUpload(userId: string, project: StoryProject, sceneId: st
       projectSlug: project.slug,
       sceneId,
       media,
-      mediaGeneration: resolveMediaGenerationSettings(project.mediaGeneration),
+      mediaGeneration: resolveMediaGenerationSettings(project.mediaGeneration, { remake: isRemakeProject(project) }),
       userId,
     });
     session.updatedAt = Date.now();

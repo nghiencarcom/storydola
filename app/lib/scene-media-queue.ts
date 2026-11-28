@@ -3,7 +3,7 @@ import { withProviderSubmissionCheckpoint, canSafelyResumeUnsubmittedJob } from 
 import { randomUUID } from "node:crypto";
 import type { SceneMediaJob, SceneMediaJobStatus, SceneMediaAsset, StoryProject } from "./project-types";
 import { generateMaiVideoImageForScene, generateMaiVideoVideoForScene, isSeedancePendingStatusMessage, MediaProviderJobPendingError, SeedanceGenerationError } from "./media-provider";
-import { isFlowImageModel, isMuseImageModel, isRemakeProject, resolveMediaGenerationSettings } from "./media-generation-settings";
+import { isFlowImageModel, isMuseImageModel, isRemakeProject, resolveMediaGenerationSettings, shouldUseVideoLocationReference } from "./media-generation-settings";
 import { isFlowStoryOnlyPreset } from "./story-presets";
 import { deleteHiggsfieldSessionToken, getHiggsfieldSessionToken } from "./higgsfield-session-store";
 import { deleteProviderSessionToken, getProviderSessionToken } from "./provider-session-store";
@@ -381,7 +381,9 @@ async function runJobWithCheckpoint(userId: string, slug: string, job: SceneMedi
     const providerAuthToken = usesGateway ? await getProviderSessionToken(userId, job.id) : "";
     if (usesGateway && !providerAuthToken) throw new Error("PROVIDER_SESSION_REQUIRED");
     const locationId = sceneReferenceLocationId(scene, job.kind === "image" ? "image" : "video");
-    const needsLocation = job.kind === "image" || settings.videoUseLocationReferences;
+    const needsLocation = job.kind === "image"
+      || (!(settings.videoProvider === "flow" && settings.flowReferenceMode === "frames")
+        && shouldUseVideoLocationReference(settings, project.presetId === "ai-drama"));
     if (project.presetId === "ai-drama" && locationId && needsLocation) {
       await ensureLocationReference(userId, slug, locationId, providerAuthToken);
       if (signal.aborted) return;

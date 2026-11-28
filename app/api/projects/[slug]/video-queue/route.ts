@@ -3,7 +3,7 @@ import path from "node:path";
 import { NextResponse } from "next/server";
 import { readProjectScenes, sceneReferenceImage } from "../../../../lib/scene-store";
 import type { VideoGenerationJob, VideoQueueState } from "../../../../lib/project-types";
-import { resolveMediaGenerationSettings } from "../../../../lib/media-generation-settings";
+import { isRemakeProject, resolveMediaGenerationSettings } from "../../../../lib/media-generation-settings";
 import { isFlowStoryOnlyPreset } from "../../../../lib/story-presets";
 import { getSeedanceApiKey } from "../../../../lib/seedance-accounts";
 import { getMaiVideoApiKey } from "../../../../lib/maivideo-api-keys";
@@ -89,7 +89,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     ...project.mediaGeneration,
     ...mediaRecord(scene.mediaGeneration || scene.media_generation),
     ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
-  }));
+  }, { remake: isRemakeProject(project) }));
   const higgsfieldJobsRequested = candidateSettings.some((settings) => settings.videoProvider === "higgsfield");
   const gatewayJobsRequested = candidateSettings.some((settings) => settings.videoProvider === "muse" || settings.videoProvider === "flow");
   const higgsfieldAuthToken = higgsfieldJobsRequested ? readMaiVideoAuthCookie(request.headers.get("cookie")) : "";
@@ -113,7 +113,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       ...project.mediaGeneration,
       ...mediaRecord(scene.mediaGeneration || scene.media_generation),
       ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
-    });
+    }, { remake: isRemakeProject(project) });
     if (!settings.videoUseSceneImageReference) return false;
     const image = sceneReferenceImage(scene);
     return !image || image.status !== "ready";
@@ -205,7 +205,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
         ...project.mediaGeneration,
         ...mediaRecord(scene.mediaGeneration || scene.media_generation),
         ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
-      });
+      }, { remake: isRemakeProject(project) });
       const job: VideoGenerationJob = {
         id: `vjob-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         sceneId: scene.id,

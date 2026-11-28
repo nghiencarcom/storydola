@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import type { MediaGenerationSettings } from "../../../../../../lib/project-types";
-import { resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
+import { isRemakeProject, resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
 import { isFlowStoryOnlyPreset } from "../../../../../../lib/story-presets";
 import { readProjectScenes } from "../../../../../../lib/scene-store";
 import { getProjectOrThrow, makeActivity, now, readChunkOutput, saveChunkOutput, updateData } from "../../../../../../lib/server-store";
@@ -29,8 +29,8 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       const settings = resolveMediaGenerationSettings({
         ...requestedSettings,
         ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
-      });
-      const currentSettings = resolveMediaGenerationSettings({ ...project.mediaGeneration, ...(asRecord(scene.mediaGeneration || scene.media_generation) || {}) });
+      }, { remake: isRemakeProject(project) });
+      const currentSettings = resolveMediaGenerationSettings({ ...project.mediaGeneration, ...(asRecord(scene.mediaGeneration || scene.media_generation) || {}) }, { remake: isRemakeProject(project) });
       const imageSettingsChanged = ["imageModel", "imageQuality", "imageDetailLevel", "imageUseCharacterReferences"]
         .some((key) => currentSettings[key as keyof MediaGenerationSettings] !== settings[key as keyof MediaGenerationSettings]);
       const videoSettingsChanged = ["videoProvider", "seedanceAccountId", "seedanceChatMode", "videoModel", "videoQuality", "videoDurationMode", "videoDurationSec", "videoMultiShot", "videoAudio", "videoOffPeak", "videoUseCharacterReferences", "videoUseLocationReferences", "videoUseSceneImageReference", "flowReferenceMode"]

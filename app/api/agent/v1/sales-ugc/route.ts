@@ -2,8 +2,11 @@ import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getCurrentUserId } from "../../../../lib/auth-server";
+import { isDirectSeedanceVideoModel, isHiggsfieldVideoModel } from "../../../../lib/media-generation-settings";
+import { normalizeMaiVideoReferenceTokens } from "../../../../lib/media-provider";
 import {
-  salesVideoLanguages, salesVideoProductInstruction, salesVideoRatios, salesVideoTemplates, salesVideoMaxWordCount, salesVideoWordCount,
+  salesVideoLanguages, salesVideoProductInstruction, salesVideoProductInstructionForImages,
+  salesVideoRatios, salesVideoTemplates, salesVideoMaxWordCount, salesVideoWordCount,
   salesVideoProductScriptInstruction,
 } from "../../../../lib/sales-video-templates";
 
@@ -42,18 +45,30 @@ type Job = {
 const runtimeState = globalThis as typeof globalThis & { storyaiSalesUgcJobs?: Map<string, Job> };
 const jobs = runtimeState.storyaiSalesUgcJobs ??= new Map<string, Job>();
 
+function usesLowercaseMaiVideoTokens(model: string) {
+  const value = model.trim().toLowerCase();
+  if (!value) return false;
+  if (isHiggsfieldVideoModel(value) || value.includes("higgsfield")) return false;
+  if (isDirectSeedanceVideoModel(value) || value.includes("seedance 2.5") || value.includes("seedance-2.5")) return false;
+  if (value.includes("muse") || value.includes("flow")) return false;
+  return true;
+}
+
 function buildUgcPrompt(job: Job, result: z.infer<typeof outputSchema>) {
+  const lowercaseTokens = usesLowercaseMaiVideoTokens(job.input.model);
   const seconds = job.input.seconds;
   const maxWords = salesVideoMaxWordCount(seconds, job.input.language);
   const hookEnd = Math.max(2, Math.round(seconds * 0.2));
   const demoEnd = Math.min(seconds - 1, Math.max(hookEnd + 1, Math.round(seconds * 0.8)));
-  const authored = result.prompt.trim().startsWith(salesVideoProductInstruction)
-    ? result.prompt.trim().slice(salesVideoProductInstruction.length).trim()
-    : result.prompt.trim();
+  const defaultInstruction = salesVideoProductInstructionForImages(1, { lowercaseTokens });
+  const trimmedPrompt = result.prompt.trim();
+  const matchedPrefix = [salesVideoProductInstruction, defaultInstruction].find((prefix) => trimmedPrompt.startsWith(prefix));
+  const authoredRaw = matchedPrefix ? trimmedPrompt.slice(matchedPrefix.length).trim() : trimmedPrompt;
+  const authored = lowercaseTokens ? normalizeMaiVideoReferenceTokens(authoredRaw) : authoredRaw;
   const template = salesVideoTemplates.find(({ id }) => id === job.input.template);
   const facts = result.facts.trim() || job.input.facts.trim();
   const guidance = [
-    salesVideoProductInstruction,
+    defaultInstruction,
     `MỤC TIÊU: Quảng cáo UGC chân thực dài ${seconds} giây, khung hình ${job.input.ratio}, cho ${JSON.stringify(result.product || job.input.product)}. Ngành hàng: ${template?.name || "sản phẩm"}. ${template?.direction || ""}`,
     "LỜI THOẠI: Một người dẫn duy nhất, tự nhiên và cân bằng; không hỏi đáp, không người hỏi ngoài khung hình, không giọng thứ hai hoặc nhãn vai.",
     `NHỊP CẢNH: 0–${hookEnd}s mở bằng hook có hành động hoặc biểu cảm tự nhiên; ${hookEnd}–${demoEnd}s trình diễn rõ một thao tác thật với sản phẩm; ${demoEnd}–${seconds}s chốt bằng khung hình sản phẩm dễ nhận diện và lời kêu gọi nhẹ nhàng. Mô tả cỡ cảnh, hành động, hướng nhìn và chuyển động máy cho từng nhịp; lấp đầy thời lượng, không tua nhanh hay đổi cảnh vô cớ.`,
@@ -68,7 +83,8 @@ function buildUgcPrompt(job: Job, result: z.infer<typeof outputSchema>) {
   const sceneDescription = authored.length > promptBudget
     ? `${authored.slice(0, Math.max(0, promptBudget - 1)).trimEnd()}…`
     : authored;
-  return [guidance, sceneDescription].filter(Boolean).join("\n\n");
+  const combined = [guidance, sceneDescription].filter(Boolean).join("\n\n");
+  return lowercaseTokens ? normalizeMaiVideoReferenceTokens(combined) : combined;
 }
 
 export async function GET() {

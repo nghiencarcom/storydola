@@ -2,6 +2,7 @@ import {
   DEFAULT_FLOW_VIDEO_MODEL_ID,
   DEFAULT_MUSE_VIDEO_MODEL_ID,
   FLOW_VIDEO_MODEL_OPTION,
+  isHiggsfieldMagi2Model,
   isHiggsfieldSeedanceModel,
   isHiggsfieldWanModel,
   isKlingVideoModel,
@@ -191,6 +192,9 @@ export function submittedVideoModelDisplayName(input: {
     }
   }
 
+  if (isHiggsfieldMagi2Model(rawModel)) {
+    return "MAGI-2 · Higgsfield";
+  }
   if (isHiggsfieldWanModel(rawModel)) {
     return "Wan 3.0 · Higgsfield";
   }

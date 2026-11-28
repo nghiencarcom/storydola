@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { generateMaiVideoVideoForScene, MediaProviderJobPendingError, SeedanceGenerationError } from "../../../../../lib/media-provider";
 import type { VideoGenerationJob, VideoQueueState } from "../../../../../lib/project-types";
-import { resolveMediaGenerationSettings } from "../../../../../lib/media-generation-settings";
+import { isRemakeProject, resolveMediaGenerationSettings } from "../../../../../lib/media-generation-settings";
 import { isFlowStoryOnlyPreset } from "../../../../../lib/story-presets";
 import { chunkForScene, previousSceneContinuityReference, readProjectScenes } from "../../../../../lib/scene-store";
 import { getProjectOrThrow, makeActivity, markRenderStale, now, readChunkOutput, saveChunkOutput, updateData } from "../../../../../lib/server-store";
@@ -104,7 +104,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       ...project.mediaGeneration,
       ...sceneSettings,
       ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
-    });
+    }, { remake: isRemakeProject(project) });
     const higgsfieldAuthToken = mediaGeneration.videoProvider === "higgsfield" && userId
       ? await getHiggsfieldSessionToken(userId, job.id)
       : "";

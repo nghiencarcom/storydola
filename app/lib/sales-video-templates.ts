@@ -1,5 +1,5 @@
 import type { VideoGenerationModelOption } from "./project-types";
-import { isHiggsfieldSeedanceModel, isHiggsfieldWanModel } from "./media-generation-settings";
+import { isHiggsfieldMagi2Model, isHiggsfieldSeedanceModel, isHiggsfieldWanModel } from "./media-generation-settings";
 
 export const salesVideoTemplates = [
   { id: "general", name: "Mọi sản phẩm", direction: "Giới thiệu sản phẩm trực diện, xen cảnh cận để người xem nhận ra hình dáng và bao bì." },
@@ -245,9 +245,10 @@ export function salesVideoDurationOptions(
 ) {
   const effectiveModelId = model?.id || fallbackModelId;
   const isWan = effectiveModelId === "wan-3.0" || isHiggsfieldWanModel(effectiveModelId);
+  const isMagi2 = isHiggsfieldMagi2Model(effectiveModelId);
   const quality = requestedQuality && model?.qualities.includes(requestedQuality) ? requestedQuality : model?.qualities[0] || "";
-  const configuredMax = model?.maxDurationByQuality?.[quality] || model?.maxDurationSec || (isWan ? 30 : 15);
-  const max = isWan ? 30 : Math.min(15, configuredMax);
+  const configuredMax = model?.maxDurationByQuality?.[quality] || model?.maxDurationSec || (isWan || isMagi2 ? 30 : 15);
+  const max = isWan || isMagi2 ? 30 : Math.min(15, configuredMax);
   if (productTemplate) {
     const clipMax = Math.min(15, configuredMax);
     const candidate = isWan ? [15, 20, 25, 30, 45, 60] : [...salesVideoDurations];

@@ -40,6 +40,8 @@ assert.equal(mediaSettings.isRemakeProject({ slug: "remake-story-user1" }), fals
 assert.equal(mediaSettings.defaultMediaGenerationSettings().videoUseSceneImageReference, true);
 assert.equal(mediaSettings.defaultMediaGenerationSettings({ remake: true }).videoUseSceneImageReference, false);
 assert.equal(mediaSettings.resolveMediaGenerationSettings({}, { remake: true }).videoUseSceneImageReference, false);
+assert.equal(mediaSettings.shouldUseVideoLocationReference({ videoUseLocationReferences: true, videoUseSceneImageReference: true }, true), false);
+assert.equal(mediaSettings.shouldUseVideoLocationReference({ videoUseLocationReferences: true, videoUseSceneImageReference: false }, true), true);
 assert.equal(
   mediaSettings.resolveMediaGenerationSettings({ videoUseSceneImageReference: true }, { remake: true }).videoUseSceneImageReference,
   true,

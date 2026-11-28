@@ -15,7 +15,7 @@ import { clearSalesVideoDraft, loadSalesVideoDraft, saveSalesVideoDraftFields, s
 
 import type { VideoGenerationModelOption } from "../lib/project-types";
 import {
-  HIGGSFIELD_SEEDANCE_MODEL_ID, isHiggsfieldWanModel, isVideoOffPeakRequired, PIXVERSE_SEEDANCE_2_FAST_MODEL_ID,
+  HIGGSFIELD_SEEDANCE_MODEL_ID, isHiggsfieldMagi2Model, isHiggsfieldWanModel, isVideoOffPeakRequired, PIXVERSE_SEEDANCE_2_FAST_MODEL_ID,
   SALES_VIDEO_GATEWAY_VIDEO_MODEL_OPTIONS,
 } from "../lib/media-generation-settings";
 import type { SalesVideoProject } from "../lib/sales-video-storage";
@@ -582,7 +582,7 @@ export function SalesVideoView() {
   const selectedVideoModelId = selected?.details?.videoModelId || "";
   const selectedPromptMaxLength = selected?.details?.promptMaxLength
     || catalog.find((model) => model.id === selectedVideoModelId || `${model.provider || "maivideo"}:${model.id}` === selectedVideoModelId)?.promptMaxLength
-    || (selectedVideoModelId === "higgsfield" ? 10_000 : isHiggsfieldWanModel(selectedVideoModelId.replace(/^higgsfield:/, "")) ? 12_000 : 5_000);
+    || (selectedVideoModelId === "higgsfield" ? 10_000 : isHiggsfieldWanModel(selectedVideoModelId.replace(/^higgsfield:/, "")) || isHiggsfieldMagi2Model(selectedVideoModelId.replace(/^higgsfield:/, "")) ? 12_000 : 5_000);
   const activeTemplateId = route.templateId || "";
   const validTemplate = salesVideoTemplates.some(({ id }) => id === activeTemplateId)
     || salesVideoCreativeTemplates.some(({ id }) => id === activeTemplateId);
@@ -1845,7 +1845,7 @@ function SalesVideoComposer({ initialTemplateId, access, catalog, projects, simi
   const options = [
     ...models.filter((id) => id === "higgsfield").map((id) => ({ id, label: selectedTemplate ? salesVideoModels[id] : `${salesVideoModels[id]} · tối đa 15 giây mỗi clip`, available: true, modelMeta: undefined as VideoGenerationModelOption | undefined })),
     ...higgsfieldVideoModels.map((item) => {
-      const max = isHiggsfieldWanModel(item.id) ? 30 : Math.min(15, item.maxDurationSec);
+      const max = isHiggsfieldWanModel(item.id) || isHiggsfieldMagi2Model(item.id) ? 30 : Math.min(15, item.maxDurationSec);
       const label = selectedTemplate ? item.label : `${item.label} · tối đa ${max} giây mỗi clip`;
       return { id: `higgsfield:${item.id}`, label, available: true, modelMeta: item };
     }),

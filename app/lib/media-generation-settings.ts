@@ -55,6 +55,7 @@ export const KLING_VIDEO_MODEL_ID = "kling-4.0";
 export const PIXVERSE_SEEDANCE_2_FAST_MODEL_ID = "seedance-2.0-fast";
 export const HIGGSFIELD_SEEDANCE_MODEL_ID = "higgsfield-seedance-2.0";
 export const HIGGSFIELD_WAN_3_MODEL_ID = "higgsfield-wan-3.0";
+export const HIGGSFIELD_MAGI_2_MODEL_ID = "higgsfield-magi-2";
 
 function isFlowVideoModel(modelId?: string) {
   const id = modelId?.trim().toLowerCase();
@@ -143,9 +144,14 @@ export function isHiggsfieldWanModel(modelId?: string) {
   return id === HIGGSFIELD_WAN_3_MODEL_ID || id === "wan3_0";
 }
 
+export function isHiggsfieldMagi2Model(modelId?: string) {
+  const id = modelId?.trim().toLowerCase() || "";
+  return id === HIGGSFIELD_MAGI_2_MODEL_ID || id === "magi_2" || id === "magi-2" || id === "magi2";
+}
+
 export function isHiggsfieldVideoModel(modelId?: string, provider?: string) {
   const id = modelId?.trim().toLowerCase() || "";
-  return provider === "higgsfield" || id === HIGGSFIELD_SEEDANCE_MODEL_ID || isHiggsfieldWanModel(id);
+  return provider === "higgsfield" || id === HIGGSFIELD_SEEDANCE_MODEL_ID || isHiggsfieldWanModel(id) || isHiggsfieldMagi2Model(id);
 }
 
 export function isHiggsfieldSeedanceModel(modelId?: string, provider?: string) {
@@ -173,6 +179,7 @@ export function visibleVideoModels(models: VideoGenerationModelOption[] = [], pr
 
 export function videoModelDisplayName(modelId: string, provider?: string) {
   if (isTemporarilyHiddenMaiVideoSeedance25({ id: modelId, provider })) return "Model tạm ẩn";
+  if (isHiggsfieldMagi2Model(modelId)) return "MAGI-2 · Higgsfield";
   if (isHiggsfieldWanModel(modelId)) return "Wan 3.0 · Higgsfield";
   if (isHiggsfieldSeedanceModel(modelId, provider)) return "Seedance 2.0 · Higgsfield";
   if ((provider || "maivideo") === "maivideo" && modelId === PIXVERSE_SEEDANCE_2_FAST_MODEL_ID) return "Seedance 2.0 · PixVerse";
@@ -259,11 +266,15 @@ export function defaultMediaGenerationSettings(options?: { remake?: boolean }): 
       : isMaiVideoPixverseV56Model({ id: configuredVideoModel }) ? "pixverse-c1" : configuredVideoModel;
   const videoProvider = isHiggsfieldVideoModel(videoModel) ? "higgsfield" : isDirectSeedanceVideoModel(videoModel) ? "seedance" : isFlowVideoModel(videoModel) ? "flow" : "maivideo";
   const normalizedVideoModel = videoProvider === "higgsfield"
-    ? (isHiggsfieldWanModel(videoModel) ? HIGGSFIELD_WAN_3_MODEL_ID : HIGGSFIELD_SEEDANCE_MODEL_ID)
+    ? (isHiggsfieldMagi2Model(videoModel)
+      ? HIGGSFIELD_MAGI_2_MODEL_ID
+      : isHiggsfieldWanModel(videoModel) ? HIGGSFIELD_WAN_3_MODEL_ID : HIGGSFIELD_SEEDANCE_MODEL_ID)
     : videoModel;
   const pixverse = isPixverseVideoSettings({ videoProvider, videoModel: normalizedVideoModel });
-  const maxVideoDuration = videoProvider === "higgsfield" && normalizedVideoModel === HIGGSFIELD_WAN_3_MODEL_ID ? 30 : 15;
-  const minVideoDuration = videoProvider === "higgsfield" && normalizedVideoModel === HIGGSFIELD_WAN_3_MODEL_ID ? 2 : 1;
+  const maxVideoDuration = videoProvider === "higgsfield" && (normalizedVideoModel === HIGGSFIELD_WAN_3_MODEL_ID || normalizedVideoModel === HIGGSFIELD_MAGI_2_MODEL_ID) ? 30 : 15;
+  const minVideoDuration = videoProvider === "higgsfield" && normalizedVideoModel === HIGGSFIELD_MAGI_2_MODEL_ID
+    ? 4
+    : videoProvider === "higgsfield" && normalizedVideoModel === HIGGSFIELD_WAN_3_MODEL_ID ? 2 : 1;
   const configuredVideoQuality = process.env.MAIVIDEO_VIDEO_QUALITY?.trim();
   return {
     videoProvider,
@@ -272,8 +283,10 @@ export function defaultMediaGenerationSettings(options?: { remake?: boolean }): 
     imageQuality: process.env.MAIVIDEO_IMAGE_QUALITY?.trim() || DEFAULT_MEDIA_GENERATION_SETTINGS.imageQuality,
     imageDetailLevel: DEFAULT_MEDIA_GENERATION_SETTINGS.imageDetailLevel,
     videoModel: normalizedVideoModel,
-    videoQuality: videoProvider === "flow" || videoProvider === "higgsfield"
+    videoQuality: videoProvider === "flow"
       ? "720p"
+      : videoProvider === "higgsfield"
+        ? (normalizedVideoModel === HIGGSFIELD_MAGI_2_MODEL_ID ? "1080p" : "720p")
       : isPixverseVideoModel(normalizedVideoModel)
       ? (isRemovedPixverseVideoQuality(configuredVideoQuality) ? "1080p" : configuredVideoQuality || "1080p")
       : configuredVideoQuality || DEFAULT_MEDIA_GENERATION_SETTINGS.videoQuality,
@@ -311,18 +324,22 @@ export function resolveMediaGenerationSettings(
   const videoModel = videoProvider === "seedance"
     ? isDirectSeedanceVideoModel(storedVideoModel) ? storedVideoModel : DEFAULT_SEEDANCE_VIDEO_MODEL_ID
     : videoProvider === "higgsfield"
-      ? (isHiggsfieldWanModel(storedVideoModel) ? HIGGSFIELD_WAN_3_MODEL_ID : HIGGSFIELD_SEEDANCE_MODEL_ID)
+      ? (isHiggsfieldMagi2Model(storedVideoModel)
+        ? HIGGSFIELD_MAGI_2_MODEL_ID
+        : isHiggsfieldWanModel(storedVideoModel) ? HIGGSFIELD_WAN_3_MODEL_ID : HIGGSFIELD_SEEDANCE_MODEL_ID)
       : videoProvider === "muse" ? DEFAULT_MUSE_VIDEO_MODEL_ID
         : videoProvider === "flow" ? DEFAULT_FLOW_VIDEO_MODEL_ID : storedVideoModel;
   const flowReferenceMode = settings?.flowReferenceMode === "frames" ? "frames" : "ingredients";
   const seedanceChatMode = settings?.seedanceChatMode === "Pro" ? "Pro" : "Fast";
   const pixverse = isPixverseVideoSettings({ videoProvider, videoModel });
   const maxVideoDuration = (videoProvider === "maivideo" && videoModel === WAN_3_VIDEO_MODEL_ID)
-    || (videoProvider === "higgsfield" && videoModel === HIGGSFIELD_WAN_3_MODEL_ID)
+    || (videoProvider === "higgsfield" && (videoModel === HIGGSFIELD_WAN_3_MODEL_ID || videoModel === HIGGSFIELD_MAGI_2_MODEL_ID))
     ? 30
     : 15;
   const minVideoDuration = videoProvider === "maivideo" && videoModel === MINIMAX_H3_VIDEO_MODEL_ID
     ? 5
+    : videoProvider === "higgsfield" && videoModel === HIGGSFIELD_MAGI_2_MODEL_ID
+      ? 4
     : (videoProvider === "maivideo" && videoModel === WAN_3_VIDEO_MODEL_ID)
       || (videoProvider === "higgsfield" && videoModel === HIGGSFIELD_WAN_3_MODEL_ID)
       ? 2
@@ -337,8 +354,10 @@ export function resolveMediaGenerationSettings(
     imageQuality: settings?.imageQuality?.trim() || defaults.imageQuality,
     imageDetailLevel,
     videoModel,
-    videoQuality: videoProvider === "flow" || videoProvider === "higgsfield"
+    videoQuality: videoProvider === "flow"
       ? "720p"
+      : videoProvider === "higgsfield"
+        ? (videoModel === HIGGSFIELD_MAGI_2_MODEL_ID ? "1080p" : "720p")
       : pixverse && isRemovedPixverseVideoQuality(settings?.videoQuality)
         ? "1080p"
         : settings?.videoQuality?.trim() || (pixverse ? "1080p" : defaults.videoQuality),
@@ -361,6 +380,10 @@ export function resolveMediaGenerationSettings(
   };
 }
 
-export function shouldUseVideoLocationReference(settings: Pick<MediaGenerationSettings, "videoUseLocationReferences" | "videoUseSceneImageReference">, aiDrama = false) {
-  return settings.videoUseLocationReferences && (aiDrama || !settings.videoUseSceneImageReference);
+export function shouldUseVideoLocationReference(
+  settings: Pick<MediaGenerationSettings, "videoUseLocationReferences" | "videoUseSceneImageReference">,
+  aiDrama = false,
+) {
+  void aiDrama;
+  return settings.videoUseLocationReferences && !settings.videoUseSceneImageReference;
 }

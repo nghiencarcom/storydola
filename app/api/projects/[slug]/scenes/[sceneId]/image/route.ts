@@ -3,7 +3,7 @@ import { getCurrentUserId } from "../../../../../../lib/auth-server";
 import { sceneReferenceLocationId } from "../../../../../../lib/scene-reference-assignments";
 import { NextResponse } from "next/server";
 import { generateMaiVideoImageForScene } from "../../../../../../lib/media-provider";
-import { isFlowImageModel, isMuseImageModel, resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
+import { isFlowImageModel, isMuseImageModel, isRemakeProject, resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
 import { readMaiVideoAuthCookie } from "../../../../../../lib/maivideo-auth-shared";
 import { chunkForScene, findProjectScene, previousSceneContinuityReference } from "../../../../../../lib/scene-store";
 import { saveGeneratedSceneMedia } from "../../../../../../lib/scene-media-output";
@@ -27,7 +27,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   if (!chunk?.outputPath) return NextResponse.json({ message: "Chunk của cảnh chưa có output." }, { status: 409 });
 
   const sceneSettings = asRecord(scene.mediaGeneration || scene.media_generation) as Record<string, unknown> | null;
-  const mediaGeneration = resolveMediaGenerationSettings({ ...project.mediaGeneration, ...sceneSettings });
+  const mediaGeneration = resolveMediaGenerationSettings({ ...project.mediaGeneration, ...sceneSettings }, { remake: isRemakeProject(project) });
   const providerAuthToken = isMuseImageModel(mediaGeneration.imageModel) || isFlowImageModel(mediaGeneration.imageModel)
     ? readMaiVideoAuthCookie(request.headers.get("cookie"))
     : "";

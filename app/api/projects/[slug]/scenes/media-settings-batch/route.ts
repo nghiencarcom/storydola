@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import type { MediaGenerationSettings } from "../../../../../lib/project-types";
-import { resolveMediaGenerationSettings } from "../../../../../lib/media-generation-settings";
+import { isRemakeProject, resolveMediaGenerationSettings } from "../../../../../lib/media-generation-settings";
 import { isFlowStoryOnlyPreset } from "../../../../../lib/story-presets";
 import { readProjectScenes } from "../../../../../lib/scene-store";
 import { getProjectOrThrow, makeActivity, now, readChunkOutput, saveChunkOutput, updateData } from "../../../../../lib/server-store";
@@ -15,6 +15,8 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   const { slug } = await context.params;
   const body = asRecord(await request.json().catch(() => ({}))) || {};
   const requestedSettings = asRecord(body.mediaGeneration) as Partial<MediaGenerationSettings> | null;
+  const patchMode = body.patch === true;
+  const silent = body.silent === true;
   const requestedIds = Array.isArray(body.sceneIds) ? [...new Set(body.sceneIds.map((value) => String(value).trim()).filter(Boolean))] : [];
   if (!requestedSettings) return NextResponse.json({ message: "Thiếu cấu hình model media." }, { status: 400 });
   if (!requestedIds.length || requestedIds.length > 1000) return NextResponse.json({ message: "Chọn từ 1 đến 1000 cảnh để áp dụng cấu hình." }, { status: 400 });
@@ -28,7 +30,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       const settings = resolveMediaGenerationSettings({
         ...requestedSettings,
         ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
-      });
+      }, { remake: isRemakeProject(project) });
       const idsByChunk = new Map<string, Set<string>>();
       for (const scene of targets) {
         const chunk = project.chunks.find((item) => item.id === scene.chunkId);
@@ -53,17 +55,24 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
           const currentSettings = resolveMediaGenerationSettings({
             ...project.mediaGeneration,
             ...(asRecord(record.mediaGeneration || record.media_generation) || {}),
-          });
+          }, { remake: isRemakeProject(project) });
+          const sceneSettings = patchMode
+            ? resolveMediaGenerationSettings({
+                ...currentSettings,
+                ...requestedSettings,
+                ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
+              }, { remake: isRemakeProject(project) })
+            : settings;
           const currentMedia = asRecord(record.media);
           const currentReference = asRecord(record.videoReferenceImage || record.video_reference_image)
             || (currentMedia?.kind === "image" ? currentMedia : null);
           const imageSettingsChanged = ["imageModel", "imageQuality", "imageDetailLevel", "imageUseCharacterReferences"]
-            .some((key) => currentSettings[key as keyof MediaGenerationSettings] !== settings[key as keyof MediaGenerationSettings]);
+            .some((key) => currentSettings[key as keyof MediaGenerationSettings] !== sceneSettings[key as keyof MediaGenerationSettings]);
           const videoSettingsChanged = ["videoProvider", "seedanceAccountId", "seedanceChatMode", "videoModel", "videoQuality", "videoDurationMode", "videoDurationSec", "videoMultiShot", "videoAudio", "videoOffPeak", "videoUseCharacterReferences", "videoUseLocationReferences", "videoUseSceneImageReference", "flowReferenceMode"]
-            .some((key) => currentSettings[key as keyof MediaGenerationSettings] !== settings[key as keyof MediaGenerationSettings]);
+            .some((key) => currentSettings[key as keyof MediaGenerationSettings] !== sceneSettings[key as keyof MediaGenerationSettings]);
           return {
             ...record,
-            mediaGeneration: settings,
+            mediaGeneration: sceneSettings,
             ...(imageSettingsChanged && currentMedia?.kind === "image" ? { media: { ...currentMedia, stale: true } } : {}),
             ...(videoSettingsChanged && currentMedia?.kind === "video" ? { media: { ...currentMedia, stale: true } } : {}),
             ...(imageSettingsChanged && currentReference?.kind === "image" ? { videoReferenceImage: { ...currentReference, stale: true } } : {}),
@@ -74,13 +83,15 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       }
 
       project.updatedAt = now();
-      data.activities.unshift(makeActivity({
-        projectSlug: slug,
-        kind: "chunk",
-        title: `Đã áp dụng cấu hình media cho ${targets.length} cảnh`,
-        detail: `Ảnh ${settings.imageModel} · video ${settings.videoModel} · thời lượng ${settings.videoDurationMode === "scene" ? "theo cảnh" : `${settings.videoDurationSec}s cố định`}`,
-        status: "success",
-      }));
+      if (!silent) {
+        data.activities.unshift(makeActivity({
+          projectSlug: slug,
+          kind: "chunk",
+          title: `Đã áp dụng cấu hình media cho ${targets.length} cảnh`,
+          detail: `Ảnh ${settings.imageModel} · video ${settings.videoModel} · thời lượng ${settings.videoDurationMode === "scene" ? "theo cảnh" : `${settings.videoDurationSec}s cố định`}`,
+          status: "success",
+        }));
+      }
       return { sceneIds: requestedIds, mediaGeneration: settings, outputPaths };
     });
     return NextResponse.json({ ok: true, ...saved });

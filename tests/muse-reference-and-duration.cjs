@@ -335,7 +335,67 @@ const salesTemplates = loadTs("app/lib/sales-video-templates.ts");
   assert(lowerInstruction.includes("@image1") && lowerInstruction.includes("@image2") && lowerInstruction.includes("@image3"), "Lowercase sales instruction must include @image1..@image3");
   assert(!/@Image\d+/.test(lowerInstruction), "Lowercase sales instruction must not include @Image");
 
-  console.log("Passed: Muse 15s duration, @ImageN indexing, voice cues, mouth-closure lock, safety exclusions, PixVerse parity, Seedance PixVerse @image/@video tokens, and off-screen reference filtering.");
+  // 9. AI Drama Character + Location only mode (no Scene Frame, no Previous Scene) & no Scene+Location conflict
+  const charLocRefs = [];
+  const charLocOnlyPrompt = await provider.previewMaiVideoVideoPromptForScene({
+    projectSlug: "test-project",
+    chunkId: "A01",
+    scene: s001,
+    projectScenes: [prevScene, s001],
+    characters,
+    locations,
+    sceneIndex: 1,
+    aspectRatio: "16:9",
+    presetId: "ai-drama",
+    videoSpokenLanguage: "vi",
+    continuityReference,
+    onVideoReferencesComposed: async (refs) => {
+      charLocRefs.push(...refs);
+    },
+    mediaGeneration: {
+      videoProvider: "maivideo",
+      videoModel: "minimax-h3",
+      videoDurationMode: "scene",
+      videoUseSceneImageReference: false,
+      videoUseCharacterReferences: true,
+      videoUseLocationReferences: true,
+    },
+  });
+  assert(charLocRefs.every((r) => r.name.startsWith("Character - ") || r.name.startsWith("Location - ")), "AI Drama char+loc mode must attach only Character and Location images");
+  assert(charLocRefs.some((r) => r.name === "Location - Haystack Field Ridge"), "AI Drama char+loc mode must attach Location image when scene image is off");
+  assert(!charLocOnlyPrompt.includes("SCENE FRAME"), "AI Drama char+loc mode must not reference SCENE FRAME");
+  assert(!charLocOnlyPrompt.includes("PREVIOUS SCENE S000"), "AI Drama char+loc mode must not reference PREVIOUS SCENE");
+  assert(charLocOnlyPrompt.includes("@image4 (Image 4): LOCATION Haystack Field Ridge"), "AI Drama char+loc mode must map LOCATION to @image4");
+
+  const sceneFrameRefs = [];
+  const sceneFramePrompt = await provider.previewMaiVideoVideoPromptForScene({
+    projectSlug: "test-project",
+    chunkId: "A01",
+    scene: s001,
+    projectScenes: [prevScene, s001],
+    characters,
+    locations,
+    sceneIndex: 1,
+    aspectRatio: "16:9",
+    presetId: "ai-drama",
+    videoSpokenLanguage: "vi",
+    continuityReference,
+    onVideoReferencesComposed: async (refs) => {
+      sceneFrameRefs.push(...refs);
+    },
+    mediaGeneration: {
+      videoProvider: "maivideo",
+      videoModel: "minimax-h3",
+      videoDurationMode: "scene",
+      videoUseSceneImageReference: true,
+      videoUseCharacterReferences: true,
+      videoUseLocationReferences: true,
+    },
+  });
+  assert(!sceneFrameRefs.some((r) => r.name.startsWith("Location - ")), "When Scene Frame is active, conflicting 4-panel Location image must NOT be attached");
+  assert(sceneFramePrompt.includes("CANONICAL APPEARANCE (no image):\nHaystack Field Ridge:"), "Canonical location description must remain in CANONICAL APPEARANCE when Location image is omitted");
+
+  console.log("Passed: Muse 15s duration, @ImageN indexing, voice cues, mouth-closure lock, safety exclusions, PixVerse parity, Seedance PixVerse @image/@video tokens, AI Drama char+loc references, and off-screen reference filtering.");
 })().catch((error) => {
   console.error(error);
   process.exit(1);

@@ -85,6 +85,10 @@ function run() {
     "Wan 3.0 · Higgsfield",
   );
   assert.equal(
+    submittedVideoModelDisplayName({ model: "higgsfield-magi-2", provider: "higgsfield" }),
+    "MAGI-2 · Higgsfield",
+  );
+  assert.equal(
     submittedVideoModelDisplayName({ model: "seedance-2.0-fast", provider: "maivideo" }),
     "Seedance 2.0 · PixVerse",
   );

@@ -4,7 +4,7 @@ import path from "node:path";
 import { NextResponse } from "next/server";
 import { markRenderStale, readChunkOutput, readData, readProjectForMedia, saveChunkOutput, updateData } from "../../../../../../lib/server-store";
 import { findProjectScene, sceneMediaLocalPath, sceneReferenceImageLocalPath } from "../../../../../../lib/scene-store";
-import { resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
+import { isRemakeProject, resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
 import { MAX_SCENE_MEDIA_UPLOAD_BYTES } from "../../../../../../lib/scene-media-upload-config";
 import { saveGeneratedSceneMedia } from "../../../../../../lib/scene-media-output";
 import { dataPath, relativeDataPath } from "../../../../../../lib/data-directory";
@@ -35,7 +35,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
   await mkdir(path.dirname(absolutePath), { recursive: true });
   await writeFile(absolutePath, bytes);
   const media = { kind, provider: "upload", status: "ready", localPath: relativePath, sourceUrl: "", query: file.name } as const;
-  const mediaGeneration = resolveMediaGenerationSettings(project.mediaGeneration);
+  const mediaGeneration = resolveMediaGenerationSettings(project.mediaGeneration, { remake: isRemakeProject(project) });
   const saved = await saveGeneratedSceneMedia({ projectSlug: slug, sceneId, media, mediaGeneration });
   return NextResponse.json({ ok: true, ...saved });
 }

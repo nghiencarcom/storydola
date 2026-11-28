@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { MediaGenerationSettings } from "../../../../../../lib/project-types";
 import { chunkForScene, findProjectScene } from "../../../../../../lib/scene-store";
-import { isFlowImageModel, isHiggsfieldWanModel, isMuseImageModel, resolveMediaGenerationSettings, SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES, shouldUseVideoLocationReference, WAN_3_VIDEO_MODEL_ID } from "../../../../../../lib/media-generation-settings";
+import { isFlowImageModel, isHiggsfieldWanModel, isMuseImageModel, isRemakeProject, resolveMediaGenerationSettings, SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES, shouldUseVideoLocationReference, WAN_3_VIDEO_MODEL_ID } from "../../../../../../lib/media-generation-settings";
 import { getProjectOrThrow, makeActivity, markRenderStale, now, readChunkOutput, readData, saveChunkOutput, updateData } from "../../../../../../lib/server-store";
 import { resolveProjectSceneVoice } from "../../../../../../lib/project-tts-voice";
 import { isFlowStoryOnlyPreset } from "../../../../../../lib/story-presets";
@@ -51,7 +51,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     ...project.mediaGeneration,
     ...sceneSettings,
     ...(isFlowStoryOnlyPreset(project.presetId) ? { flowReferenceMode: "ingredients" as const } : {}),
-  });
+  }, { remake: isRemakeProject(project) });
   const model = settings.videoModel.toLowerCase();
   const configuredLimit = Number(process.env.MAIVIDEO_VIDEO_MAX_REFERENCE_IMAGES);
   const modelLimit = settings.videoProvider === "flow" ? 10 : settings.videoProvider === "seedance" || settings.videoProvider === "muse" ? SEEDANCE_DIRECT_MAX_REFERENCE_IMAGES : settings.videoProvider === "higgsfield" ? (isHiggsfieldWanModel(model) ? 10 : 9) : model === WAN_3_VIDEO_MODEL_ID ? 10 : 7;
@@ -107,7 +107,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
       const imageReferenceInputsChanged = referenceKind === "image"
         && ((settings.imageUseCharacterReferences && selectedCharacterReferencesChanged) || selectedLocationReferenceChanged);
       const videoReferenceInputsChanged = referenceKind === "video"
-        && ((settings.videoUseCharacterReferences && selectedCharacterReferencesChanged) || (shouldUseVideoLocationReference(settings, currentProject.presetId === "ai-drama") && selectedLocationReferenceChanged));
+        && ((settings.videoUseCharacterReferences && selectedCharacterReferencesChanged) || (settings.videoUseLocationReferences && selectedLocationReferenceChanged));
       const imageInputsChanged = sceneAssignmentChanged || imageReferenceInputsChanged;
       const videoInputsChanged = sceneAssignmentChanged || videoReferenceInputsChanged || (imageReferenceInputsChanged && settings.videoUseSceneImageReference);
       const previousSpeakerId = resolveProjectSceneVoice(record, currentProject).speakerCharacterId;

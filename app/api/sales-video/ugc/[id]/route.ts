@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getMaiVideoModelCatalog } from "../../../../lib/media-provider";
-import { isHiggsfieldWanModel } from "../../../../lib/media-generation-settings";
+import { isHiggsfieldMagi2Model, isHiggsfieldWanModel } from "../../../../lib/media-generation-settings";
 import { readMaiVideoAuthCookie } from "../../../../lib/maivideo-auth-shared";
 import { salesVideoWorkerId } from "../../../../lib/sales-video-runtime";
 import { getSalesVideoProject, salesVideoReferencePath, saveSalesVideoProject as persistSalesVideoProject, type SalesVideoProject } from "../../../../lib/sales-video-storage";
@@ -28,7 +28,7 @@ async function promptLimitForProject(userId: string, details: NonNullable<SalesV
   if (modelId.startsWith("higgsfield:")) {
     const id = modelId.slice("higgsfield:".length);
     const catalog = await getMaiVideoModelCatalog(userId).catch(() => null);
-    return Math.min(20_000, catalog?.videoModels.find((model) => model.provider === "higgsfield" && model.id === id)?.promptMaxLength || (isHiggsfieldWanModel(id) ? 12_000 : 10_000));
+    return Math.min(20_000, catalog?.videoModels.find((model) => model.provider === "higgsfield" && model.id === id)?.promptMaxLength || (isHiggsfieldWanModel(id) || isHiggsfieldMagi2Model(id) ? 12_000 : 10_000));
   }
   if (modelId.startsWith("maivideo:")) {
     const id = modelId.slice("maivideo:".length);

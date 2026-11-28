@@ -114,7 +114,7 @@ const salesTemplates = loadTs("app/lib/sales-video-templates.ts");
   assert.equal(wanCatalogModel.supportsAudio, true);
 
   const salesHiggsfieldModels = salesTemplates.salesVideoHiggsfieldModels(catalog.videoModels, undefined, "9:16", true);
-  assert.deepEqual(salesHiggsfieldModels.map((item) => item.id), ["higgsfield-wan-3.0"]);
+  assert.ok(salesHiggsfieldModels.some((item) => item.id === "higgsfield-wan-3.0"));
   assert.deepEqual(
     Array.from(salesTemplates.salesVideoDurationOptions(wanCatalogModel, undefined, true, wanCatalogModel.id, "720p")),
     [15, 20, 25, 30, 45, 60],

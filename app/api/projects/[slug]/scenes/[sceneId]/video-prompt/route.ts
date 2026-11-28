@@ -1,6 +1,6 @@
 import type { VideoPromptCompactionReport } from "../../../../../../lib/video-prompt-compaction";
 import { NextResponse } from "next/server";
-import { resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
+import { isRemakeProject, resolveMediaGenerationSettings } from "../../../../../../lib/media-generation-settings";
 import { previewMaiVideoVideoPromptForScene, type VideoPromptReferenceImage } from "../../../../../../lib/media-provider";
 import { chunkForScene, findProjectScene, previousSceneContinuityReference } from "../../../../../../lib/scene-store";
 import { readDialogueSegments } from "../../../../../../lib/dialogue-segments";
@@ -30,7 +30,7 @@ export async function POST(request: Request, context: { params: Promise<{ slug: 
     ...project.mediaGeneration,
     ...(sceneSettings || {}),
     ...(requestedSettings || {}),
-  });
+  }, { remake: isRemakeProject(project) });
   let compaction: VideoPromptCompactionReport | undefined;
   let referenceImages: VideoPromptReferenceImage[] = [];
   let referenceImagesComposed = false;
