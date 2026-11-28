@@ -1166,7 +1166,9 @@ async function pollJob(url: string, headers: Record<string, string>, timeoutMs: 
     const isMaiVideoPublicApi = provider === "maivideo" && new URL(url).pathname.startsWith("/api/v1/");
     const mediaUrl = isMaiVideoPublicApi
       ? firstMediaUrl(preferredKeys.includes("image_url") ? lastPayload.images : lastPayload.videos, preferredKeys, skipKeys)
-      : firstMediaUrl(lastPayload, preferredKeys, skipKeys);
+      : provider === "higgsfield"
+        ? firstMediaUrl(job.result ?? lastPayload.result, preferredKeys, skipKeys)
+        : firstMediaUrl(lastPayload, preferredKeys, skipKeys);
     if (mediaUrl && ["completed", "complete", "partial", "succeeded", "done"].includes(status)) return { payload: lastPayload, mediaUrl };
     throwIfSeedanceDeadlineReached();
     if (["error", "failed", "cancelled", "canceled"].includes(status)) {
@@ -2770,7 +2772,7 @@ async function generateHiggsfieldVideo(
     headers,
     timeoutMs,
     ["file_url", "video_url", "url"],
-    [],
+    ["input_images", "reference_images"],
     undefined,
     jobId,
     0,
@@ -2780,7 +2782,8 @@ async function generateHiggsfieldVideo(
     "higgsfield",
   );
   const resolved = resolveUrl(pollResult.mediaUrl, base);
-  await downloadAsset(resolved, outputPath, "video", {}, undefined, signal, "Higgsfield");
+  const sameOrigin = new URL(resolved).origin === new URL(base).origin;
+  await downloadAsset(resolved, outputPath, "video", sameOrigin ? headers : {}, undefined, signal, "Higgsfield");
   return {
     kind: "video",
     provider: "maivideo-video-higgsfield",

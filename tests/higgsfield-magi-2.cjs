@@ -137,10 +137,16 @@ const salesTemplates = loadTs("app/lib/sales-video-templates.ts");
       if (target.includes("/api/higgsfield/jobs/hfvid_magi2_test")) {
         return new Response(JSON.stringify({
           success: true,
-          job: { id: "hfvid_magi2_test", status: "completed", result: { file_url: "https://maivideo.top/files/magi2-test.mp4" } },
+          job: {
+            id: "hfvid_magi2_test",
+            status: "completed",
+            input_images: [{ filename: "ref1.webp", file_url: "/static/uploads/library/ref1.webp", index: 1 }],
+            result: { file_url: "https://maivideo.top/files/magi2-test.mp4" },
+          },
         }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       if (target === "https://maivideo.top/files/magi2-test.mp4") {
+        assert.equal(init.headers["X-Auth-Token"], "member-session-token", "Same-origin Higgsfield download must send X-Auth-Token");
         return new Response(Buffer.alloc(40_000, 1), { status: 200, headers: { "Content-Type": "video/mp4" } });
       }
       throw new Error("Unexpected fetch URL: " + target);
